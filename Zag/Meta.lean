@@ -22,7 +22,7 @@ def lift {primCtx : PrimitiveCtx} {primFuncCtx : PrimFuncCtx primCtx}
     intro _
     exact proof
 
-def toProvable {primCtx : PrimitiveCtx} {primFuncCtx : PrimFuncCtx primCtx}
+theorem toProvable {primCtx : PrimitiveCtx} {primFuncCtx : PrimFuncCtx primCtx}
     {ctxTy : List Ty} {ctxTerm : List (Term primCtx)} {goal : Pr primCtx}
     (program : MetaProgram primCtx primFuncCtx ctxTy ctxTerm goal)
     (closed : program.goals = []) :
