@@ -1,0 +1,21 @@
+name = "Zag"
+version = "0.1.0"
+defaultTargets = ["zag"]
+
+[[lean_lib]]
+name = "Zag"
+
+[[lean_lib]]
+name = "Lang"
+roots = ["Lang.SSA"]
+
+[[lean_lib]]
+name = "Test"
+roots = ["Test.Gauss"]
+
+[[lean_lib]]
+name = "Meta"
+
+[[lean_exe]]
+name = "zag"
+root = "Main"
