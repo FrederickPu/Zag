@@ -48,7 +48,7 @@ Lean is a dependently-typed programming language and proof assistant: you write 
 
 To prove properties about programs, existing tools generally do one of two things:
 
-1. **Transpile the source language into Lean** with an unverified translator (e.g. Aeneas). This is convenient, but the translator itself is trusted code — a bug in it silently invalidates every proof built on its output.
+1. **Transpile the source language into Lean** with an unverified translator (e.g. [Aeneas](https://github.com/AeneasVerif/aeneas)). This is convenient, but the translator itself is trusted code — a bug in it silently invalidates every proof built on its output.
 
 ```
 source language             Lean
@@ -61,7 +61,7 @@ source language             Lean
                  every proof
 ```
 
-2. **Embed the program faithfully and use proof automation** to break goals into subgoals. This keeps the trusted base small, and Lean's kernel checks every finished proof, so no tactic can ever establish a false statement. But the automation *itself* has no guarantees: a tactic can loop forever, fail outright, or reduce your goal to subgoals that don't actually suffice — and extending it without quietly breaking those reductions is hard.
+2. **Embed the program faithfully and use proof automation** to break goals into subgoals. This keeps the trusted base small, and Lean's kernel checks every finished proof, so no tactic can ever establish a false statement. But the automation *itself* has no guarantees: a tactic can loop forever, fail outright, or reduce your goal to subgoals that don't actually suffice — and extending it without quietly breaking those reductions is hard (cf. [AutoCorres](https://isa-afp.org/entries/AutoCorres2.html)).
 
 ```
 source language                Lean
@@ -75,7 +75,7 @@ source language                Lean
                                  that don't suffice
 ```
 
-Zag avoids both failure modes. Against #1, you never hand-write a translator at all: you *declaratively specify* your language's semantics — its primitive types and operations, plus a structural lowering into Zag's core `Term` — and Zag supplies the single, shared evaluator that every proof runs against. There is no bespoke transpiler to get wrong, because the semantics *is* the specification. Against #2, the trust base stays just as small, but every automation is *total and self-certifying*. Instead of open-ended metacode, we reify propositions as a datatype `Pr` and automations as values of a type `MetaProgram` that carries, in its type, a proof that its reduction is valid:
+Zag avoids both failure modes. Against #1, you never hand-write a translator at all: you *declaratively specify* your language's semantics — its primitive types and operations, plus a structural lowering into Zag's core `Term` — and Zag supplies the single, shared evaluator that every proof runs against. There is no bespoke transpiler to get wrong, because the semantics *is* the specification. Against #2, the trust base stays just as small, but every automation is *total and self-certifying*. Instead of open-ended metacode, we reify propositions as a datatype `Pr` and automations as values of a type `MetaProgram` ([`Zag/Meta.lean`](Zag/Meta.lean)) that carries, in its type, a proof that its reduction is valid:
 
 ```
 source language          ┌──────────────────────────────────────┐
@@ -108,7 +108,7 @@ structure MetaProgram primCtx primFuncCtx ctxTy ctxTerm goal where
 
 A `MetaProgram` for a `goal` produces a list of sub`goals` together with `prove`: a proof that provability of all the subgoals implies provability of the goal. (`primCtx`/`primFuncCtx` are the language's primitive types and operations; `ctxTy`/`ctxTerm` are the ambient variable context.) Because `prove` is a *checked proof* the automation carries with it, you cannot construct a `MetaProgram` whose subgoals fail to imply its goal — it would not typecheck — and, being a plain total function, it always terminates. Lean's kernel already stops any tactic from proving something false; what `MetaProgram` adds is that every reduction is valid *by construction* and every automation is total, so the layer composes and extends without anyone re-auditing it by hand.
 
-`MetaProgram`s compose. Given a program that emits subgoals, `refine` replaces each subgoal with another `MetaProgram`, and `iterate` applies a step under bounded fuel — building a tree whose leaves are closed by hand-written Lean proofs, with the soundness certificate threaded through automatically. Concretely, `iterate n step goal` unfolds as:
+`MetaProgram`s compose. Given a program that emits subgoals, `refine` ([`Zag/Meta.lean`](Zag/Meta.lean)) replaces each subgoal with another `MetaProgram`, and `iterate` ([`Zag/Meta.lean`](Zag/Meta.lean)) applies a step under bounded fuel — building a tree whose leaves are closed by hand-written Lean proofs, with the soundness certificate threaded through automatically. Concretely, `iterate n step goal` unfolds as:
 
 ```
 iterate n step goal  =
@@ -141,7 +141,7 @@ So for `n = 3`, expanding one branch:
         goals: []  ← fuel exhausted, leaf
 ```
 
-After all branches close, the final program's `.goals` is `[] ++ [] ++ [] = []`. Then `toProvable program hempty` (where `hempty : program.goals = []`) collapses the tree:
+After all branches close, the final program's `.goals` is `[] ++ [] ++ [] = []`. Then `toProvable program hempty` ([`Zag/Meta.lean`](Zag/Meta.lean)) (where `hempty : program.goals = []`) collapses the tree:
 
 ```
 toProvable program hempty :
@@ -156,7 +156,7 @@ Each `refine` composes the `prove` fields: the outer program's `prove` says "if 
 
 # embedding a language
 
-Zag is a *deep embedding*: programs and types are **data** — values of inductive `Term` and `Ty` types, syntax trees rather than Lean code:
+Zag is a *deep embedding*: programs and types are **data** — values of inductive `Term` and `Ty` types, syntax trees rather than Lean code ([`Zag/Data.lean`](Zag/Data.lean)):
 
 ```lean
 inductive Ty where
@@ -174,9 +174,9 @@ inductive Term (primCtx : PrimitiveCtx) where
   -- also: primFunc, primEq/primLt/primGt, mkStruct, structProj
 ```
 
-Because a program is inert data, we can write Lean functions that take it apart — an evaluator `Term.eval`, a typing relation `hasType`, and automations that pattern-match on its structure. (In a *shallow* embedding the program dissolves into Lean and you can only reason about its translation, never about the program itself.)
+Because a program is inert data, we can write Lean functions that take it apart — an evaluator `Term.eval` ([`Zag/Theory.lean`](Zag/Theory.lean)), a typing relation `hasType` ([`Zag/Data.lean`](Zag/Data.lean)), and automations that pattern-match on its structure. (In a *shallow* embedding the program dissolves into Lean and you can only reason about its translation, never about the program itself.)
 
-To bring in a new language you supply three things. Take a small SSA language (similar to LLVM IR), in `Lang/SSA.lean`:
+To bring in a new language you supply three things. Take a small SSA language (similar to LLVM IR), in [`Lang/SSA.lean`](Lang/SSA.lean):
 
 **1. The raw syntax** — the AST (`SSAExpr`/`SSAValue`) with `let_`, `ite`, loops and `yield`:
 
@@ -190,7 +190,7 @@ inductive SSAExpr primCtx where
 end
 ```
 
-**2. The primitive semantics** — the built-in types and how operations evaluate:
+**2. The primitive semantics** — the built-in types ([`PrimitiveCtx`](Zag/Data.lean)) and how operations evaluate ([`PrimFuncCtx`](Zag/Data.lean)):
 
 ```lean
 abbrev natCtx : PrimitiveCtx := [("Nat", Nat), ("Bool", Bool)]
@@ -198,8 +198,9 @@ abbrev natFuncCtx : PrimFuncCtx natCtx :=
   [ ("add", natBinaryFunc Nat.add), ("sub", natBinaryFunc Nat.sub)
   , ("mul", natBinaryFunc Nat.mul), ("div", natBinaryFunc Nat.div) ]
 ```
+([`Test/Gauss/SSA.lean`](Test/Gauss/SSA.lean))
 
-**3. `toTerm`** — lower the AST into Zag's core `Term`, one clause per constructor. Most are direct: a source `ite` becomes a `Term.ite`, while the interesting clauses encode control flow: a loop lowers to `Term.recurse`, a `let_` extends the variable context, and a `yield` becomes a recursive call to the enclosing loop's motive. Programs can then be written with a custom `ssa%` syntax:
+**3. `toTerm`** ([`Lang/SSA.lean`](Lang/SSA.lean)) — lower the AST into Zag's core `Term`, one clause per constructor. Most are direct: a source `ite` becomes a `Term.ite`, while the interesting clauses encode control flow: a loop lowers to `Term.recurse`, a `let_` extends the variable context, and a `yield` becomes a recursive call to the enclosing loop's motive. Programs can then be written with a custom `ssa%` syntax:
 
 ```lean
 def lhsProgram (n : Nat) : Term natCtx :=
@@ -220,6 +221,7 @@ def lhsProgram (n : Nat) : Term natCtx :=
     }
   } : SSAExpr natCtx).toTerm
 ```
+([`Test/Gauss/SSA.lean`](Test/Gauss/SSA.lean))
 
 The `ssa%` block is only sugar — `toTerm` erases it entirely, leaving a plain `Term` value. You can see the result directly (`#eval lhsProgram 3` prints the raw AST). For symbolic `n` it is the following, writing `NatTy` for `.prim "Nat"`, `stateTys` for the loop-state type `[NatTy, NatTy]`, and `Term.nat k` for a `Nat` literal:
 
@@ -241,7 +243,7 @@ The whole loop is one `recurse` over a struct-packed state `(i, acc)`; `.var 0` 
 
 So far `Pr` has just been "the type of propositions." Its design deserves a closer look, because it is what makes automation possible at all.
 
-`Pr` is an *inductive datatype* of propositions — not an arbitrary Lean `Prop`, but a small fixed grammar:
+`Pr` is an *inductive datatype* of propositions ([`Zag/Data.lean`](Zag/Data.lean)) — not an arbitrary Lean `Prop`, but a small fixed grammar:
 
 ```lean
 inductive Pr (primCtx : PrimitiveCtx) where
@@ -254,7 +256,7 @@ inductive Pr (primCtx : PrimitiveCtx) where
 
 Because a `Pr` is *data* with finitely many shapes, a `MetaProgram` can pattern-match on it and take it apart — turn a `hasType` of an `ite` into three smaller `hasType`s, peel a `forallTerm`, split an `and`. You cannot case-analyse an arbitrary Lean `Prop` like that. Restricting propositions to this grammar is exactly the price that buys the ability to automate reasoning over them.
 
-A `Pr` is only syntax. Its *meaning* is a genuine Lean proposition, assigned by `Pr.interp`, which just reads each shape off as the corresponding logical connective:
+A `Pr` is only syntax. Its *meaning* is a genuine Lean proposition, assigned by `Pr.interp` ([`Zag/Theory.lean`](Zag/Theory.lean)), which just reads each shape off as the corresponding logical connective:
 
 ```lean
 Pr.interp ... (.eq ctx ty x y)  =  «x and y are typed-equal at ty»
@@ -262,7 +264,7 @@ Pr.interp ... (.and p q)        =  Pr.interp ... p ∧ Pr.interp ... q
 Pr.interp ... (.forallTerm p)   =  ∀ x, Pr.interp ... p
 ```
 
-And `Pr.Provable p` is nothing more than *holding a Lean proof of `Pr.interp p`*:
+And `Pr.Provable p` ([`Zag/Theory.lean`](Zag/Theory.lean)) is nothing more than *holding a Lean proof of `Pr.interp p`*:
 
 ```lean
 inductive Pr.Provable ... (p : Pr primCtx) : Prop
@@ -271,14 +273,14 @@ inductive Pr.Provable ... (p : Pr primCtx) : Prop
 
 That is the honest bottom line. Proving a `Pr` is *just* proving its interpretation as an ordinary Lean proposition. A `MetaProgram` never proves anything you could not have proved by hand — it only lightens the burden, rewriting one `Pr` into smaller `Pr`s whose interpretations are easier to establish, until the leaves are plain Lean proofs.
 
-**The Gauss example.** The theorem "the loop summing `1 + 2 + ... + n` returns `n * (n + 1) / 2`" is the `Pr` that equates two programs — the loop `lhsProgram n` and the closed form `rhsTerm n`, at type `Nat`:
+**The Gauss example.** The theorem "the loop summing `1 + 2 + ... + n` returns `n * (n + 1) / 2`" is the `Pr` that equates two programs — the loop `lhsProgram n` and the closed form `rhsTerm n`, at type `Nat` ([`Test/Gauss/Rec.lean`](Test/Gauss/Rec.lean)):
 
 ```lean
 def gaussStatement (n : Nat) : Pr natCtx :=
   .eq [] NatTy (lhsProgram n) (rhsTerm n)
 ```
 
-Its interpretation `Pr.interp ... (gaussStatement n)` unfolds to two familiar demands: that both programs are well-typed, and that they evaluate to the same `Nat`. The typing demand is handled by `unifyType` — a `MetaProgram` that decomposes `hasType` goals by the structure of the term (e.g. `hasType ctx (ite c t e) ty` splits into `c : Bool`, `t : ty`, `e : ty`):
+Its interpretation `Pr.interp ... (gaussStatement n)` unfolds to two familiar demands: that both programs are well-typed, and that they evaluate to the same `Nat`. The typing demand is handled by `unifyType` ([`Meta/UnifyType.lean`](Meta/UnifyType.lean)) — a `MetaProgram` that decomposes `hasType` goals by the structure of the term (e.g. `hasType ctx (ite c t e) ty` splits into `c : Bool`, `t : ty`, `e : ty`):
 
 ```lean
 theorem bodyTerm_hasType : Term.hasType natCtx natFuncCtx bodyCtx bodyTerm NatTy := by
@@ -320,7 +322,7 @@ var 0  structProj
 
 Each leaf marked ok is resolved by `unifyType` matching against `primFuncMatch?`, `varMatch?`, or a known constructor type. After 20 fuel steps `native_decide` confirms the goal list is empty, and `toProvable` collapses the tree into a single proof. The evaluation demand is the real mathematics — an ordinary Lean proof that the loop computes the closed form — and, crucially, it is a proof about the loop's *real executable semantics*, not about some unverified tool's translation of it.
 
-Under the hood, `gaussStatement n` is obtained by instantiating a *predicate* — a `Pr` with a hole for the input:
+Under the hood, `gaussStatement n` is obtained by instantiating a *predicate* ([`Test/Gauss/Rec.lean`](Test/Gauss/Rec.lean)) — a `Pr` with a hole for the input:
 
 ```lean
 def gaussPredicate : Pr natCtx :=
@@ -372,10 +374,11 @@ So `gaussStatement n` is literally `gaussPredicate` with `Term.nat n` plugged in
                                        show it matches         |
                                         the closed form]       ok  ok
                                          |
-                                         ok
+                                          ok
 ```
+([`Meta/Induction.lean`](Meta/Induction.lean))
 
-At the base, both sides of `.eq` evaluate to `Val.nat 0` — the loop with `init=0` never enters the body (the condition `0 > 0` is false), and the closed form `0 * 1 / 2 = 0`. At each induction step, `gaussLiteralStep` unfolds exactly one loop iteration: given that `lhsProgram k` evaluates to `k*(k+1)/2` (extracted from the inductive hypothesis via `rhsTerm_eval_rhs`), it shows that `lhsProgram (k+1)` evaluates to `(k+1)*(k+2)/2` by chaining `cond_eval_succ` (the condition is true when `i = k+1`) and `step_eval_succ` (the body adds `k+1` to the accumulator). `gaussPredicate_congr` handles the bookkeeping of swapping a well-typed term `t` for the concrete `nat k` it evaluates to, so the step proved at the literal level lifts back to the term-quantified `natStepGoal`. Every edge carries a `prove` certificate; the whole tree collapses into a single `Pr.Provable natCtx natFuncCtx [] [] (gaussStatement n)`.
+At the base, both sides of `.eq` evaluate to `Val.nat 0` — the loop with `init=0` never enters the body (the condition `0 > 0` is false), and the closed form `0 * 1 / 2 = 0`. At each induction step, `gaussLiteralStep` ([`Test/Gauss/Rec.lean`](Test/Gauss/Rec.lean)) unfolds exactly one loop iteration: given that `lhsProgram k` evaluates to `k*(k+1)/2` (extracted from the inductive hypothesis via `rhsTerm_eval_rhs`), it shows that `lhsProgram (k+1)` evaluates to `(k+1)*(k+2)/2` by chaining `cond_eval_succ` (the condition is true when `i = k+1`) and `step_eval_succ` (the body adds `k+1` to the accumulator). `gaussPredicate_congr` handles the bookkeeping of swapping a well-typed term `t` for the concrete `nat k` it evaluates to, so the step proved at the literal level lifts back to the term-quantified `natStepGoal`. Every edge carries a `prove` certificate; the whole tree collapses into a single `Pr.Provable natCtx natFuncCtx [] [] (gaussStatement n)`.
 
 # what you trust
 
