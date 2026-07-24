@@ -129,32 +129,40 @@ def Term.motiveVal {primCtx : PrimitiveCtx} (stateTy resultTy : Ty) : Val primCt
     (cast (Ty.type.eq_6 primCtx [stateTy] resultTy).symm
       (fun _ => none))
 
-structure Term.RecCtx (primCtx : PrimitiveCtx) where
+structure Term.MotiveCtx (primCtx : PrimitiveCtx) where
   body : Term primCtx
   env : List (Val primCtx)
   stateTy : Ty
   resultTy : Ty
 
+/- Find the motive named by the de Bruijn variable `idx`, searching all enclosing motives. Returns it with the stack prefix up to and including it
+  (re-invoking a motive restarts that level, so inner motives are dropped). -/
+def Term.MotiveCtx.findMotive {primCtx : PrimitiveCtx} (idx : Nat)
+    (motives : List (Term.MotiveCtx primCtx)) : Option (Term.MotiveCtx primCtx × List (Term.MotiveCtx primCtx)) := do
+  let i ← motives.findIdx? (·.env.length + 1 = idx)
+  let motive ← motives[i]?
+  some (motive, motives.take (i + 1))
+
 mutual
 
 def Term.evalGo (primCtx : PrimitiveCtx) (primFuncCtx : PrimFuncCtx primCtx)
-    (rec? : Option (Term.RecCtx primCtx)) (env : List (Val primCtx)) : Term primCtx → Option (Val primCtx)
+    (motives : List (Term.MotiveCtx primCtx)) (env : List (Val primCtx)) : Term primCtx → Option (Val primCtx)
 | .prim ty val => some (Val.mk ty val)
 | .primFunc name => do
     let pfunc ← primFuncCtx.get? name
     some pfunc.toVal
 | .var idx => env[idx]?
 | .primEq lhs rhs => do
-    let lhsVal ← Term.evalGo primCtx primFuncCtx rec? env lhs
-    let rhsVal ← Term.evalGo primCtx primFuncCtx rec? env rhs
+    let lhsVal ← Term.evalGo primCtx primFuncCtx motives env lhs
+    let rhsVal ← Term.evalGo primCtx primFuncCtx motives env rhs
     some (Val.bool (← Val.primEq? lhsVal rhsVal))
 | .primLt lhs rhs => do
-    let lhsVal ← Term.evalGo primCtx primFuncCtx rec? env lhs
-    let rhsVal ← Term.evalGo primCtx primFuncCtx rec? env rhs
+    let lhsVal ← Term.evalGo primCtx primFuncCtx motives env lhs
+    let rhsVal ← Term.evalGo primCtx primFuncCtx motives env rhs
     some (Val.bool (← Val.primLt? lhsVal rhsVal))
 | .primGt lhs rhs => do
-    let lhsVal ← Term.evalGo primCtx primFuncCtx rec? env lhs
-    let rhsVal ← Term.evalGo primCtx primFuncCtx rec? env rhs
+    let lhsVal ← Term.evalGo primCtx primFuncCtx motives env lhs
+    let rhsVal ← Term.evalGo primCtx primFuncCtx motives env rhs
     some (Val.bool (← Val.primGt? lhsVal rhsVal))
 | .mkStruct tys =>
     some <| Val.mk (.func tys (.struct tys))
@@ -165,66 +173,62 @@ def Term.evalGo (primCtx : PrimitiveCtx) (primFuncCtx : PrimFuncCtx primCtx)
       (cast (Ty.type.eq_6 primCtx [.struct tys] tys[idx]).symm
         (fun args => some ((cast (Ty.type.eq_5 primCtx tys) (args 0)) idx)))
 | .ite cond thenTerm elseTerm => do
-    let v ← Term.evalGo primCtx primFuncCtx rec? env cond
+    let v ← Term.evalGo primCtx primFuncCtx motives env cond
     match v.asBool? with
-    | some true => Term.evalGo primCtx primFuncCtx rec? env thenTerm
-    | some false => Term.evalGo primCtx primFuncCtx rec? env elseTerm
+    | some true => Term.evalGo primCtx primFuncCtx motives env thenTerm
+    | some false => Term.evalGo primCtx primFuncCtx motives env elseTerm
     | none => none
 | .app (.primFunc name) args => do
     let pfunc ← primFuncCtx.get? name
-    let vargs ← Term.evalList primCtx primFuncCtx rec? env args
+    let vargs ← Term.evalList primCtx primFuncCtx motives env args
     PrimFunc.apply pfunc vargs
 | .app (.mkStruct tys) args => do
-    let vargs ← Term.evalList primCtx primFuncCtx rec? env args
+    let vargs ← Term.evalList primCtx primFuncCtx motives env args
     Term.evalMkStruct tys vargs
 | .app (.structProj tys idx) [arg] => do
-    let value ← Term.evalGo primCtx primFuncCtx rec? env arg
+    let value ← Term.evalGo primCtx primFuncCtx motives env arg
     let fields ← value.as? (.struct tys)
     some (Val.mk tys[idx] ((cast (Ty.type.eq_5 primCtx tys) fields) idx))
--- TODO :: suppoort arbitrary recursion not just one recursor/motive at a time
--- for example if with have break_outer the inner loop body needs to be able to call the outer motive
 | .app (.var idx) [arg] =>
-    match rec? with
-    | some rec =>
-        if idx = rec.env.length + 1 then do
-          let state ← Term.evalGo primCtx primFuncCtx rec? env arg
-          let stateRaw ← state.as? rec.stateTy
-          let stateVal := Val.mk rec.stateTy stateRaw
-          let motiveVal := Term.motiveVal rec.stateTy rec.resultTy
-          let result ← Term.evalGo primCtx primFuncCtx rec? (rec.env ++ [stateVal, motiveVal]) rec.body
-          let resultRaw ← result.as? rec.resultTy
-          some (Val.mk rec.resultTy resultRaw)
-        else do
-          let vf ← Term.evalGo primCtx primFuncCtx rec? env (.var idx)
-          let varg ← Term.evalGo primCtx primFuncCtx rec? env arg
-          Term.evalApp vf [varg]
+    -- A `.var idx` in application position may be a motive of *any* enclosing recursor (e.g. an
+    -- inner loop body calling the outer motive to break out), so we search the whole recursor
+    -- stack rather than only the innermost context.
+    match Term.MotiveCtx.findMotive idx motives with
+    | some (motive, stack) => do
+        let state ← Term.evalGo primCtx primFuncCtx motives env arg
+        let stateRaw ← state.as? motive.stateTy
+        let stateVal := Val.mk motive.stateTy stateRaw
+        let motiveVal := Term.motiveVal motive.stateTy motive.resultTy
+        let result ← Term.evalGo primCtx primFuncCtx stack (motive.env ++ [stateVal, motiveVal]) motive.body
+        let resultRaw ← result.as? motive.resultTy
+        some (Val.mk motive.resultTy resultRaw)
     | none => do
-        let vf ← Term.evalGo primCtx primFuncCtx rec? env (.var idx)
-        let varg ← Term.evalGo primCtx primFuncCtx rec? env arg
+        let vf ← Term.evalGo primCtx primFuncCtx motives env (.var idx)
+        let varg ← Term.evalGo primCtx primFuncCtx motives env arg
         Term.evalApp vf [varg]
 | .app f args => do
-    let vf ← Term.evalGo primCtx primFuncCtx rec? env f
-    let vargs ← Term.evalList primCtx primFuncCtx rec? env args
+    let vf ← Term.evalGo primCtx primFuncCtx motives env f
+    let vargs ← Term.evalList primCtx primFuncCtx motives env args
     Term.evalApp vf vargs
 | .recurse resultTy init body => do
-    let v ← Term.evalGo primCtx primFuncCtx rec? env init
+    let v ← Term.evalGo primCtx primFuncCtx motives env init
     let motiveVal := Term.motiveVal v.ty resultTy
-    let recCtx : Term.RecCtx primCtx :=
+    let motiveCtx : Term.MotiveCtx primCtx :=
       { body := body, env := env, stateTy := v.ty, resultTy := resultTy }
-    Term.evalGo primCtx primFuncCtx (some recCtx) (env ++ [v, motiveVal]) body
+    Term.evalGo primCtx primFuncCtx (motives ++ [motiveCtx]) (env ++ [v, motiveVal]) body
 partial_fixpoint
 
 def Term.evalList (primCtx : PrimitiveCtx) (primFuncCtx : PrimFuncCtx primCtx)
-    (rec? : Option (Term.RecCtx primCtx)) (env : List (Val primCtx))
+    (motives : List (Term.MotiveCtx primCtx)) (env : List (Val primCtx))
     (terms : List (Term primCtx)) : Option (List (Val primCtx)) :=
-  terms.mapM (Term.evalGo primCtx primFuncCtx rec? env)
+  terms.mapM (Term.evalGo primCtx primFuncCtx motives env)
 partial_fixpoint
 
 end
 
 def Term.eval (primCtx : PrimitiveCtx) (primFuncCtx : PrimFuncCtx primCtx)
     (env : List (Val primCtx)) (term : Term primCtx) : Option (Val primCtx) :=
-  Term.evalGo primCtx primFuncCtx none env term
+  Term.evalGo primCtx primFuncCtx [] env term
 
 /- Termination of a partial `Option` evaluator is successful evaluation. -/
 def Term.Terminates (primCtx : PrimitiveCtx) (primFuncCtx : PrimFuncCtx primCtx)
