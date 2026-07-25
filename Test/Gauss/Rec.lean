@@ -1,4 +1,5 @@
-import Zag.Meta
+import Meta.Induction
+import Meta.UnifyType
 
 namespace Zag.Test.Gauss.Rec
 
@@ -56,11 +57,11 @@ def gaussStatement (n : Nat) : Pr natCtx :=
 def loopEnv (i : Nat) (env : List (Val natCtx)) : List (Val natCtx) :=
   env ++ [Val.nat i, Term.motiveVal NatTy NatTy]
 
-def loopRecCtx (env : List (Val natCtx)) : Term.RecCtx natCtx :=
+def loopRecCtx (env : List (Val natCtx)) : Term.MotiveCtx natCtx :=
   { body := bodyTerm, env := env, stateTy := NatTy, resultTy := NatTy }
 
 noncomputable def loopBodyEval (i : Nat) (env : List (Val natCtx)) : Option (Val natCtx) :=
-  Term.evalGo natCtx natFuncCtx (some (loopRecCtx env)) (loopEnv i env) bodyTerm
+  Term.evalGo natCtx natFuncCtx [loopRecCtx env] (loopEnv i env) bodyTerm
 
 theorem bodyTerm_hasType : Term.hasType natCtx natFuncCtx bodyCtx bodyTerm NatTy := by
   let program := Zag.Pr.MetaProgram.iterate (primCtx := natCtx) (primFuncCtx := natFuncCtx)
@@ -82,17 +83,20 @@ theorem lhsProgram_hasType (n : Nat) :
 theorem addFunc_hasType {varCtx : VarCtx} :
     Term.hasType natCtx natFuncCtx varCtx (.primFunc "add") (.func [NatTy, NatTy] NatTy) := by
   have hf := @Term.hasType.primFunc natCtx natFuncCtx varCtx ⟨0, by decide⟩
-  simpa [natFuncCtx, natBinaryFunc, PrimFunc.ty, NatTy] using hf
+  change Term.hasType natCtx natFuncCtx varCtx (.primFunc "add") (.func [NatTy, NatTy] NatTy) at hf
+  exact hf
 
 theorem mulFunc_hasType {varCtx : VarCtx} :
     Term.hasType natCtx natFuncCtx varCtx (.primFunc "mul") (.func [NatTy, NatTy] NatTy) := by
   have hf := @Term.hasType.primFunc natCtx natFuncCtx varCtx ⟨2, by decide⟩
-  simpa [natFuncCtx, natBinaryFunc, PrimFunc.ty, NatTy] using hf
+  change Term.hasType natCtx natFuncCtx varCtx (.primFunc "mul") (.func [NatTy, NatTy] NatTy) at hf
+  exact hf
 
 theorem divFunc_hasType {varCtx : VarCtx} :
     Term.hasType natCtx natFuncCtx varCtx (.primFunc "div") (.func [NatTy, NatTy] NatTy) := by
   have hf := @Term.hasType.primFunc natCtx natFuncCtx varCtx ⟨3, by decide⟩
-  simpa [natFuncCtx, natBinaryFunc, PrimFunc.ty, NatTy] using hf
+  change Term.hasType natCtx natFuncCtx varCtx (.primFunc "div") (.func [NatTy, NatTy] NatTy) at hf
+  exact hf
 
 theorem natBinaryApp_hasType {varCtx : VarCtx} {fn lhs rhs : Term natCtx}
     (hfn : Term.hasType natCtx natFuncCtx varCtx fn (.func [NatTy, NatTy] NatTy))
@@ -133,18 +137,18 @@ theorem lhsProgram_eval_unfold (i : Nat) :
   conv =>
     lhs
     simp [lhsProgram, Term.eval, Term.evalGo, Term.motiveVal, Term.nat]
-  change Term.evalGo natCtx natFuncCtx (some (loopRecCtx [])) (loopEnv i []) bodyTerm =
+  change Term.evalGo natCtx natFuncCtx [loopRecCtx []] (loopEnv i []) bodyTerm =
     loopBodyEval i []
   rfl
 
 theorem cond_eval_zero :
-    Term.evalGo natCtx natFuncCtx (some (loopRecCtx [])) (loopEnv 0 []) condTerm =
+    Term.evalGo natCtx natFuncCtx [loopRecCtx []] (loopEnv 0 []) condTerm =
       some (Val.bool false) := by
   unfold condTerm iTerm loopEnv
   simp [Term.evalGo, Term.nat, Val.primGt?, Val.primLt?]
 
 theorem cond_eval_succ (i : Nat) :
-    Term.evalGo natCtx natFuncCtx (some (loopRecCtx [])) (loopEnv (i + 1) []) condTerm =
+    Term.evalGo natCtx natFuncCtx [loopRecCtx []] (loopEnv (i + 1) []) condTerm =
       some (Val.bool true) := by
   unfold condTerm iTerm loopEnv
   simp [Term.evalGo, Term.nat, Val.primGt?, Val.primLt?]
@@ -154,12 +158,12 @@ theorem cond_eval_succ (i : Nat) :
   the induction step below chains from a hypothesis instead of re-deriving from scratch. -/
 theorem step_eval_succ (i V : Nat)
     (hbody : loopBodyEval i [] = some (Val.nat V)) :
-    Term.evalGo natCtx natFuncCtx (some (loopRecCtx [])) (loopEnv (i + 1) []) stepTerm =
+    Term.evalGo natCtx natFuncCtx [loopRecCtx []] (loopEnv (i + 1) []) stepTerm =
       some (Val.nat (V + (i + 1))) := by
   have hrec : Term.evalGo natCtx natFuncCtx
-      (some (loopRecCtx [])) (loopEnv (i + 1) []) recurseTerm =
+      [loopRecCtx []] (loopEnv (i + 1) []) recurseTerm =
         some (Val.nat V) := by
-    change Term.evalGo natCtx natFuncCtx (some (loopRecCtx []))
+    change Term.evalGo natCtx natFuncCtx [loopRecCtx []]
         [Val.nat (i + 1), Term.motiveVal NatTy NatTy]
         (.app (.var 1) [prevTerm]) = some (Val.nat V)
     unfold prevTerm iTerm loopRecCtx
@@ -174,7 +178,7 @@ theorem step_eval_succ (i V : Nat)
     lhs
     simp [loopEnv, stepTerm, iTerm, Term.evalGo, Term.evalList, PrimFunc.apply,
       PrimFuncCtx.get?, natFuncCtx]
-  rw [show Term.evalGo natCtx natFuncCtx (some (loopRecCtx []))
+  rw [show Term.evalGo natCtx natFuncCtx [loopRecCtx []]
       [Val.nat (i + 1), Term.motiveVal NatTy NatTy] recurseTerm =
         some (Val.nat V) by simpa [loopEnv] using hrec]
   simp [natBinaryFunc]
@@ -248,11 +252,11 @@ theorem rhsTermOf_hasType {t : Term natCtx} (ht : Term.hasType natCtx natFuncCtx
 theorem lhsProgramOf_eval_unfold {t : Term natCtx} {k : Nat}
     (ht : Term.eval natCtx natFuncCtx [] t = some (Val.nat k)) :
     Term.eval natCtx natFuncCtx [] (lhsProgramOf t) = loopBodyEval k [] := by
-  have ht' : Term.evalGo natCtx natFuncCtx none [] t = some (Val.nat k) := ht
+  have ht' : Term.evalGo natCtx natFuncCtx [] [] t = some (Val.nat k) := ht
   conv =>
     lhs
     simp [lhsProgramOf, Term.eval, Term.evalGo, Term.motiveVal, ht']
-  change Term.evalGo natCtx natFuncCtx (some (loopRecCtx [])) (loopEnv k []) bodyTerm =
+  change Term.evalGo natCtx natFuncCtx [loopRecCtx []] (loopEnv k []) bodyTerm =
     loopBodyEval k []
   rfl
 
@@ -260,13 +264,13 @@ theorem lhsProgramOf_eval_unfold {t : Term natCtx} {k : Nat}
   syntax — this is what lets a term `x` and the literal `nat k` it evaluates to stand in for
   each other freely. -/
 theorem lhsProgramOf_congr {a b : Term natCtx}
-    (h : Term.evalGo natCtx natFuncCtx none [] a = Term.evalGo natCtx natFuncCtx none [] b) :
+    (h : Term.evalGo natCtx natFuncCtx [] [] a = Term.evalGo natCtx natFuncCtx [] [] b) :
     Term.eval natCtx natFuncCtx [] (lhsProgramOf a) = Term.eval natCtx natFuncCtx [] (lhsProgramOf b) := by
   unfold lhsProgramOf Term.eval
   simp only [Term.evalGo, h]
 
 theorem rhsTermOf_congr {a b : Term natCtx}
-    (h : Term.evalGo natCtx natFuncCtx none [] a = Term.evalGo natCtx natFuncCtx none [] b) :
+    (h : Term.evalGo natCtx natFuncCtx [] [] a = Term.evalGo natCtx natFuncCtx [] [] b) :
     Term.eval natCtx natFuncCtx [] (rhsTermOf a) = Term.eval natCtx natFuncCtx [] (rhsTermOf b) := by
   unfold rhsTermOf Term.eval
   simp [Term.evalGo, Term.evalList, h]
@@ -277,7 +281,7 @@ theorem rhsTermOf_congr {a b : Term natCtx}
   to a less well-behaved predicate. -/
 theorem gaussEq_provable_congr {a b : Term natCtx}
     (hta : Term.hasType natCtx natFuncCtx [] a NatTy)
-    (hab : Term.evalGo natCtx natFuncCtx none [] a = Term.evalGo natCtx natFuncCtx none [] b)
+    (hab : Term.evalGo natCtx natFuncCtx [] [] a = Term.evalGo natCtx natFuncCtx [] [] b)
     (h : Pr.Provable natCtx natFuncCtx [] [] (.eq [] NatTy (lhsProgramOf b) (rhsTermOf b))) :
     Pr.Provable natCtx natFuncCtx [] [] (.eq [] NatTy (lhsProgramOf a) (rhsTermOf a)) := by
   rw [gaussEq_provable_iff] at h ⊢
@@ -309,9 +313,6 @@ theorem gaussStatement_eq (n : Nat) :
 theorem gaussPredicate_quantifierFree :
     Pr.MetaProgram.quantifierFree gaussPredicate = true := rfl
 
-/-- The eval-congruence bridge `natStepGoal_of_literal_step` needs: provability of
-  `gaussPredicate` instantiated at any Nat-typed term `t` is the same as provability of
-  `gaussStatement k`, given `t` evaluates to `k`. -/
 theorem gaussPredicate_congr {t : Term natCtx} {k : Nat}
     (ht : Term.hasType natCtx natFuncCtx [] t (.prim "Nat"))
     (hte : Term.eval natCtx natFuncCtx [] t = some (Val.nat k)) :
@@ -320,15 +321,13 @@ theorem gaussPredicate_congr {t : Term natCtx} {k : Nat}
       Pr.Provable natCtx natFuncCtx [] [] (gaussStatement k) := by
   rw [gaussPredicate_instantiate_eq, gaussStatement, lhsProgram_eq_lhsProgramOf,
     rhsTerm_eq_rhsTermOf]
-  have hte' : Term.evalGo natCtx natFuncCtx none [] t = some (Val.nat k) := hte
-  have hnat' : Term.evalGo natCtx natFuncCtx none [] (Term.nat k) = some (Val.nat k) := by
+  have hte' : Term.evalGo natCtx natFuncCtx [] [] t = some (Val.nat k) := hte
+  have hnat' : Term.evalGo natCtx natFuncCtx [] [] (Term.nat k) = some (Val.nat k) := by
     simp [Term.evalGo, Term.nat]
   constructor
   · exact gaussEq_provable_congr (natType k) (hnat'.trans hte'.symm)
   · exact gaussEq_provable_congr ht (hte'.trans hnat'.symm)
 
-/-- Base case: `gaussStatement 0` holds directly by evaluation — the loop condition is false
-  at `i = 0`, so both sides reduce to `0`. No induction needed for the base case. -/
 theorem gaussBaseCase :
     Pr.Provable natCtx natFuncCtx [] [] (gaussStatement 0) := by
   rw [gaussStatement, gaussEq_provable_iff]
@@ -337,15 +336,11 @@ theorem gaussBaseCase :
   have hnil : env = [] := List.eq_nil_of_length_eq_zero henv
   subst hnil
   rw [lhsProgram_eval_unfold]
-  change Term.evalGo natCtx natFuncCtx (some (loopRecCtx [])) (loopEnv 0 [])
+  change Term.evalGo natCtx natFuncCtx [loopRecCtx []] (loopEnv 0 [])
     (.ite condTerm stepTerm (Term.nat 0)) = Term.eval natCtx natFuncCtx [] (rhsTerm 0)
   rw [rhsTerm_eval_rhs]
   simp [Term.evalGo, cond_eval_zero, Term.nat]
 
-/-- The genuine induction step: `lhsProgram (k + 1)`'s value is derived *from*
-  `lhsProgram k`'s value (extracted from the hypothesis via `rhsTerm_eval_rhs`, which
-  fixes it to `k * (k + 1) / 2`) by chaining exactly one loop iteration
-  (`cond_eval_succ` + `step_eval_succ`) — it is never independently recomputed. -/
 theorem gaussLiteralStep (k : Nat) :
     Pr.Provable natCtx natFuncCtx [] [] (gaussStatement k) →
     Pr.Provable natCtx natFuncCtx [] [] (gaussStatement (k + 1)) := by
@@ -362,7 +357,7 @@ theorem gaussLiteralStep (k : Nat) :
     rw [← lhsProgram_eval_unfold]
     exact hprevVal
   rw [lhsProgram_eval_unfold]
-  change Term.evalGo natCtx natFuncCtx (some (loopRecCtx [])) (loopEnv (k + 1) [])
+  change Term.evalGo natCtx natFuncCtx [loopRecCtx []] (loopEnv (k + 1) [])
     (.ite condTerm stepTerm (Term.nat 0)) = Term.eval natCtx natFuncCtx [] (rhsTerm (k + 1))
   rw [rhsTerm_eval_rhs]
   simp [Term.evalGo, cond_eval_succ k, step_eval_succ k _ hbody, closedForm_succ]
@@ -383,10 +378,6 @@ def gaussInductionProgram (n : Nat) :
     Pr.MetaProgram natCtx natFuncCtx [] [] (gaussStatement n) :=
   Pr.MetaProgram.natInductionWithPredicate _ gaussPredicate n (gaussStatement_eq n)
     gaussPredicate_quantifierFree
-
--- gaussInductionProgram n produces exactly two goals:
---   Base case: gaussStatement 0
---   Induction step: ∀ x y, isSuccPr 0 (at x, y) → gaussPredicate[x] → gaussPredicate[y]
 
 theorem gaussProvable (n : Nat) :
     Pr.Provable natCtx natFuncCtx [] [] (gaussStatement n) :=

@@ -73,11 +73,11 @@ theorem evalMkStruct_state (i acc : Nat) :
 def loopEnv (i acc : Nat) (env : List (Val natCtx)) : List (Val natCtx) :=
   env ++ [stateVal i acc, Term.motiveVal stateTy NatTy]
 
-def loopRecCtx (env : List (Val natCtx)) : Term.RecCtx natCtx :=
+def loopRecCtx (env : List (Val natCtx)) : Term.MotiveCtx natCtx :=
   { body := bodyTerm, env := env, stateTy := stateTy, resultTy := NatTy }
 
 noncomputable def loopBodyEval (i acc : Nat) : Option (Val natCtx) :=
-  Term.evalGo natCtx natFuncCtx (some (loopRecCtx [])) (loopEnv i acc []) bodyTerm
+  Term.evalGo natCtx natFuncCtx [loopRecCtx []] (loopEnv i acc []) bodyTerm
 
 theorem lhsProgram_shape (n : Nat) :
     lhsProgram n = loopTerm n 0 := by
@@ -126,43 +126,40 @@ theorem loopTerm_eval_unfold (i acc : Nat) :
   simp [loopBodyEval, loopEnv, loopRecCtx, Term.motiveVal, stateVal]
 
 theorem cond_eval_zero (acc : Nat) :
-    Term.evalGo natCtx natFuncCtx (some (loopRecCtx [])) (loopEnv 0 acc []) condTerm =
+    Term.evalGo natCtx natFuncCtx [loopRecCtx []] (loopEnv 0 acc []) condTerm =
       some (Val.bool false) := by
   simp [loopEnv, condTerm, iTerm, stateTys, iIdx, Term.evalGo, Term.nat,
     Val.primGt?, Val.primLt?, stateVal, stateFields]
 
 theorem cond_eval_succ (i acc : Nat) :
-    Term.evalGo natCtx natFuncCtx (some (loopRecCtx [])) (loopEnv (i + 1) acc []) condTerm =
+    Term.evalGo natCtx natFuncCtx [loopRecCtx []] (loopEnv (i + 1) acc []) condTerm =
       some (Val.bool true) := by
   simp [loopEnv, condTerm, iTerm, stateTys, iIdx, Term.evalGo, Term.nat,
     Val.primGt?, Val.primLt?, stateVal, stateFields]
 
 theorem yield_eval_succ (i acc : Nat) :
-    Term.evalGo natCtx natFuncCtx (some (loopRecCtx [])) (loopEnv (i + 1) acc []) yieldTerm =
+    Term.evalGo natCtx natFuncCtx [loopRecCtx []] (loopEnv (i + 1) acc []) yieldTerm =
       (do
         let result ← loopBodyEval i (acc + (i + 1))
         let resultRaw ← result.as? NatTy
         some (Val.mk NatTy resultRaw)) := by
-  conv =>
-    lhs
-    simp [loopEnv, yieldTerm, nextStateTerm, nextITerm, nextAccTerm, iTerm, accTerm,
-      stateTys, iIdx, accIdx, Term.eval, Term.evalGo, Term.evalList,
-      PrimFunc.apply, PrimFuncCtx.get?, natFuncCtx, natBinaryFunc, Term.nat,
-      evalMkStruct_state, stateVal, stateFields]
-  simp [loopBodyEval, loopEnv, loopRecCtx, natFuncCtx, natBinaryFunc, stateVal]
+  simp [loopBodyEval, loopEnv, loopRecCtx, yieldTerm, nextStateTerm, nextITerm, nextAccTerm,
+    iTerm, accTerm, stateTys, iIdx, accIdx, Term.evalGo, Term.evalList,
+    Term.MotiveCtx.findMotive, PrimFunc.apply, PrimFuncCtx.get?, natFuncCtx, natBinaryFunc,
+    Term.nat, evalMkStruct_state, stateVal, stateFields]
 
 theorem loopTerm_eval_sumTo (i acc : Nat) :
     Term.eval natCtx natFuncCtx [] (loopTerm i acc) = some (Val.nat (acc + sumTo i)) := by
   induction i generalizing acc with
   | zero =>
       rw [loopTerm_eval_unfold]
-      change Term.evalGo natCtx natFuncCtx (some (loopRecCtx [])) (loopEnv 0 acc [])
+      change Term.evalGo natCtx natFuncCtx [loopRecCtx []] (loopEnv 0 acc [])
         (.ite condTerm yieldTerm accTerm) = _
       simp [Term.evalGo, cond_eval_zero acc]
       simp [Term.evalGo, loopEnv, accTerm, stateTys, accIdx, stateVal, stateFields, sumTo]
   | succ i ih =>
       rw [loopTerm_eval_unfold]
-      change Term.evalGo natCtx natFuncCtx (some (loopRecCtx [])) (loopEnv (i + 1) acc [])
+      change Term.evalGo natCtx natFuncCtx [loopRecCtx []] (loopEnv (i + 1) acc [])
         (.ite condTerm yieldTerm accTerm) = _
       simp [Term.evalGo, cond_eval_succ i acc]
       rw [yield_eval_succ]

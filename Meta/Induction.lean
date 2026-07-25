@@ -925,16 +925,16 @@ private theorem valBool_inj {primCtx : PrimitiveCtx} {a b : Bool}
 private theorem eval_primLt_bool {primCtx : PrimitiveCtx} {primFuncCtx : PrimFuncCtx primCtx}
     {a b : Term primCtx} {c : Bool}
     (h : Term.eq primCtx primFuncCtx [] (.prim "Bool") (.primLt a b) (Term.bool c)) :
-    ∃ va vb, Term.evalGo primCtx primFuncCtx none [] a = some va ∧
-      Term.evalGo primCtx primFuncCtx none [] b = some vb ∧
+    ∃ va vb, Term.evalGo primCtx primFuncCtx [] [] a = some va ∧
+      Term.evalGo primCtx primFuncCtx [] [] b = some vb ∧
       Val.primLt? va vb = some c := by
   have heval := h.eq [] rfl
   simp only [Term.eval, Term.evalGo, Term.bool, Val.mk_ofBool] at heval
-  cases hva : Term.evalGo primCtx primFuncCtx none [] a with
+  cases hva : Term.evalGo primCtx primFuncCtx [] [] a with
   | none => rw [hva] at heval; simp at heval
   | some va =>
       rw [hva] at heval
-      cases hvb : Term.evalGo primCtx primFuncCtx none [] b with
+      cases hvb : Term.evalGo primCtx primFuncCtx [] [] b with
       | none => rw [hvb] at heval; simp at heval
       | some vb =>
           rw [hvb] at heval
@@ -1029,8 +1029,8 @@ theorem isSuccPr_extract {primCtx : PrimitiveCtx} {primFuncCtx : PrimFuncCtx pri
   obtain ⟨kx, hkx⟩ := hkxOpt
   have hvaEq : va = Val.nat kx := asNat?_eq_some hkx
   subst hvaEq
-  obtain ⟨vb, hvb, hpltB⟩ : ∃ vb, Term.evalGo primCtx primFuncCtx none [] y = some vb ∧
-      Val.primLt? (Val.nat kx) vb = some true := by
+  obtain ⟨vb, hvb, hpltB⟩ : ∃ vb, Term.evalGo primCtx primFuncCtx [] [] y = some vb ∧
+       Val.primLt? (Val.nat kx) vb = some true := by
     obtain ⟨va', vb, hva', hvb, hplt⟩ := eval_primLt_bool hB'
     have : va' = Val.nat kx := by
       have hxx : Term.eval primCtx primFuncCtx [] x = some va' := hva'
