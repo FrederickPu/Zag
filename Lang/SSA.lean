@@ -132,7 +132,19 @@ def lets {primCtx : PrimitiveCtx} (bindings : List (String × SSAValue primCtx))
 def seqLetBindings {primCtx : PrimitiveCtx} (expr next : SSAExpr primCtx) : SSAExpr primCtx :=
   match expr with
   | .let_ name value body => .let_ name value (seqLetBindings body next)
+  | .seq expr body => .seq expr (seqLetBindings body next)
   | expr => .seq expr next
+
+theorem seqLetBindings_assoc {primCtx : PrimitiveCtx}
+    (expr next final : SSAExpr primCtx) :
+    seqLetBindings (seqLetBindings expr next) final =
+      seqLetBindings expr (seqLetBindings next final) := by
+  cases expr with
+  | ret value => rfl
+  | let_ name value body => simp [seqLetBindings, seqLetBindings_assoc body next final]
+  | seq expr body => simp [seqLetBindings, seqLetBindings_assoc body next final]
+  | ite cond thenExpr elseExpr => rfl
+  | yield nextValues => rfl
 
 mutual
 
@@ -165,9 +177,9 @@ def valueToTerm? {primCtx : PrimitiveCtx} : SSAValue primCtx -> LowerCtx primCtx
     toTerm? body ctx
 | @SSAValue.phi _ _ scope idx, _ctx =>
     some (scope.phiTerm idx)
-| .loopBody _varCtx state init resultTy body, ctx => do
+| .loopBody varCtx state init resultTy body, ctx => do
     let initTerms <- valuesToTerms? init ctx
-    let base := 0
+    let base := varCtx.length
     let scope : LoopScope state := { base := base, resultTy := resultTy }
     let bodyTerm <- toTerm?
       body
