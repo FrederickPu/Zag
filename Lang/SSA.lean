@@ -1,5 +1,20 @@
 import Zag.Theory
 
+/-!
+  llvm ir inspired `Single Static Assignment` style DSL for specifiying programs.
+  The one difference that makes this not fully `SSA` is that we allow scoped variable shadowing.
+  Namlely if in a scope we have
+  ```
+  {outer scope}
+  let x := 10
+    let x := true
+    {remaining scope}
+  ```
+  then `x` will refer to `true` and have type `bool` in the remaining scope but `x` will still refer
+  to `10` and have type `nat` in the outer scope.
+  That is shadowing can only effect the scope in which the variable was shadowed.
+-/
+
 namespace Zag.Lang.SSA
 
 open Zag
