@@ -4,40 +4,40 @@ namespace Zag
 
 namespace Pr
 
-structure MetaProgram (primCtx : PrimitiveCtx) (primFuncCtx : PrimFuncCtx primCtx)
-    (ctxTy : List Ty) (ctxTerm : List (Term primCtx)) (goal : Pr primCtx) where
-  goals : List (Pr primCtx)
+structure MetaProgram (ctx : Ctx)
+    (ctxTy : List Ty) (ctxTerm : List (Term ctx.primCtx)) (goal : Pr ctx.primCtx) where
+  goals : List (Pr ctx.primCtx)
   prove : (∀ subgoal, subgoal ∈ goals →
-    Pr.Provable primCtx primFuncCtx ctxTy ctxTerm subgoal) →
-      Pr.Provable primCtx primFuncCtx ctxTy ctxTerm goal
+    Pr.Provable ctx ctxTy ctxTerm subgoal) →
+      Pr.Provable ctx ctxTy ctxTerm goal
 
 namespace MetaProgram
 
-def lift {primCtx : PrimitiveCtx} {primFuncCtx : PrimFuncCtx primCtx}
-    {ctxTy : List Ty} {ctxTerm : List (Term primCtx)} {goal : Pr primCtx}
-    (proof : Pr.Provable primCtx primFuncCtx ctxTy ctxTerm goal) :
-    MetaProgram primCtx primFuncCtx ctxTy ctxTerm goal where
+def lift {ctx : Ctx}
+    {ctxTy : List Ty} {ctxTerm : List (Term ctx.primCtx)} {goal : Pr ctx.primCtx}
+    (proof : Pr.Provable ctx ctxTy ctxTerm goal) :
+    MetaProgram ctx ctxTy ctxTerm goal where
   goals := []
   prove := by
     intro _
     exact proof
 
-theorem toProvable {primCtx : PrimitiveCtx} {primFuncCtx : PrimFuncCtx primCtx}
-    {ctxTy : List Ty} {ctxTerm : List (Term primCtx)} {goal : Pr primCtx}
-    (program : MetaProgram primCtx primFuncCtx ctxTy ctxTerm goal)
+theorem toProvable {ctx : Ctx}
+    {ctxTy : List Ty} {ctxTerm : List (Term ctx.primCtx)} {goal : Pr ctx.primCtx}
+    (program : MetaProgram ctx ctxTy ctxTerm goal)
     (closed : program.goals = []) :
-    Pr.Provable primCtx primFuncCtx ctxTy ctxTerm goal := by
+    Pr.Provable ctx ctxTy ctxTerm goal := by
   apply program.prove
   intro subgoal hsubgoal
   rw [closed] at hsubgoal
   cases hsubgoal
 
-def refine {primCtx : PrimitiveCtx} {primFuncCtx : PrimFuncCtx primCtx}
-    {ctxTy : List Ty} {ctxTerm : List (Term primCtx)} {goal : Pr primCtx}
-    (program : MetaProgram primCtx primFuncCtx ctxTy ctxTerm goal)
+def refine {ctx : Ctx}
+    {ctxTy : List Ty} {ctxTerm : List (Term ctx.primCtx)} {goal : Pr ctx.primCtx}
+    (program : MetaProgram ctx ctxTy ctxTerm goal)
     (next : ∀ subgoal, subgoal ∈ program.goals →
-      MetaProgram primCtx primFuncCtx ctxTy ctxTerm subgoal) :
-    MetaProgram primCtx primFuncCtx ctxTy ctxTerm goal where
+      MetaProgram ctx ctxTy ctxTerm subgoal) :
+    MetaProgram ctx ctxTy ctxTerm goal where
   goals := program.goals.attach.flatMap fun subgoal =>
     (next subgoal.val subgoal.property).goals
   prove := by
@@ -50,35 +50,35 @@ def refine {primCtx : PrimitiveCtx} {primFuncCtx : PrimFuncCtx primCtx}
     exact List.mem_flatMap.mpr
       ⟨⟨subgoal, hsubgoal⟩, by simp, hgenerated⟩
 
-def iterate {primCtx : PrimitiveCtx} {primFuncCtx : PrimFuncCtx primCtx}
-    {ctxTy : List Ty} {ctxTerm : List (Term primCtx)}
+def iterate {ctx : Ctx}
+    {ctxTy : List Ty} {ctxTerm : List (Term ctx.primCtx)}
     (fuel : Nat)
-    (step : (goal : Pr primCtx) → MetaProgram primCtx primFuncCtx ctxTy ctxTerm goal) :
-    (goal : Pr primCtx) → MetaProgram primCtx primFuncCtx ctxTy ctxTerm goal
+    (step : (goal : Pr ctx.primCtx) → MetaProgram ctx ctxTy ctxTerm goal) :
+    (goal : Pr ctx.primCtx) → MetaProgram ctx ctxTy ctxTerm goal
 | goal =>
     match fuel with
     | 0 => step goal
     | n + 1 => (step goal).refine fun subgoal _ => iterate n step subgoal
 
-def complete {primCtx : PrimitiveCtx} {primFuncCtx : PrimFuncCtx primCtx}
-    {ctxTy : List Ty} {ctxTerm : List (Term primCtx)} {goal : Pr primCtx}
-    (program : MetaProgram primCtx primFuncCtx ctxTy ctxTerm goal) : Prop :=
-  Pr.Provable primCtx primFuncCtx ctxTy ctxTerm goal →
+def complete {ctx : Ctx}
+    {ctxTy : List Ty} {ctxTerm : List (Term ctx.primCtx)} {goal : Pr ctx.primCtx}
+    (program : MetaProgram ctx ctxTy ctxTerm goal) : Prop :=
+  Pr.Provable ctx ctxTy ctxTerm goal →
     ∀ subgoal, subgoal ∈ program.goals →
-      Pr.Provable primCtx primFuncCtx ctxTy ctxTerm subgoal
+      Pr.Provable ctx ctxTy ctxTerm subgoal
 
-theorem lift_complete {primCtx : PrimitiveCtx} {primFuncCtx : PrimFuncCtx primCtx}
-    {ctxTy : List Ty} {ctxTerm : List (Term primCtx)} {goal : Pr primCtx}
-    (proof : Pr.Provable primCtx primFuncCtx ctxTy ctxTerm goal) :
+theorem lift_complete {ctx : Ctx}
+    {ctxTy : List Ty} {ctxTerm : List (Term ctx.primCtx)} {goal : Pr ctx.primCtx}
+    (proof : Pr.Provable ctx ctxTy ctxTerm goal) :
     complete (lift proof) := by
   intro _ subgoal hsubgoal
   simp [lift] at hsubgoal
 
-theorem refine_complete {primCtx : PrimitiveCtx} {primFuncCtx : PrimFuncCtx primCtx}
-    {ctxTy : List Ty} {ctxTerm : List (Term primCtx)} {goal : Pr primCtx}
-    (program : MetaProgram primCtx primFuncCtx ctxTy ctxTerm goal)
+theorem refine_complete {ctx : Ctx}
+    {ctxTy : List Ty} {ctxTerm : List (Term ctx.primCtx)} {goal : Pr ctx.primCtx}
+    (program : MetaProgram ctx ctxTy ctxTerm goal)
     (next : ∀ subgoal, subgoal ∈ program.goals →
-      MetaProgram primCtx primFuncCtx ctxTy ctxTerm subgoal)
+      MetaProgram ctx ctxTy ctxTerm subgoal)
     (hprogram : complete program)
     (hnext : ∀ subgoal hsubgoal, complete (next subgoal hsubgoal)) :
     complete (program.refine next) := by
@@ -88,25 +88,25 @@ theorem refine_complete {primCtx : PrimitiveCtx} {primFuncCtx : PrimFuncCtx prim
   have hsubgoalProv := hprogram hgoal subgoal hsubgoal
   exact hnext subgoal hsubgoal hsubgoalProv generated hgeneratedNext
 
-private def structuralGoals {primCtx : PrimitiveCtx} : Pr primCtx → List (Pr primCtx)
+private def structuralGoals {ctx : Ctx} : Pr ctx.primCtx → List (Pr ctx.primCtx)
 | .and p q => structuralGoals p ++ structuralGoals q
 | .forallTy p => (structuralGoals p).map Pr.forallTy
 | .forallTerm p => (structuralGoals p).map Pr.forallTerm
 | p => [p]
 
-private theorem structuralInterprets {primCtx : PrimitiveCtx} {primFuncCtx : PrimFuncCtx primCtx}
-    {ctxTy : List Ty} {ctxTerm : List (Term primCtx)} (goal : Pr primCtx) :
+private theorem structuralInterprets {ctx : Ctx}
+    {ctxTy : List Ty} {ctxTerm : List (Term ctx.primCtx)} (goal : Pr ctx.primCtx) :
     (∀ subgoal, subgoal ∈ structuralGoals goal →
-      Pr.Provable primCtx primFuncCtx ctxTy ctxTerm subgoal) →
-      Pr.interp primCtx primFuncCtx ctxTy ctxTerm goal := by
+      Pr.Provable ctx ctxTy ctxTerm subgoal) →
+      Pr.interp ctx ctxTy ctxTerm goal := by
   induction goal generalizing ctxTy ctxTerm with
-  | eq ctx ty lhs rhs =>
+  | eq varCtx ty lhs rhs =>
       intro proveSubgoals
-      cases proveSubgoals (.eq ctx ty lhs rhs) (by simp [structuralGoals]) with
+      cases proveSubgoals (.eq varCtx ty lhs rhs) (by simp [structuralGoals]) with
       | ofProof proof => exact proof
-  | hasType ctx term ty =>
+  | hasType varCtx term ty =>
       intro proveSubgoals
-      cases proveSubgoals (.hasType ctx term ty) (by simp [structuralGoals]) with
+      cases proveSubgoals (.hasType varCtx term ty) (by simp [structuralGoals]) with
       | ofProof proof => exact proof
   | and p q ihp ihq =>
       intro proveSubgoals
@@ -129,7 +129,7 @@ private theorem structuralInterprets {primCtx : PrimitiveCtx} {primFuncCtx : Pri
       intro proveSubgoals α
       apply ih
       intro subgoal hsubgoal
-      have hforall : Pr.Provable primCtx primFuncCtx ctxTy ctxTerm (.forallTy subgoal) :=
+      have hforall : Pr.Provable ctx ctxTy ctxTerm (.forallTy subgoal) :=
         proveSubgoals (.forallTy subgoal) (by
           change .forallTy subgoal ∈ (structuralGoals p).map Pr.forallTy
           exact List.mem_map.mpr ⟨subgoal, hsubgoal, rfl⟩)
@@ -139,15 +139,15 @@ private theorem structuralInterprets {primCtx : PrimitiveCtx} {primFuncCtx : Pri
       intro proveSubgoals x
       apply ih
       intro subgoal hsubgoal
-      have hforall : Pr.Provable primCtx primFuncCtx ctxTy ctxTerm (.forallTerm subgoal) :=
+      have hforall : Pr.Provable ctx ctxTy ctxTerm (.forallTerm subgoal) :=
         proveSubgoals (.forallTerm subgoal) (by
           change .forallTerm subgoal ∈ (structuralGoals p).map Pr.forallTerm
           exact List.mem_map.mpr ⟨subgoal, hsubgoal, rfl⟩)
       cases hforall with
       | ofProof proof => exact Pr.Provable.ofProof (proof x)
-def structural {primCtx : PrimitiveCtx} {primFuncCtx : PrimFuncCtx primCtx}
-    {ctxTy : List Ty} {ctxTerm : List (Term primCtx)} (goal : Pr primCtx) :
-    MetaProgram primCtx primFuncCtx ctxTy ctxTerm goal where
+def structural {ctx : Ctx}
+    {ctxTy : List Ty} {ctxTerm : List (Term ctx.primCtx)} (goal : Pr ctx.primCtx) :
+    MetaProgram ctx ctxTy ctxTerm goal where
   goals := structuralGoals goal
   prove := by
     intro proveSubgoals

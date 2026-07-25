@@ -77,6 +77,32 @@ def primGt? {primCtx : PrimitiveCtx} (lhs rhs : Val primCtx) : Option Bool :=
 
 end Val
 
+namespace Op
+
+/- binary comparison operator built from a raw `Val` comparator: defined on two operands of the
+  same type, always yielding `Bool`. `eq` is built from this; `lt`/`gt` implementations
+  (e.g. in a Peano library) are too. -/
+def compare {primCtx : PrimitiveCtx} (cmp : Val primCtx → Val primCtx → Option Bool) : Op primCtx where
+  arity := 2
+  out tys := if tys 0 = tys 1 then some (.prim "Bool") else none
+  interp {_tys _r} _hout vals :=
+    match vals with
+    | [lhs, rhs] => do
+        let b ← cmp lhs rhs
+        (Val.bool b).as? _r
+    | _ => none
+
+/- the built-in equality operator; pinned to `Val.primEq?` -/
+def eq {primCtx : PrimitiveCtx} : Op primCtx := compare Val.primEq?
+
+end Op
+
+/- Look up the operator named `name`: `eq` is built in (like `Nat`/`Bool` in `PrimitiveCtx.get?`),
+  every other operator — including `lt`/`gt` — must be supplied by the context. -/
+def OpCtx.get? {primCtx : PrimitiveCtx} (opCtx : OpCtx primCtx) (name : String) : Option (Op primCtx) :=
+  if name = "eq" then some Op.eq
+  else (opCtx.find? (·.1 = name)).map (·.2)
+
 /- converts a partial function `f?` into a total function `f` if `f?` returns a value on all inputs
   otherwise returns none -/
 def finPiOption : {n : Nat} → {A : Fin n → Type} → ((i : Fin n) → Option (A i)) → Option ((i : Fin n) → A i)
@@ -145,101 +171,121 @@ def Term.MotiveCtx.findMotive {primCtx : PrimitiveCtx} (idx : Nat)
 
 mutual
 
-def Term.evalGo (primCtx : PrimitiveCtx) (primFuncCtx : PrimFuncCtx primCtx)
-    (motives : List (Term.MotiveCtx primCtx)) (env : List (Val primCtx)) : Term primCtx → Option (Val primCtx)
+def Term.evalGo (ctx : Ctx)
+    (motives : List (Term.MotiveCtx ctx.primCtx)) (env : List (Val ctx.primCtx)) :
+    Term ctx.primCtx → Option (Val ctx.primCtx)
 | .prim ty val => some (Val.mk ty val)
 | .primFunc name => do
-    let pfunc ← primFuncCtx.get? name
+    let pfunc ← ctx.primFuncCtx.get? name
     some pfunc.toVal
 | .var idx => env[idx]?
-| .primEq lhs rhs => do
-    let lhsVal ← Term.evalGo primCtx primFuncCtx motives env lhs
-    let rhsVal ← Term.evalGo primCtx primFuncCtx motives env rhs
-    some (Val.bool (← Val.primEq? lhsVal rhsVal))
-| .primLt lhs rhs => do
-    let lhsVal ← Term.evalGo primCtx primFuncCtx motives env lhs
-    let rhsVal ← Term.evalGo primCtx primFuncCtx motives env rhs
-    some (Val.bool (← Val.primLt? lhsVal rhsVal))
-| .primGt lhs rhs => do
-    let lhsVal ← Term.evalGo primCtx primFuncCtx motives env lhs
-    let rhsVal ← Term.evalGo primCtx primFuncCtx motives env rhs
-    some (Val.bool (← Val.primGt? lhsVal rhsVal))
+| .op name args => do
+    let oper ← ctx.opCtx.get? name
+    let vargs ← Term.evalList ctx motives env args
+    oper.applyVals vargs
 | .mkStruct tys =>
     some <| Val.mk (.func tys (.struct tys))
-      (cast (Ty.type.eq_6 primCtx tys (.struct tys)).symm
-        (fun args => some (cast (Ty.type.eq_5 primCtx tys).symm args)))
+      (cast (Ty.type.eq_6 ctx.primCtx tys (.struct tys)).symm
+        (fun args => some (cast (Ty.type.eq_5 ctx.primCtx tys).symm args)))
 | .structProj tys idx =>
     some <| Val.mk (.func [.struct tys] tys[idx])
-      (cast (Ty.type.eq_6 primCtx [.struct tys] tys[idx]).symm
-        (fun args => some ((cast (Ty.type.eq_5 primCtx tys) (args 0)) idx)))
+      (cast (Ty.type.eq_6 ctx.primCtx [.struct tys] tys[idx]).symm
+        (fun args => some ((cast (Ty.type.eq_5 ctx.primCtx tys) (args 0)) idx)))
 | .ite cond thenTerm elseTerm => do
-    let v ← Term.evalGo primCtx primFuncCtx motives env cond
+    let v ← Term.evalGo ctx motives env cond
     match v.asBool? with
-    | some true => Term.evalGo primCtx primFuncCtx motives env thenTerm
-    | some false => Term.evalGo primCtx primFuncCtx motives env elseTerm
+    | some true => Term.evalGo ctx motives env thenTerm
+    | some false => Term.evalGo ctx motives env elseTerm
     | none => none
 | .app (.primFunc name) args => do
-    let pfunc ← primFuncCtx.get? name
-    let vargs ← Term.evalList primCtx primFuncCtx motives env args
+    let pfunc ← ctx.primFuncCtx.get? name
+    let vargs ← Term.evalList ctx motives env args
     PrimFunc.apply pfunc vargs
 | .app (.mkStruct tys) args => do
-    let vargs ← Term.evalList primCtx primFuncCtx motives env args
+    let vargs ← Term.evalList ctx motives env args
     Term.evalMkStruct tys vargs
 | .app (.structProj tys idx) [arg] => do
-    let value ← Term.evalGo primCtx primFuncCtx motives env arg
+    let value ← Term.evalGo ctx motives env arg
     let fields ← value.as? (.struct tys)
-    some (Val.mk tys[idx] ((cast (Ty.type.eq_5 primCtx tys) fields) idx))
+    some (Val.mk tys[idx] ((cast (Ty.type.eq_5 ctx.primCtx tys) fields) idx))
 | .app (.var idx) [arg] =>
     -- A `.var idx` in application position may be a motive of *any* enclosing recursor (e.g. an
     -- inner loop body calling the outer motive to break out), so we search the whole recursor
     -- stack rather than only the innermost context.
     match Term.MotiveCtx.findMotive idx motives with
     | some (motive, stack) => do
-        let state ← Term.evalGo primCtx primFuncCtx motives env arg
+        let state ← Term.evalGo ctx motives env arg
         let stateRaw ← state.as? motive.stateTy
         let stateVal := Val.mk motive.stateTy stateRaw
         let motiveVal := Term.motiveVal motive.stateTy motive.resultTy
-        let result ← Term.evalGo primCtx primFuncCtx stack (motive.env ++ [stateVal, motiveVal]) motive.body
+        let result ← Term.evalGo ctx stack (motive.env ++ [stateVal, motiveVal]) motive.body
         let resultRaw ← result.as? motive.resultTy
         some (Val.mk motive.resultTy resultRaw)
     | none => do
-        let vf ← Term.evalGo primCtx primFuncCtx motives env (.var idx)
-        let varg ← Term.evalGo primCtx primFuncCtx motives env arg
+        let vf ← Term.evalGo ctx motives env (.var idx)
+        let varg ← Term.evalGo ctx motives env arg
         Term.evalApp vf [varg]
 | .app f args => do
-    let vf ← Term.evalGo primCtx primFuncCtx motives env f
-    let vargs ← Term.evalList primCtx primFuncCtx motives env args
+    let vf ← Term.evalGo ctx motives env f
+    let vargs ← Term.evalList ctx motives env args
     Term.evalApp vf vargs
 | .recurse resultTy init body => do
-    let v ← Term.evalGo primCtx primFuncCtx motives env init
+    let v ← Term.evalGo ctx motives env init
     let motiveVal := Term.motiveVal v.ty resultTy
-    let motiveCtx : Term.MotiveCtx primCtx :=
+    let motiveCtx : Term.MotiveCtx ctx.primCtx :=
       { body := body, env := env, stateTy := v.ty, resultTy := resultTy }
-    Term.evalGo primCtx primFuncCtx (motives ++ [motiveCtx]) (env ++ [v, motiveVal]) body
+    Term.evalGo ctx (motives ++ [motiveCtx]) (env ++ [v, motiveVal]) body
 partial_fixpoint
 
-def Term.evalList (primCtx : PrimitiveCtx) (primFuncCtx : PrimFuncCtx primCtx)
-    (motives : List (Term.MotiveCtx primCtx)) (env : List (Val primCtx))
-    (terms : List (Term primCtx)) : Option (List (Val primCtx)) :=
-  terms.mapM (Term.evalGo primCtx primFuncCtx motives env)
+def Term.evalList (ctx : Ctx)
+    (motives : List (Term.MotiveCtx ctx.primCtx)) (env : List (Val ctx.primCtx))
+    (terms : List (Term ctx.primCtx)) : Option (List (Val ctx.primCtx)) :=
+  terms.mapM (Term.evalGo ctx motives env)
 partial_fixpoint
 
 end
 
-def Term.eval (primCtx : PrimitiveCtx) (primFuncCtx : PrimFuncCtx primCtx)
-    (env : List (Val primCtx)) (term : Term primCtx) : Option (Val primCtx) :=
-  Term.evalGo primCtx primFuncCtx [] env term
+def Term.eval (ctx : Ctx)
+    (env : List (Val ctx.primCtx)) (term : Term ctx.primCtx) : Option (Val ctx.primCtx) :=
+  Term.evalGo ctx [] env term
+
+/- Evaluating a comparison operator built by `Op.compare` on two values of equal type. -/
+theorem Op.applyVals_compare {primCtx : PrimitiveCtx}
+    (cmp : Val primCtx → Val primCtx → Option Bool)
+    (va vb : Val primCtx) (hty : va.ty = vb.ty) :
+    Op.applyVals (Op.compare cmp) [va, vb] = (cmp va vb).map Val.bool := by
+  dsimp [Op.applyVals, Op.compare]
+  rw [if_pos hty]
+  cases cmp va vb with
+  | none => rfl
+  | some c => rfl
+
+theorem Term.evalGo_op_compare {ctx : Ctx}
+    {motives : List (Term.MotiveCtx ctx.primCtx)} {env : List (Val ctx.primCtx)}
+    {name : String} {a b : Term ctx.primCtx}
+    {cmp : Val ctx.primCtx → Val ctx.primCtx → Option Bool}
+    {va vb : Val ctx.primCtx}
+    (hop : ctx.opCtx.get? name = some (Op.compare cmp))
+    (ha : Term.evalGo ctx motives env a = some va)
+    (hb : Term.evalGo ctx motives env b = some vb)
+    (hty : va.ty = vb.ty) :
+    Term.evalGo ctx motives env (.op name [a, b]) = (cmp va vb).map Val.bool := by
+  have hform :
+      Term.evalGo ctx motives env (.op name [a, b]) =
+        Op.applyVals (Op.compare cmp) [va, vb] := by
+    simp [Term.evalGo, hop, Term.evalList, ha, hb]
+  rw [hform, Op.applyVals_compare cmp va vb hty]
 
 /- Termination of a partial `Option` evaluator is successful evaluation. -/
-def Term.Terminates (primCtx : PrimitiveCtx) (primFuncCtx : PrimFuncCtx primCtx)
-    (env : List (Val primCtx)) (term : Term primCtx) : Prop :=
-  ∃ v, Term.eval primCtx primFuncCtx env term = some v
+def Term.Terminates (ctx : Ctx)
+    (env : List (Val ctx.primCtx)) (term : Term ctx.primCtx) : Prop :=
+  ∃ v, Term.eval ctx env term = some v
 
-structure Term.eq (primCtx : PrimitiveCtx) (primFuncCtx : PrimFuncCtx primCtx) (varCtx : VarCtx) (ty : Ty) (t₁ t₂ : Term primCtx) : Prop where
-  hasType₁ : hasType primCtx primFuncCtx varCtx t₁ ty
-  hasType₂ : hasType primCtx primFuncCtx varCtx t₂ ty
-  eq : ∀ env : List (Val primCtx), env.length = varCtx.length →
-    t₁.eval primCtx primFuncCtx env = t₂.eval primCtx primFuncCtx env
+structure Term.eq (ctx : Ctx) (varCtx : VarCtx) (ty : Ty) (t₁ t₂ : Term ctx.primCtx) : Prop where
+  hasType₁ : hasType ctx varCtx t₁ ty
+  hasType₂ : hasType ctx varCtx t₂ ty
+  eq : ∀ env : List (Val ctx.primCtx), env.length = varCtx.length →
+    t₁.eval ctx env = t₂.eval ctx env
 
 def Ty.subst (ctxTy : List Ty) : Ty → Ty
 | .var idx =>
@@ -265,9 +311,7 @@ def Term.subst {primCtx : PrimitiveCtx} (ctxTerm : List (Term primCtx)) (term : 
             (ctxTerm[idx]?).getD (.var idx)
           else
             .var (idx - ctxTerm.length)
-      | .primEq lhs rhs => .primEq (Term.subst ctxTerm lhs) (Term.subst ctxTerm rhs)
-      | .primLt lhs rhs => .primLt (Term.subst ctxTerm lhs) (Term.subst ctxTerm rhs)
-      | .primGt lhs rhs => .primGt (Term.subst ctxTerm lhs) (Term.subst ctxTerm rhs)
+      | .op name args => .op name (args.map (Term.subst ctxTerm))
       | .app f args => .app (Term.subst ctxTerm f) (args.map (Term.subst ctxTerm))
       | .mkStruct tys => .mkStruct tys
       | .structProj tys idx => .structProj tys idx
@@ -296,20 +340,17 @@ def Term.subst {primCtx : PrimitiveCtx} (ctxTerm : List (Term primCtx)) (term : 
       if idx < ctxTerm.length then (ctxTerm[idx]?).getD (.var idx) else .var (idx - ctxTerm.length) := by
   cases ctxTerm <;> simp [Term.subst]
 
-@[simp] theorem Term.subst_primEq {primCtx : PrimitiveCtx} (ctxTerm : List (Term primCtx))
-    (lhs rhs : Term primCtx) :
-    Term.subst ctxTerm (.primEq lhs rhs) = .primEq (Term.subst ctxTerm lhs) (Term.subst ctxTerm rhs) := by
-  cases ctxTerm <;> simp [Term.subst]
-
-@[simp] theorem Term.subst_primLt {primCtx : PrimitiveCtx} (ctxTerm : List (Term primCtx))
-    (lhs rhs : Term primCtx) :
-    Term.subst ctxTerm (.primLt lhs rhs) = .primLt (Term.subst ctxTerm lhs) (Term.subst ctxTerm rhs) := by
-  cases ctxTerm <;> simp [Term.subst]
-
-@[simp] theorem Term.subst_primGt {primCtx : PrimitiveCtx} (ctxTerm : List (Term primCtx))
-    (lhs rhs : Term primCtx) :
-    Term.subst ctxTerm (.primGt lhs rhs) = .primGt (Term.subst ctxTerm lhs) (Term.subst ctxTerm rhs) := by
-  cases ctxTerm <;> simp [Term.subst]
+@[simp] theorem Term.subst_op {primCtx : PrimitiveCtx} (ctxTerm : List (Term primCtx))
+    (name : String) (args : List (Term primCtx)) :
+    Term.subst ctxTerm (.op name args) = .op name (args.map (Term.subst ctxTerm)) := by
+  cases ctxTerm with
+  | nil =>
+      have hmap : args.map (Term.subst ([] : List (Term primCtx))) = args := by
+        induction args with
+        | nil => simp
+        | cons arg args ih => simp [ih]
+      simp [hmap]
+  | cons head tail => simp [Term.subst]
 
 @[simp] theorem Term.subst_app {primCtx : PrimitiveCtx} (ctxTerm : List (Term primCtx))
     (f : Term primCtx) (args : List (Term primCtx)) :
@@ -345,25 +386,27 @@ def Term.subst {primCtx : PrimitiveCtx} (ctxTerm : List (Term primCtx)) (term : 
       .recurse resultTy (Term.subst ctxTerm init) (Term.subst ctxTerm body) := by
   cases ctxTerm <;> simp [Term.subst]
 
-/- Zag propositions can only be assigned semantics under a fixed `PrimitiveCtxF` -/
-def Pr.interp (primCtx : PrimitiveCtx) (primFuncCtx : PrimFuncCtx primCtx) :
-    (ctxTy : List Ty) → (ctxTerm : List (Term primCtx)) → Pr primCtx → Prop
-| ctxTy, ctxTerm, .eq ctx ty x y =>
-  Term.eq primCtx primFuncCtx (ctx.map (Ty.subst ctxTy)) (Ty.subst ctxTy ty) (Term.subst ctxTerm x) (Term.subst ctxTerm y)
-| ctxTy, ctxTerm, .hasType ctx t ty =>
-  Term.hasType primCtx primFuncCtx (ctx.map (Ty.subst ctxTy)) (Term.subst ctxTerm t) (Ty.subst ctxTy ty)
+/- Zag propositions can only be assigned semantics under a fixed `Ctx` -/
+def Pr.interp (ctx : Ctx) :
+    (ctxTy : List Ty) → (ctxTerm : List (Term ctx.primCtx)) → Pr ctx.primCtx → Prop
+| ctxTy, ctxTerm, .eq varCtx ty x y =>
+  Term.eq ctx (varCtx.map (Ty.subst ctxTy)) (Ty.subst ctxTy ty) (Term.subst ctxTerm x) (Term.subst ctxTerm y)
+| ctxTy, ctxTerm, .hasType varCtx t ty =>
+  Term.hasType ctx (varCtx.map (Ty.subst ctxTy)) (Term.subst ctxTerm t) (Ty.subst ctxTy ty)
 | ctxTy, ctxTerm, .and p q =>
-  Pr.interp primCtx primFuncCtx ctxTy ctxTerm p ∧ Pr.interp primCtx primFuncCtx ctxTy ctxTerm q
+  Pr.interp ctx ctxTy ctxTerm p ∧ Pr.interp ctx ctxTy ctxTerm q
 | ctxTy, ctxTerm, .or p q =>
-  Pr.interp primCtx primFuncCtx ctxTy ctxTerm p ∨ Pr.interp primCtx primFuncCtx ctxTy ctxTerm q
+  Pr.interp ctx ctxTy ctxTerm p ∨ Pr.interp ctx ctxTy ctxTerm q
 | ctxTy, ctxTerm, .implies p q =>
-  Pr.interp primCtx primFuncCtx ctxTy ctxTerm p → Pr.interp primCtx primFuncCtx ctxTy ctxTerm q
+  Pr.interp ctx ctxTy ctxTerm p → Pr.interp ctx ctxTy ctxTerm q
 | ctxTy, ctxTerm, .forallTy p =>
-  ∀ (α : Ty), Pr.interp primCtx primFuncCtx (ctxTy ++ [α]) ctxTerm p
+  ∀ (α : Ty), Pr.interp ctx (ctxTy ++ [α]) ctxTerm p
 | ctxTy, ctxTerm, .forallTerm p =>
-  ∀ (x : Term primCtx), Pr.interp primCtx primFuncCtx ctxTy (ctxTerm ++ [x]) p
+  ∀ (x : Term ctx.primCtx), Pr.interp ctx ctxTy (ctxTerm ++ [x]) p
 
 /- metatheory (in this case lean) determines which Zag propositions are provable -/
-inductive Pr.Provable (primCtx : PrimitiveCtx) (primFuncCtx : PrimFuncCtx primCtx)
-    (ctxTy : List Ty) (ctxTerm : List (Term primCtx)) (p : Pr primCtx) : Prop
-| ofProof (proof : Pr.interp primCtx primFuncCtx ctxTy ctxTerm p)
+inductive Pr.Provable (ctx : Ctx)
+    (ctxTy : List Ty) (ctxTerm : List (Term ctx.primCtx)) (p : Pr ctx.primCtx) : Prop
+| ofProof (proof : Pr.interp ctx ctxTy ctxTerm p)
+
+end Zag

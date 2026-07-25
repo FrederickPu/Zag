@@ -100,7 +100,7 @@ def isStatePackName (ctx : LocalContext) (name : String) : Bool :=
 mutual
 
 partial def termToSSAValue? {simpleCtx : _root_.Lang.Simple.Context}
-    (ctx : LocalContext) : Zag.Term simpleCtx.primCtx -> Option (SSAValue simpleCtx.primCtx)
+    (ctx : LocalContext) : Zag.Term simpleCtx.zagCtx.primCtx -> Option (SSAValue simpleCtx.zagCtx.primCtx)
   | .prim ty value =>
       some (.raw (.prim ty value))
   | .primFunc name =>
@@ -121,18 +121,9 @@ partial def termToSSAValue? {simpleCtx : _root_.Lang.Simple.Context}
       let fn <- termToSSAValue? ctx f
       let args <- termsToSSAValues? ctx args
       some (.call fn args)
-  | .primEq lhs rhs => do
-      let lhs <- termToSSAValue? ctx lhs
-      let rhs <- termToSSAValue? ctx rhs
-      some (.primEq lhs rhs)
-  | .primLt lhs rhs => do
-      let lhs <- termToSSAValue? ctx lhs
-      let rhs <- termToSSAValue? ctx rhs
-      some (.primLt lhs rhs)
-  | .primGt lhs rhs => do
-      let lhs <- termToSSAValue? ctx lhs
-      let rhs <- termToSSAValue? ctx rhs
-      some (.primGt lhs rhs)
+  | .op name args => do
+      let args <- termsToSSAValues? ctx args
+      some (.op name args)
   | .mkStruct tys =>
       some (.raw (.mkStruct tys))
   | .structProj tys idx =>
@@ -143,7 +134,7 @@ partial def termToSSAValue? {simpleCtx : _root_.Lang.Simple.Context}
       none
 
 partial def termsToSSAValues? {simpleCtx : _root_.Lang.Simple.Context}
-    (ctx : LocalContext) : List (Zag.Term simpleCtx.primCtx) -> Option (List (SSAValue simpleCtx.primCtx))
+    (ctx : LocalContext) : List (Zag.Term simpleCtx.zagCtx.primCtx) -> Option (List (SSAValue simpleCtx.zagCtx.primCtx))
   | [] => some []
   | term :: terms => do
       let value <- termToSSAValue? ctx term
@@ -151,7 +142,7 @@ partial def termsToSSAValues? {simpleCtx : _root_.Lang.Simple.Context}
       some (value :: values)
 
 partial def stateTermFields? {simpleCtx : _root_.Lang.Simple.Context}
-    (ctx : LocalContext) : Zag.Term simpleCtx.primCtx -> Option (List (SSAValue simpleCtx.primCtx))
+    (ctx : LocalContext) : Zag.Term simpleCtx.zagCtx.primCtx -> Option (List (SSAValue simpleCtx.zagCtx.primCtx))
   | .var 0 =>
       some ctx.currentValues
   | .app (.primFunc name) fields =>
@@ -212,7 +203,7 @@ def retToYield {primCtx : Zag.PrimitiveCtx}
   | .yield values => some (.yield values)
 
 def toSSA? {simpleCtx : _root_.Lang.Simple.Context} {proc : Type u} {fault : Type v}
-    (ctx : LocalContext) : _root_.Lang.Simple.Com simpleCtx proc fault -> Option (SSAExpr simpleCtx.primCtx)
+    (ctx : LocalContext) : _root_.Lang.Simple.Com simpleCtx proc fault -> Option (SSAExpr simpleCtx.zagCtx.primCtx)
   | .Skip =>
       some (.ret ctx.packCurrent)
   | .Basic update => do
@@ -248,25 +239,25 @@ def toTermWithLocals? {primCtx : Zag.PrimitiveCtx}
 
 def evalSSAWithLocals? {simpleCtx : _root_.Lang.Simple.Context}
     (ctx : LocalContext)
-    (env : List (Zag.Val simpleCtx.primCtx))
-    (expr : SSAExpr simpleCtx.primCtx) : Option (Zag.Val simpleCtx.primCtx) := do
+    (env : List (Zag.Val simpleCtx.zagCtx.primCtx))
+    (expr : SSAExpr simpleCtx.zagCtx.primCtx) : Option (Zag.Val simpleCtx.zagCtx.primCtx) := do
   let term <- toTermWithLocals? ctx expr
-  Zag.Term.eval simpleCtx.primCtx simpleCtx.primFuncCtx env term
+  Zag.Term.eval simpleCtx.zagCtx env term
 
 def evalSSAValueWithLocals? {simpleCtx : _root_.Lang.Simple.Context}
     (ctx : LocalContext)
-    (env : List (Zag.Val simpleCtx.primCtx))
-    (value : SSAValue simpleCtx.primCtx) : Option (Zag.Val simpleCtx.primCtx) := do
+    (env : List (Zag.Val simpleCtx.zagCtx.primCtx))
+    (value : SSAValue simpleCtx.zagCtx.primCtx) : Option (Zag.Val simpleCtx.zagCtx.primCtx) := do
   let term <- Zag.Lang.SSA.SSAExpr.valueToTerm? value { vars := ctx.inputEnv }
-  Zag.Term.eval simpleCtx.primCtx simpleCtx.primFuncCtx env term
+  Zag.Term.eval simpleCtx.zagCtx env term
 
 theorem evalSSAValueWithLocals?_block_ite_true {simpleCtx : _root_.Lang.Simple.Context}
     (ctx : LocalContext)
-    (env : List (Zag.Val simpleCtx.primCtx))
+    (env : List (Zag.Val simpleCtx.zagCtx.primCtx))
     (resultTy : Zag.Ty)
-    (condition : SSAValue simpleCtx.primCtx)
-    (thenExpr elseExpr : SSAExpr simpleCtx.primCtx)
-    (target : Zag.Val simpleCtx.primCtx)
+    (condition : SSAValue simpleCtx.zagCtx.primCtx)
+    (thenExpr elseExpr : SSAExpr simpleCtx.zagCtx.primCtx)
+    (target : Zag.Val simpleCtx.zagCtx.primCtx)
     (hCond : evalSSAValueWithLocals? ctx env condition = some (Zag.Val.bool true))
     (hThen : evalSSAWithLocals? ctx env thenExpr = some target)
     (hElseLower : ∃ elseTerm, toTermWithLocals? ctx elseExpr = some elseTerm) :
@@ -290,19 +281,19 @@ theorem evalSSAValueWithLocals?_block_ite_true {simpleCtx : _root_.Lang.Simple.C
               Zag.Lang.SSA.SSAExpr.toTerm? elseExpr { vars := ctx.inputEnv } = some elseTerm := by
             simpa [toTermWithLocals?] using hElseTerm
           have hCondEval :
-              Zag.Term.eval simpleCtx.primCtx simpleCtx.primFuncCtx env condTerm =
+              Zag.Term.eval simpleCtx.zagCtx env condTerm =
                 some (Zag.Val.bool true) := by
             simpa [hCondTerm] using hCond
           have hThenEval :
-              Zag.Term.eval simpleCtx.primCtx simpleCtx.primFuncCtx env thenTerm =
+              Zag.Term.eval simpleCtx.zagCtx env thenTerm =
                 some target := by
             simpa [hThenTerm] using hThen
           have hCondEvalGo :
-              Zag.Term.evalGo simpleCtx.primCtx simpleCtx.primFuncCtx [] env condTerm =
+              Zag.Term.evalGo simpleCtx.zagCtx [] env condTerm =
                 some (Zag.Val.bool true) := by
             simpa [Zag.Term.eval] using hCondEval
           have hThenEvalGo :
-              Zag.Term.evalGo simpleCtx.primCtx simpleCtx.primFuncCtx [] env thenTerm =
+              Zag.Term.evalGo simpleCtx.zagCtx [] env thenTerm =
                 some target := by
             simpa [Zag.Term.eval] using hThenEval
           simp [Zag.Lang.SSA.SSAExpr.valueToTerm?, Zag.Lang.SSA.SSAExpr.toTerm?,
@@ -311,11 +302,11 @@ theorem evalSSAValueWithLocals?_block_ite_true {simpleCtx : _root_.Lang.Simple.C
 
 theorem evalSSAValueWithLocals?_block_ite_false {simpleCtx : _root_.Lang.Simple.Context}
     (ctx : LocalContext)
-    (env : List (Zag.Val simpleCtx.primCtx))
+    (env : List (Zag.Val simpleCtx.zagCtx.primCtx))
     (resultTy : Zag.Ty)
-    (condition : SSAValue simpleCtx.primCtx)
-    (thenExpr elseExpr : SSAExpr simpleCtx.primCtx)
-    (target : Zag.Val simpleCtx.primCtx)
+    (condition : SSAValue simpleCtx.zagCtx.primCtx)
+    (thenExpr elseExpr : SSAExpr simpleCtx.zagCtx.primCtx)
+    (target : Zag.Val simpleCtx.zagCtx.primCtx)
     (hCond : evalSSAValueWithLocals? ctx env condition = some (Zag.Val.bool false))
     (hThenLower : ∃ thenTerm, toTermWithLocals? ctx thenExpr = some thenTerm)
     (hElse : evalSSAWithLocals? ctx env elseExpr = some target) :
@@ -339,19 +330,19 @@ theorem evalSSAValueWithLocals?_block_ite_false {simpleCtx : _root_.Lang.Simple.
               Zag.Lang.SSA.SSAExpr.toTerm? elseExpr { vars := ctx.inputEnv } = some elseTerm := by
             simpa [toTermWithLocals?] using hElseTerm
           have hCondEval :
-              Zag.Term.eval simpleCtx.primCtx simpleCtx.primFuncCtx env condTerm =
+              Zag.Term.eval simpleCtx.zagCtx env condTerm =
                 some (Zag.Val.bool false) := by
             simpa [hCondTerm] using hCond
           have hElseEval :
-              Zag.Term.eval simpleCtx.primCtx simpleCtx.primFuncCtx env elseTerm =
+              Zag.Term.eval simpleCtx.zagCtx env elseTerm =
                 some target := by
             simpa [hElseTerm] using hElse
           have hCondEvalGo :
-              Zag.Term.evalGo simpleCtx.primCtx simpleCtx.primFuncCtx [] env condTerm =
+              Zag.Term.evalGo simpleCtx.zagCtx [] env condTerm =
                 some (Zag.Val.bool false) := by
             simpa [Zag.Term.eval] using hCondEval
           have hElseEvalGo :
-              Zag.Term.evalGo simpleCtx.primCtx simpleCtx.primFuncCtx [] env elseTerm =
+              Zag.Term.evalGo simpleCtx.zagCtx [] env elseTerm =
                 some target := by
             simpa [Zag.Term.eval] using hElseEval
           simp [Zag.Lang.SSA.SSAExpr.valueToTerm?, Zag.Lang.SSA.SSAExpr.toTerm?,
@@ -359,96 +350,96 @@ theorem evalSSAValueWithLocals?_block_ite_false {simpleCtx : _root_.Lang.Simple.
             hCondEvalGo, hElseEvalGo]
 
 def evalBasic? {simpleCtx : _root_.Lang.Simple.Context}
-    (state : Zag.Val simpleCtx.primCtx)
-    (update : _root_.Lang.Simple.Basic simpleCtx) : Option (Zag.Val simpleCtx.primCtx) :=
-  Zag.Term.eval simpleCtx.primCtx simpleCtx.primFuncCtx [state] update.val
+    (state : Zag.Val simpleCtx.zagCtx.primCtx)
+    (update : _root_.Lang.Simple.Basic simpleCtx) : Option (Zag.Val simpleCtx.zagCtx.primCtx) :=
+  Zag.Term.eval simpleCtx.zagCtx [state] update.val
 
 def evalBExp? {simpleCtx : _root_.Lang.Simple.Context}
-    (state : Zag.Val simpleCtx.primCtx)
+    (state : Zag.Val simpleCtx.zagCtx.primCtx)
     (condition : _root_.Lang.Simple.BExp simpleCtx) : Option Bool := do
-  let value <- Zag.Term.eval simpleCtx.primCtx simpleCtx.primFuncCtx [state] condition.val
+  let value <- Zag.Term.eval simpleCtx.zagCtx [state] condition.val
   value.asBool?
 
 inductive BigStep {simpleCtx : _root_.Lang.Simple.Context} {proc : Type u} {fault : Type v} :
     _root_.Lang.Simple.Com simpleCtx proc fault ->
-      Zag.Val simpleCtx.primCtx -> Zag.Val simpleCtx.primCtx -> Prop where
-  | skip (state : Zag.Val simpleCtx.primCtx) :
+      Zag.Val simpleCtx.zagCtx.primCtx -> Zag.Val simpleCtx.zagCtx.primCtx -> Prop where
+  | skip (state : Zag.Val simpleCtx.zagCtx.primCtx) :
       BigStep .Skip state state
-  | basic {update : _root_.Lang.Simple.Basic simpleCtx} {source target : Zag.Val simpleCtx.primCtx} :
+  | basic {update : _root_.Lang.Simple.Basic simpleCtx} {source target : Zag.Val simpleCtx.zagCtx.primCtx} :
       evalBasic? source update = some target ->
       BigStep (.Basic update) source target
   | seq {c1 c2 : _root_.Lang.Simple.Com simpleCtx proc fault}
-      {source mid target : Zag.Val simpleCtx.primCtx} :
+      {source mid target : Zag.Val simpleCtx.zagCtx.primCtx} :
       BigStep c1 source mid ->
       BigStep c2 mid target ->
       BigStep (.Seq c1 c2) source target
   | condTrue {condition : _root_.Lang.Simple.BExp simpleCtx}
       {thenCmd elseCmd : _root_.Lang.Simple.Com simpleCtx proc fault}
-      {source target : Zag.Val simpleCtx.primCtx} :
+      {source target : Zag.Val simpleCtx.zagCtx.primCtx} :
       evalBExp? source condition = some true ->
       BigStep thenCmd source target ->
       BigStep (.Cond condition thenCmd elseCmd) source target
   | condFalse {condition : _root_.Lang.Simple.BExp simpleCtx}
       {thenCmd elseCmd : _root_.Lang.Simple.Com simpleCtx proc fault}
-      {source target : Zag.Val simpleCtx.primCtx} :
+      {source target : Zag.Val simpleCtx.zagCtx.primCtx} :
       evalBExp? source condition = some false ->
       BigStep elseCmd source target ->
       BigStep (.Cond condition thenCmd elseCmd) source target
   | whileTrue {condition : _root_.Lang.Simple.BExp simpleCtx}
       {body : _root_.Lang.Simple.Com simpleCtx proc fault}
-      {source mid target : Zag.Val simpleCtx.primCtx} :
+      {source mid target : Zag.Val simpleCtx.zagCtx.primCtx} :
       evalBExp? source condition = some true ->
       BigStep body source mid ->
       BigStep (.While condition body) mid target ->
       BigStep (.While condition body) source target
   | whileFalse {condition : _root_.Lang.Simple.BExp simpleCtx}
       {body : _root_.Lang.Simple.Com simpleCtx proc fault}
-      {source : Zag.Val simpleCtx.primCtx} :
+      {source : Zag.Val simpleCtx.zagCtx.primCtx} :
       evalBExp? source condition = some false ->
       BigStep (.While condition body) source source
 
 /-- Relates a source Simple state to the SSA local environment/result convention. -/
 structure LocalModel (simpleCtx : _root_.Lang.Simple.Context) (ctx : LocalContext)
     (proc : Type u) (fault : Type v) where
-  env : Zag.Val simpleCtx.primCtx -> List (Zag.Val simpleCtx.primCtx)
-  result : Zag.Val simpleCtx.primCtx -> Zag.Val simpleCtx.primCtx
+  env : Zag.Val simpleCtx.zagCtx.primCtx -> List (Zag.Val simpleCtx.zagCtx.primCtx)
+  result : Zag.Val simpleCtx.zagCtx.primCtx -> Zag.Val simpleCtx.zagCtx.primCtx
   current : ∀ state,
     evalSSAWithLocals? ctx (env state) (.ret ctx.packCurrent) = some (result state)
   stateFields : ∀ state term fields,
     stateTermFields? ctx term = some fields ->
       evalSSAWithLocals? ctx (env state)
           (assignFieldValues ctx fields (.ret ctx.packSourceState)) =
-        Zag.Term.eval simpleCtx.primCtx simpleCtx.primFuncCtx [state] term
+        Zag.Term.eval simpleCtx.zagCtx [state] term
   assignedCurrent : ∀ source target fields,
     evalSSAWithLocals? ctx (env source)
         (assignFieldValues ctx fields (.ret ctx.packSourceState)) = some target ->
       evalSSAWithLocals? ctx (env source)
         (assignFieldValues ctx fields (.ret ctx.packCurrent)) = some (result target)
   seqLetBindings : ∀ source mid target
-      (first second : SSAExpr simpleCtx.primCtx),
+      (first second : SSAExpr simpleCtx.zagCtx.primCtx),
     evalSSAWithLocals? ctx (env source) first = some (result mid) ->
       evalSSAWithLocals? ctx (env mid) second = some (result target) ->
         evalSSAWithLocals? ctx (env source)
           (Zag.Lang.SSA.SSAExpr.seqLetBindings first second) = some (result target)
-  condition : ∀ (state : Zag.Val simpleCtx.primCtx)
+  condition : ∀ (state : Zag.Val simpleCtx.zagCtx.primCtx)
       (condition : _root_.Lang.Simple.BExp simpleCtx)
-      (value : SSAValue simpleCtx.primCtx) (result : Bool),
+      (value : SSAValue simpleCtx.zagCtx.primCtx) (result : Bool),
     termToSSAValue? ctx condition.val = some value ->
       evalBExp? state condition = some result ->
         evalSSAValueWithLocals? ctx (env state) value = some (Zag.Val.bool result)
   lowers : ∀ (cmd : _root_.Lang.Simple.Com simpleCtx proc fault)
-      (expr : SSAExpr simpleCtx.primCtx),
+      (expr : SSAExpr simpleCtx.zagCtx.primCtx),
     toSSA? ctx cmd = some expr ->
       ∃ term, toTermWithLocals? ctx expr = some term
-  assignPackedLocals : ∀ (source target : Zag.Val simpleCtx.primCtx)
-      (packed : SSAValue simpleCtx.primCtx) (expr : SSAExpr simpleCtx.primCtx),
+  assignPackedLocals : ∀ (source target : Zag.Val simpleCtx.zagCtx.primCtx)
+      (packed : SSAValue simpleCtx.zagCtx.primCtx) (expr : SSAExpr simpleCtx.zagCtx.primCtx),
     assignPackedLocals? ctx ctx.condResultName packed (.ret ctx.packCurrent) = some expr ->
       evalSSAValueWithLocals? ctx (env source) packed = some (result target) ->
         evalSSAWithLocals? ctx (env source) expr = some (result target)
   whileLoop : ∀ (condition : _root_.Lang.Simple.BExp simpleCtx)
       (body : _root_.Lang.Simple.Com simpleCtx proc fault)
-      (source target : Zag.Val simpleCtx.primCtx)
-      (expr : SSAExpr simpleCtx.primCtx),
+      (source target : Zag.Val simpleCtx.zagCtx.primCtx)
+      (expr : SSAExpr simpleCtx.zagCtx.primCtx),
     toSSA? ctx (.While condition body) = some expr ->
       BigStep (.While condition body) source target ->
         evalSSAWithLocals? ctx (env source) expr = some (result target)
@@ -456,8 +447,8 @@ structure LocalModel (simpleCtx : _root_.Lang.Simple.Context) (ctx : LocalContex
 theorem correct_skip {simpleCtx : _root_.Lang.Simple.Context} {proc : Type u} {fault : Type v}
     (ctx : LocalContext)
     (model : LocalModel simpleCtx ctx proc fault) :
-  ∀ (sourceState targetState : Zag.Val simpleCtx.primCtx)
-      (expr : SSAExpr simpleCtx.primCtx),
+  ∀ (sourceState targetState : Zag.Val simpleCtx.zagCtx.primCtx)
+      (expr : SSAExpr simpleCtx.zagCtx.primCtx),
     toSSA? ctx (.Skip : _root_.Lang.Simple.Com simpleCtx proc fault) = some expr ->
       BigStep (.Skip : _root_.Lang.Simple.Com simpleCtx proc fault) sourceState targetState ->
         evalSSAWithLocals? ctx (model.env sourceState) expr = some (model.result targetState) := by
@@ -478,8 +469,8 @@ theorem correct {simpleCtx : _root_.Lang.Simple.Context} {proc : Type u} {fault 
     (ctx : LocalContext)
     (model : LocalModel simpleCtx ctx proc fault)
     (cmd : _root_.Lang.Simple.Com simpleCtx proc fault) :
-  ∀ (sourceState targetState : Zag.Val simpleCtx.primCtx)
-      (expr : SSAExpr simpleCtx.primCtx),
+  ∀ (sourceState targetState : Zag.Val simpleCtx.zagCtx.primCtx)
+      (expr : SSAExpr simpleCtx.zagCtx.primCtx),
     toSSA? ctx cmd = some expr ->
       BigStep cmd sourceState targetState ->
         evalSSAWithLocals? ctx (model.env sourceState) expr = some (model.result targetState) := by

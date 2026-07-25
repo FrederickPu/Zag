@@ -1,10 +1,12 @@
 import Lang.SSA
 import Test.Gauss.Rec
+import Lib.Peano
 
 namespace Zag.Test.Gauss.SSA
 
 open Zag.Lang.SSA
 open Zag.Test.Gauss.Rec
+open Zag.Lib.Peano
 
 abbrev stateTys : List Ty := [NatTy, NatTy]
 abbrev stateTy : Ty := .struct stateTys
@@ -15,7 +17,7 @@ def accIdx : Fin stateTys.length := Fin.mk 1 (by decide)
 
 def iTerm : Term natCtx := .app (.structProj stateTys iIdx) [.var 0]
 def accTerm : Term natCtx := .app (.structProj stateTys accIdx) [.var 0]
-def condTerm : Term natCtx := .primGt iTerm (Term.nat 0)
+def condTerm : Term natCtx := .op "gt" [iTerm, Term.nat 0]
 def nextITerm : Term natCtx := .app (.primFunc "sub") [iTerm, Term.nat 1]
 def nextAccTerm : Term natCtx := .app (.primFunc "add") [accTerm, iTerm]
 def nextStateTerm : Term natCtx := .app (.mkStruct stateTys) [nextITerm, nextAccTerm]
@@ -77,26 +79,76 @@ def loopRecCtx (env : List (Val natCtx)) : Term.MotiveCtx natCtx :=
   { body := bodyTerm, env := env, stateTy := stateTy, resultTy := NatTy }
 
 noncomputable def loopBodyEval (i acc : Nat) : Option (Val natCtx) :=
-  Term.evalGo natCtx natFuncCtx [loopRecCtx []] (loopEnv i acc []) bodyTerm
+  Term.evalGo peanoCtx [loopRecCtx []] (loopEnv i acc []) bodyTerm
 
 theorem lhsProgram_shape (n : Nat) :
     lhsProgram n = loopTerm n 0 := by
   rfl
 
-theorem bodyTerm_hasType : Term.hasType natCtx natFuncCtx bodyCtx bodyTerm NatTy := by
-  let program := Zag.Pr.MetaProgram.iterate (primCtx := natCtx) (primFuncCtx := natFuncCtx)
-    (ctxTy := []) (ctxTerm := []) 30 (fun goal => Zag.Pr.MetaProgram.unifyType goal)
-    (.hasType bodyCtx bodyTerm NatTy)
-  have hclosed : program.goals = [] := by
-    exact List.eq_nil_of_length_eq_zero (by native_decide +revert : program.goals.length = 0)
-  have hprov := Zag.Pr.MetaProgram.toProvable program hclosed
-  cases hprov with
-  | ofProof proof =>
-      simpa [Pr.interp, bodyTerm, condTerm, yieldTerm, nextStateTerm, nextITerm,
-        nextAccTerm, iTerm, accTerm, stateTy, stateTys, Term.subst, Term.nat, Ty.subst]
-        using proof
+theorem bodyTerm_hasType : Term.hasType peanoCtx bodyCtx bodyTerm NatTy := by
+  have hstate : Term.hasType peanoCtx bodyCtx (.var 0) stateTy :=
+    Term.hasType.var (idx := ⟨0, by decide⟩) rfl
+  have hmotive : Term.hasType peanoCtx bodyCtx (.var 1) (.func [stateTy] NatTy) :=
+    Term.hasType.var (idx := ⟨1, by decide⟩) rfl
+  have hi : Term.hasType peanoCtx bodyCtx iTerm NatTy := by
+    unfold iTerm iIdx stateTys
+    refine Term.hasType.app (Term.hasType.structProj ⟨0, by decide⟩) rfl ?_
+    intro idx
+    cases idx using Fin.cases with
+    | zero => exact hstate
+    | succ idx => exact Fin.elim0 idx
+  have hacc : Term.hasType peanoCtx bodyCtx accTerm NatTy := by
+    unfold accTerm accIdx stateTys
+    refine Term.hasType.app (Term.hasType.structProj ⟨1, by decide⟩) rfl ?_
+    intro idx
+    cases idx using Fin.cases with
+    | zero => exact hstate
+    | succ idx => exact Fin.elim0 idx
+  have hsub : Term.hasType peanoCtx bodyCtx (.primFunc "sub")
+      (.func [NatTy, NatTy] NatTy) :=
+    Term.hasType.primFunc (idx := ⟨1, by decide⟩)
+  have hadd : Term.hasType peanoCtx bodyCtx (.primFunc "add")
+      (.func [NatTy, NatTy] NatTy) := addFunc_hasType
+  have hnextI : Term.hasType peanoCtx bodyCtx nextITerm NatTy := by
+    unfold nextITerm
+    exact natBinaryApp_hasType hsub hi (natType 1)
+  have hnextAcc : Term.hasType peanoCtx bodyCtx nextAccTerm NatTy := by
+    unfold nextAccTerm
+    exact natBinaryApp_hasType hadd hacc hi
+  have hnextState : Term.hasType peanoCtx bodyCtx nextStateTerm stateTy := by
+    unfold nextStateTerm stateTy
+    refine Term.hasType.app Term.hasType.mkStruct rfl ?_
+    intro idx
+    cases idx using Fin.cases with
+    | zero => exact hnextI
+    | succ idx =>
+        cases idx using Fin.cases with
+        | zero => exact hnextAcc
+        | succ idx => exact Fin.elim0 idx
+  have hyield : Term.hasType peanoCtx bodyCtx yieldTerm NatTy := by
+    unfold yieldTerm
+    refine Term.hasType.app hmotive rfl ?_
+    intro idx
+    cases idx using Fin.cases with
+    | zero => exact hnextState
+    | succ idx => exact Fin.elim0 idx
+  have hcond : Term.hasType peanoCtx bodyCtx condTerm (.prim "Bool") := by
+    unfold condTerm
+    have hout : peanoCtx.opCtx.outTy? "gt" [NatTy, NatTy] = some (.prim "Bool") := by
+      simp [OpCtx.outTy?, peanoCtx, natOpCtx, NatTy, Op.compare]
+    refine Term.hasType.op rfl ?_ hout
+    intro idx
+    cases idx using Fin.cases with
+    | zero => exact hi
+    | succ idx =>
+        cases idx using Fin.cases with
+        | zero => exact natType 0
+        | succ idx => exact Fin.elim0 idx
+  unfold bodyTerm
+  exact Term.hasType.ite hcond hyield hacc
 
-theorem loopTerm_hasType (i acc : Nat) : Term.hasType natCtx natFuncCtx [] (loopTerm i acc) NatTy := by
+
+theorem loopTerm_hasType (i acc : Nat) : Term.hasType peanoCtx [] (loopTerm i acc) NatTy := by
   unfold loopTerm
   refine Term.hasType.recurse ?_ bodyTerm_hasType
   refine Term.hasType.app Term.hasType.mkStruct rfl ?_
@@ -113,70 +165,137 @@ theorem loopTerm_hasType (i acc : Nat) : Term.hasType natCtx natFuncCtx [] (loop
               omega
 
 theorem lhsProgram_hasType (n : Nat) :
-    Term.hasType natCtx natFuncCtx [] (lhsProgram n) NatTy := by
+    Term.hasType peanoCtx [] (lhsProgram n) NatTy := by
   rw [lhsProgram_shape]
   exact loopTerm_hasType n 0
 
 theorem loopTerm_eval_unfold (i acc : Nat) :
-    Term.eval natCtx natFuncCtx [] (loopTerm i acc) = loopBodyEval i acc := by
+    Term.eval peanoCtx [] (loopTerm i acc) = loopBodyEval i acc := by
   conv =>
     lhs
     simp [loopTerm, stateTys, Term.eval, Term.evalGo, Term.evalList, Term.motiveVal,
       Term.nat, evalMkStruct_state]
   simp [loopBodyEval, loopEnv, loopRecCtx, Term.motiveVal, stateVal]
 
+private theorem iTerm_eval (i acc : Nat) :
+    Term.evalGo peanoCtx [loopRecCtx []] (loopEnv i acc []) iTerm = some (Val.nat i) := by
+  unfold iTerm iIdx loopEnv
+  rw [Term.evalGo.eq_def]
+  simp [Term.evalGo, stateVal, stateFields, stateTy, stateTys, Val.as?, Val.nat, Ty.ofNat]
+
+private theorem accTerm_eval (i acc : Nat) :
+    Term.evalGo peanoCtx [loopRecCtx []] (loopEnv i acc []) accTerm = some (Val.nat acc) := by
+  unfold accTerm accIdx loopEnv
+  rw [Term.evalGo.eq_def]
+  simp [Term.evalGo, stateVal, stateFields, stateTy, stateTys, Val.as?, Val.nat, Ty.ofNat]
+
+private theorem get_gt : peanoCtx.opCtx.get? "gt" = some (Op.compare Val.primGt?) := by
+  simp [peanoCtx, natOpCtx, OpCtx.get?]
+
 theorem cond_eval_zero (acc : Nat) :
-    Term.evalGo natCtx natFuncCtx [loopRecCtx []] (loopEnv 0 acc []) condTerm =
+    Term.evalGo peanoCtx [loopRecCtx []] (loopEnv 0 acc []) condTerm =
       some (Val.bool false) := by
-  simp [loopEnv, condTerm, iTerm, stateTys, iIdx, Term.evalGo, Term.nat,
-    Val.primGt?, Val.primLt?, stateVal, stateFields]
+  unfold condTerm
+  have h := Term.evalGo_op_compare (ctx := peanoCtx)
+    (motives := [loopRecCtx []]) (env := loopEnv 0 acc [])
+    (name := "gt") (cmp := Val.primGt?) (a := iTerm) (b := Term.nat 0)
+    (va := Val.nat 0) (vb := Val.nat 0) get_gt (iTerm_eval 0 acc)
+    (by simp [Term.evalGo, Term.nat]) rfl
+  rw [h]
+  simp [Val.primGt?, Val.primLt?, Val.asNat?, Val.as?, Val.nat, Ty.toNat, Ty.ofNat]
 
 theorem cond_eval_succ (i acc : Nat) :
-    Term.evalGo natCtx natFuncCtx [loopRecCtx []] (loopEnv (i + 1) acc []) condTerm =
+    Term.evalGo peanoCtx [loopRecCtx []] (loopEnv (i + 1) acc []) condTerm =
       some (Val.bool true) := by
-  simp [loopEnv, condTerm, iTerm, stateTys, iIdx, Term.evalGo, Term.nat,
-    Val.primGt?, Val.primLt?, stateVal, stateFields]
+  unfold condTerm
+  have h := Term.evalGo_op_compare (ctx := peanoCtx)
+    (motives := [loopRecCtx []]) (env := loopEnv (i + 1) acc [])
+    (name := "gt") (cmp := Val.primGt?) (a := iTerm) (b := Term.nat 0)
+    (va := Val.nat (i + 1)) (vb := Val.nat 0) get_gt (iTerm_eval (i + 1) acc)
+    (by simp [Term.evalGo, Term.nat]) rfl
+  rw [h]
+  simp [Val.primGt?, Val.primLt?, Val.asNat?, Val.as?, Val.nat, Ty.toNat, Ty.ofNat]
+
+private theorem nextITerm_eval_succ (i acc : Nat) :
+    Term.evalGo peanoCtx [loopRecCtx []] (loopEnv (i + 1) acc []) nextITerm =
+      some (Val.nat i) := by
+  unfold nextITerm
+  rw [Term.evalGo.eq_def]
+  simp only
+  rw [Term.evalList.eq_def]
+  simp only [List.mapM, List.mapM.loop]
+  rw [iTerm_eval]
+  simp [Term.evalGo, Term.nat, PrimFunc.apply, PrimFuncCtx.get?, peanoCtx, natFuncCtx,
+    natBinaryFunc]
+
+private theorem nextAccTerm_eval_succ (i acc : Nat) :
+    Term.evalGo peanoCtx [loopRecCtx []] (loopEnv (i + 1) acc []) nextAccTerm =
+      some (Val.nat (acc + (i + 1))) := by
+  unfold nextAccTerm
+  rw [Term.evalGo.eq_def]
+  simp only
+  rw [Term.evalList.eq_def]
+  simp only [List.mapM, List.mapM.loop]
+  rw [accTerm_eval, iTerm_eval]
+  simp [PrimFunc.apply, PrimFuncCtx.get?, peanoCtx, natFuncCtx, natBinaryFunc]
+
+private theorem nextStateTerm_eval_succ (i acc : Nat) :
+    Term.evalGo peanoCtx [loopRecCtx []] (loopEnv (i + 1) acc []) nextStateTerm =
+      some (stateVal i (acc + (i + 1))) := by
+  unfold nextStateTerm
+  rw [Term.evalGo.eq_def]
+  simp only
+  rw [Term.evalList.eq_def]
+  simp only [List.mapM, List.mapM.loop]
+  rw [nextITerm_eval_succ, nextAccTerm_eval_succ]
+  exact evalMkStruct_state i (acc + (i + 1))
 
 theorem yield_eval_succ (i acc : Nat) :
-    Term.evalGo natCtx natFuncCtx [loopRecCtx []] (loopEnv (i + 1) acc []) yieldTerm =
+    Term.evalGo peanoCtx [loopRecCtx []] (loopEnv (i + 1) acc []) yieldTerm =
       (do
         let result ← loopBodyEval i (acc + (i + 1))
         let resultRaw ← result.as? NatTy
         some (Val.mk NatTy resultRaw)) := by
-  simp [loopBodyEval, loopEnv, loopRecCtx, yieldTerm, nextStateTerm, nextITerm, nextAccTerm,
-    iTerm, accTerm, stateTys, iIdx, accIdx, Term.evalGo, Term.evalList,
-    Term.MotiveCtx.findMotive, PrimFunc.apply, PrimFuncCtx.get?, natFuncCtx, natBinaryFunc,
-    Term.nat, evalMkStruct_state, stateVal, stateFields]
+  unfold yieldTerm
+  rw [Term.evalGo.eq_def]
+  simp only
+  rw [show Term.MotiveCtx.findMotive (primCtx := natCtx) 1 [loopRecCtx []] =
+      some (loopRecCtx [], [loopRecCtx []]) by
+    simp [Term.MotiveCtx.findMotive, loopRecCtx]]
+  rw [nextStateTerm_eval_succ]
+  simp [Val.as?, stateVal, stateTy]
+  change (loopBodyEval i (acc + (i + 1))).bind
+      (fun result => (Val.as? NatTy result).bind fun resultRaw => some (Val.mk NatTy resultRaw)) = _
+  rfl
 
 theorem loopTerm_eval_sumTo (i acc : Nat) :
-    Term.eval natCtx natFuncCtx [] (loopTerm i acc) = some (Val.nat (acc + sumTo i)) := by
+    Term.eval peanoCtx [] (loopTerm i acc) = some (Val.nat (acc + sumTo i)) := by
   induction i generalizing acc with
   | zero =>
       rw [loopTerm_eval_unfold]
-      change Term.evalGo natCtx natFuncCtx [loopRecCtx []] (loopEnv 0 acc [])
-        (.ite condTerm yieldTerm accTerm) = _
-      simp [Term.evalGo, cond_eval_zero acc]
-      simp [Term.evalGo, loopEnv, accTerm, stateTys, accIdx, stateVal, stateFields, sumTo]
+      unfold loopBodyEval bodyTerm
+      rw [Term.evalGo.eq_def]
+      simp only
+      rw [cond_eval_zero]
+      simpa [sumTo] using accTerm_eval 0 acc
   | succ i ih =>
       rw [loopTerm_eval_unfold]
-      change Term.evalGo natCtx natFuncCtx [loopRecCtx []] (loopEnv (i + 1) acc [])
-        (.ite condTerm yieldTerm accTerm) = _
-      simp [Term.evalGo, cond_eval_succ i acc]
-      rw [yield_eval_succ]
-      have hbody : loopBodyEval i (acc + (i + 1)) =
-          some (Val.nat ((acc + (i + 1)) + sumTo i)) := by
-        rw [← loopTerm_eval_unfold]
-        exact ih (acc + (i + 1))
-      rw [hbody]
-      simp [sumTo, Nat.add_assoc, Nat.add_comm, Nat.add_left_comm]
+      unfold loopBodyEval bodyTerm
+      rw [Term.evalGo.eq_def]
+      simp only
+      rw [cond_eval_succ, yield_eval_succ]
+      rw [← loopTerm_eval_unfold, ih]
+      simp [sumTo]
+      apply congrArg Val.nat
+      omega
 
 theorem lhsProgram_eval_sumTo (n : Nat) :
-    Term.eval natCtx natFuncCtx [] (lhsProgram n) = some (Val.nat (sumTo n)) := by
+    Term.eval peanoCtx [] (lhsProgram n) = some (Val.nat (sumTo n)) := by
   rw [lhsProgram_shape, loopTerm_eval_sumTo]
   simp
 
 theorem lhsProgram_eval_rhs (n : Nat) :
-    Term.eval natCtx natFuncCtx [] (lhsProgram n) = some (Val.nat (n * (n + 1) / 2)) := by
+    Term.eval peanoCtx [] (lhsProgram n) = some (Val.nat (n * (n + 1) / 2)) := by
   rw [lhsProgram_eval_sumTo n, sumTo_eq_closed n]
 
 theorem lhsProgram_subst_nil (n : Nat) :
@@ -186,9 +305,9 @@ theorem lhsProgram_subst_nil (n : Nat) :
     iTerm, accTerm, stateTys, Term.nat]
 
 theorem gaussProvable (n : Nat) :
-    Pr.Provable natCtx natFuncCtx [] [] (gaussStatement n) := by
+    Pr.Provable peanoCtx [] [] (gaussStatement n) := by
   refine Pr.Provable.ofProof ?_
-  change Term.eq natCtx natFuncCtx [] (Ty.subst [] NatTy)
+  change Term.eq peanoCtx [] (Ty.subst [] NatTy)
     (Term.subst [] (lhsProgram n)) (Term.subst [] (rhsTerm n))
   rw [lhsProgram_subst_nil n, rhsTerm_subst_nil n]
   simp [NatTy, Ty.subst]
@@ -202,7 +321,7 @@ theorem gaussProvable (n : Nat) :
       rw [lhsProgram_eval_rhs n]
       rw [rhsTerm_eval_rhs n])
 
-example : Pr.Provable natCtx natFuncCtx [] [] (gaussStatement 100) :=
+example : Pr.Provable peanoCtx [] [] (gaussStatement 100) :=
   gaussProvable 100
 
 end Zag.Test.Gauss.SSA

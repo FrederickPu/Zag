@@ -118,23 +118,29 @@ def statePrimFuncCtx (arity : Nat) : Zag.PrimFuncCtx primitiveCtx :=
 
 /-- The Zag context used by a Simple program. -/
 structure Context where
-  primCtx : Zag.PrimitiveCtx
-  primFuncCtx : Zag.PrimFuncCtx primCtx
+  zagCtx : Zag.Ctx
   stateTy : Zag.Ty
 
+abbrev Context.primCtx (ctx : Context) : Zag.PrimitiveCtx := ctx.zagCtx.primCtx
+abbrev Context.primFuncCtx (ctx : Context) : Zag.PrimFuncCtx ctx.primCtx := ctx.zagCtx.primFuncCtx
+abbrev Context.opCtx (ctx : Context) : Zag.OpCtx ctx.primCtx := ctx.zagCtx.opCtx
+
 def wordStateContext (arity : Nat) : Context where
-  primCtx := primitiveCtx
-  primFuncCtx := statePrimFuncCtx arity
+  zagCtx := {
+    primCtx := primitiveCtx
+    primFuncCtx := statePrimFuncCtx arity
+    opCtx := []
+  }
   stateTy := StateTy
 
 def stateVarCtx (ctx : Context) : Zag.VarCtx :=
   [ctx.stateTy]
 
 abbrev Basic (ctx : Context) : Type :=
-  Zag.TermOf ctx.primCtx ctx.primFuncCtx (stateVarCtx ctx) ctx.stateTy
+  Zag.TermOf ctx.zagCtx (stateVarCtx ctx) ctx.stateTy
 
 abbrev BExp (ctx : Context) : Type :=
-  Zag.TermOf ctx.primCtx ctx.primFuncCtx (stateVarCtx ctx) (.prim "Bool")
+  Zag.TermOf ctx.zagCtx (stateVarCtx ctx) (.prim "Bool")
 
 /-- Liftable Simpl commands. Unsupported full-Simpl features are intentionally absent. -/
 inductive Com (ctx : Context) (proc : Type u) (fault : Type v) where

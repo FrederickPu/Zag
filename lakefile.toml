@@ -14,6 +14,10 @@ name = "Test"
 roots = ["Test.Gauss"]
 
 [[lean_lib]]
+name = "Lib"
+roots = ["Lib.Peano"]
+
+[[lean_lib]]
 name = "Meta"
 
 [[lean_exe]]

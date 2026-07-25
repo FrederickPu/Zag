@@ -82,9 +82,7 @@ inductive SSAValue (primCtx : PrimitiveCtx) where
 | call (fn : SSAValue primCtx) (args : List (SSAValue primCtx))
 | struct (tys : List Ty) (fields : List (SSAValue primCtx))
 | field (tys : List Ty) (idx : Fin tys.length) (value : SSAValue primCtx)
-| primEq (lhs rhs : SSAValue primCtx)
-| primLt (lhs rhs : SSAValue primCtx)
-| primGt (lhs rhs : SSAValue primCtx)
+| op (name : String) (args : List (SSAValue primCtx))
 | block (resultTy : Ty) (body : SSAExpr primCtx)
 /- access variable from scope -/
 | phi {state : List SSAVar} (scope : LoopScope state) (idx : Fin state.length)
@@ -161,18 +159,9 @@ def valueToTerm? {primCtx : PrimitiveCtx} : SSAValue primCtx -> LowerCtx primCtx
 | .field tys idx value, ctx => do
     let term <- valueToTerm? value ctx
     some (.app (.structProj tys idx) [term])
-| .primEq lhs rhs, ctx => do
-    let lhsTerm <- valueToTerm? lhs ctx
-    let rhsTerm <- valueToTerm? rhs ctx
-    some (.primEq lhsTerm rhsTerm)
-| .primLt lhs rhs, ctx => do
-    let lhsTerm <- valueToTerm? lhs ctx
-    let rhsTerm <- valueToTerm? rhs ctx
-    some (.primLt lhsTerm rhsTerm)
-| .primGt lhs rhs, ctx => do
-    let lhsTerm <- valueToTerm? lhs ctx
-    let rhsTerm <- valueToTerm? rhs ctx
-    some (.primGt lhsTerm rhsTerm)
+| .op name args, ctx => do
+    let argTerms <- valuesToTerms? args ctx
+    some (.op name argTerms)
 | .block _resultTy body, ctx =>
     toTerm? body ctx
 | @SSAValue.phi _ _ scope idx, _ctx =>
@@ -301,11 +290,11 @@ macro_rules
   | `(ssaValue% field($tys:term, $idx:term, $value:ssaValue)) =>
       `(SSAValue.field $tys $idx (ssaValue% $value))
   | `(ssaValue% eq $lhs:ident $rhs:ident) =>
-      `(SSAValue.primEq (SSAValue.var (ssaName% $lhs)) (SSAValue.var (ssaName% $rhs)))
+      `(SSAValue.op "eq" [SSAValue.var (ssaName% $lhs), SSAValue.var (ssaName% $rhs)])
   | `(ssaValue% lt $lhs:ident $rhs:ident) =>
-      `(SSAValue.primLt (SSAValue.var (ssaName% $lhs)) (SSAValue.var (ssaName% $rhs)))
+      `(SSAValue.op "lt" [SSAValue.var (ssaName% $lhs), SSAValue.var (ssaName% $rhs)])
   | `(ssaValue% gt $lhs:ident $rhs:ident) =>
-      `(SSAValue.primGt (SSAValue.var (ssaName% $lhs)) (SSAValue.var (ssaName% $rhs)))
+      `(SSAValue.op "gt" [SSAValue.var (ssaName% $lhs), SSAValue.var (ssaName% $rhs)])
   | `(ssaValue% loop ( $states:ssaStates ) : $resultTy:ssaTy { $body:ssaExpr }) =>
       `(SSAValue.loopBody (List.nil : VarCtx)
           (ssaStateVars% [ $states ])

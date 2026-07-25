@@ -141,6 +141,46 @@ structure Val (primCtx : PrimitiveCtx) where
   ty : Ty
   val : Ty.type primCtx ty
 
+/- A user-defined fixed-arity operator. `out` maps operand types to `some` result type when
+  supported or `none` otherwise; `interp` evaluates them, returning `none` when undefined. -/
+structure Op (primCtx : PrimitiveCtx) where
+  arity : Nat
+  out : (Fin arity → Ty) → Option Ty
+  interp : {tys : Fin arity → Ty} → {r : Ty} → out tys = some r →
+    List (Val primCtx) → Option (Ty.type primCtx r)
+
+/- operator context: named operators, looked up the way `PrimFuncCtx` looks up functions -/
+abbrev OpCtx (primCtx : PrimitiveCtx) := List (String × Op primCtx)
+
+/- Infer an operator's output type. `eq` is built in for matching types; `lt` and `gt` must
+  exist in the context but always return `Bool`; other operators use their declared `out`. -/
+def OpCtx.outTy? {primCtx : PrimitiveCtx} (opCtx : OpCtx primCtx)
+    (name : String) (tys : List Ty) : Option Ty :=
+  if name = "eq" then
+    match tys with
+    | [p, q] => if p = q then some (.prim "Bool") else none
+    | _ => none
+  else
+    let op? : Option (Op primCtx) := (opCtx.find? (·.1 = name)).map (·.2)
+    match op? with
+    | some op =>
+        if h : tys.length = op.arity then
+          let f : Fin op.arity → Ty := fun i => tys.get (i.cast h.symm)
+          if name = "lt" ∨ name = "gt" then (op.out f).map (fun _ => .prim "Bool")
+          else op.out f
+        else none
+    | none => none
+
+/- apply an operator to operand values, mirroring how `.op` is evaluated -/
+def Op.applyVals {primCtx : PrimitiveCtx} (op : Op primCtx) (vals : List (Val primCtx)) :
+    Option (Val primCtx) :=
+  if h : vals.length = op.arity then
+    let tys : Fin op.arity → Ty := fun i => (vals.get (i.cast h.symm)).ty
+    match hout : op.out tys with
+    | some r => (Val.mk r) <$> op.interp hout vals
+    | none => none
+  else none
+
 inductive Term (primCtx : PrimitiveCtx) where
 /- primitive value tagged with its Zag type -/
 | prim (ty : Ty) : Ty.type primCtx ty → Term primCtx
@@ -149,10 +189,9 @@ inductive Term (primCtx : PrimitiveCtx) where
 /- debrujin index of variable -/
 | var : Nat → Term primCtx
 | app : Term primCtx → List (Term primCtx) → Term primCtx
-/- comparisons for primitive values; typing enforces both operands share one primitive type -/
-| primEq : Term primCtx → Term primCtx → Term primCtx
-| primLt : Term primCtx → Term primCtx → Term primCtx
-| primGt : Term primCtx → Term primCtx → Term primCtx
+/- application of a named n-ary operator over primitive values (see `Op`);
+  the comparisons `eq`/`lt`/`gt` are binary operators -/
+| op : String → List (Term primCtx) → Term primCtx
 /- struct constructor function for a concrete list of field types -/
 | mkStruct : List Ty → Term primCtx
 /- field projection function for a concrete struct type -/
@@ -213,6 +252,7 @@ syntax "func(" ident ")" : zagTerm
 syntax "func(" str ")" : zagTerm
 syntax "var(" term ")" : zagTerm
 syntax "call" zagTerm "[" zagTerm,* "]" : zagTerm
+syntax "op" str "[" zagTerm,* "]" : zagTerm
 syntax "primEq" zagTerm zagTerm : zagTerm
 syntax "primLt" zagTerm zagTerm : zagTerm
 syntax "primGt" zagTerm zagTerm : zagTerm
@@ -246,12 +286,14 @@ macro_rules
   | `(zagTerm% var($idx:term)) => `(Zag.Term.var (($idx : Nat)))
   | `(zagTerm% call $fn:zagTerm [ $args:zagTerm,* ]) =>
       `(Zag.Term.app (zagTerm% $fn) [ $[(zagTerm% $args)],* ])
+  | `(zagTerm% op $name:str [ $args:zagTerm,* ]) =>
+      `(Zag.Term.op $name [ $[(zagTerm% $args)],* ])
   | `(zagTerm% primEq $lhs:zagTerm $rhs:zagTerm) =>
-      `(Zag.Term.primEq (zagTerm% $lhs) (zagTerm% $rhs))
+      `(Zag.Term.op "eq" [(zagTerm% $lhs), (zagTerm% $rhs)])
   | `(zagTerm% primLt $lhs:zagTerm $rhs:zagTerm) =>
-      `(Zag.Term.primLt (zagTerm% $lhs) (zagTerm% $rhs))
+      `(Zag.Term.op "lt" [(zagTerm% $lhs), (zagTerm% $rhs)])
   | `(zagTerm% primGt $lhs:zagTerm $rhs:zagTerm) =>
-      `(Zag.Term.primGt (zagTerm% $lhs) (zagTerm% $rhs))
+      `(Zag.Term.op "gt" [(zagTerm% $lhs), (zagTerm% $rhs)])
   | `(zagTerm% if $cond:zagTerm { $thenTerm:zagTerm } else { $elseTerm:zagTerm }) =>
       `(Zag.Term.ite (zagTerm% $cond) (zagTerm% $thenTerm) (zagTerm% $elseTerm))
   | `(zagTerm% recurse $resultTy:zagTy from $init:zagTerm { $body:zagTerm }) =>
@@ -308,50 +350,51 @@ abbrev PrimFuncCtx (primCtx : PrimitiveCtx) := List (String × PrimFunc primCtx)
 def PrimFuncCtx.get? {primCtx : PrimitiveCtx} (primFuncCtx : PrimFuncCtx primCtx) (name : String) : Option (PrimFunc primCtx) :=
   (primFuncCtx.find? (·.1 = name)).map (·.2)
 
+/- Everything a `Term` is interpreted against, packed together so it can be threaded as one value
+  rather than three: the primitive types, the primitive functions over them, and the operators.
+  The later fields depend on the earlier `primCtx`. -/
+structure Ctx where
+  primCtx : PrimitiveCtx
+  primFuncCtx : PrimFuncCtx primCtx
+  opCtx : OpCtx primCtx
+
 /- `hasType Δ Γ t T` means `Γ ⊢ t : T` under the primitive context `Δ` and primitive function context `δ`
   which we denote as `Δ, δ ⊨ (Γ ⊢ t : T)` or `Δ, δ ⊨ Γ ⊢ t : T`
 
   `hasType` will never be true if the `ty : Ty` contains vars.
   `Ty` with vars are only used for Zag propositions.
 -/
-inductive Term.hasType (primCtx : PrimitiveCtx) (primFuncCtx : PrimFuncCtx primCtx) : VarCtx → Term primCtx → Ty → Prop where
-| prim {varCtx} {ty : Ty} (val : Ty.type primCtx ty) :
-    hasType primCtx primFuncCtx varCtx (.prim ty val) ty
-| primFunc {varCtx} {idx : Fin primFuncCtx.length} : hasType primCtx primFuncCtx varCtx (.primFunc primFuncCtx[idx].1) primFuncCtx[idx].2.ty
-| var {varCtx} {idx : Fin varCtx.length} {ty : Ty} (h : varCtx.get idx = ty) : hasType primCtx primFuncCtx varCtx (.var idx) ty
-| primEq {varCtx p lhs rhs}
-    (hlhs : hasType primCtx primFuncCtx varCtx lhs (.prim p))
-    (hrhs : hasType primCtx primFuncCtx varCtx rhs (.prim p)) :
-    hasType primCtx primFuncCtx varCtx (.primEq lhs rhs) (.prim "Bool")
-| primLt {varCtx p lhs rhs}
-    (hlhs : hasType primCtx primFuncCtx varCtx lhs (.prim p))
-    (hrhs : hasType primCtx primFuncCtx varCtx rhs (.prim p)) :
-    hasType primCtx primFuncCtx varCtx (.primLt lhs rhs) (.prim "Bool")
-| primGt {varCtx p lhs rhs}
-    (hlhs : hasType primCtx primFuncCtx varCtx lhs (.prim p))
-    (hrhs : hasType primCtx primFuncCtx varCtx rhs (.prim p)) :
-    hasType primCtx primFuncCtx varCtx (.primGt lhs rhs) (.prim "Bool")
-| app {varCtx} {f : Term primCtx} {fTy : Ty} {args : List (Term primCtx)} {argsTy : List Ty}
-  (hf : hasType primCtx primFuncCtx varCtx f (.func argsTy fTy))
+inductive Term.hasType (ctx : Ctx) : VarCtx → Term ctx.primCtx → Ty → Prop where
+| prim {varCtx} {ty : Ty} (val : Ty.type ctx.primCtx ty) :
+    hasType ctx varCtx (.prim ty val) ty
+| primFunc {varCtx} {idx : Fin ctx.primFuncCtx.length} : hasType ctx varCtx (.primFunc ctx.primFuncCtx[idx].1) ctx.primFuncCtx[idx].2.ty
+| var {varCtx} {idx : Fin varCtx.length} {ty : Ty} (h : varCtx.get idx = ty) : hasType ctx varCtx (.var idx) ty
+| op {varCtx} {name : String} {args : List (Term ctx.primCtx)} {tys : List Ty} {r : Ty}
+    (hargs₁ : args.length = tys.length)
+    (hargs₂ : ∀ idx : Fin args.length, hasType ctx varCtx args[idx] tys[idx])
+    (hout : ctx.opCtx.outTy? name tys = some r) :
+    hasType ctx varCtx (.op name args) r
+| app {varCtx} {f : Term ctx.primCtx} {fTy : Ty} {args : List (Term ctx.primCtx)} {argsTy : List Ty}
+  (hf : hasType ctx varCtx f (.func argsTy fTy))
   (hargs₁ : args.length = argsTy.length)
-  (hargs₂ : ∀ idx : Fin args.length, hasType primCtx primFuncCtx varCtx args[idx] argsTy[idx]) : hasType primCtx primFuncCtx varCtx (.app f args) fTy
+  (hargs₂ : ∀ idx : Fin args.length, hasType ctx varCtx args[idx] argsTy[idx]) : hasType ctx varCtx (.app f args) fTy
 | mkStruct {varCtx} {tys : List Ty} :
-    hasType primCtx primFuncCtx varCtx (.mkStruct tys) (.func tys (.struct tys))
+    hasType ctx varCtx (.mkStruct tys) (.func tys (.struct tys))
 | structProj {varCtx} {tys : List Ty} (idx : Fin tys.length) :
-    hasType primCtx primFuncCtx varCtx (.structProj tys idx) (.func [.struct tys] tys[idx])
-| ite {varCtx} {cond thenTerm elseTerm : Term primCtx} {ty : Ty}
-    (hcond : hasType primCtx primFuncCtx varCtx cond (.prim "Bool"))
-    (hthen : hasType primCtx primFuncCtx varCtx thenTerm ty)
-    (helse : hasType primCtx primFuncCtx varCtx elseTerm ty) :
-    hasType primCtx primFuncCtx varCtx (.ite cond thenTerm elseTerm) ty
+    hasType ctx varCtx (.structProj tys idx) (.func [.struct tys] tys[idx])
+| ite {varCtx} {cond thenTerm elseTerm : Term ctx.primCtx} {ty : Ty}
+    (hcond : hasType ctx varCtx cond (.prim "Bool"))
+    (hthen : hasType ctx varCtx thenTerm ty)
+    (helse : hasType ctx varCtx elseTerm ty) :
+    hasType ctx varCtx (.ite cond thenTerm elseTerm) ty
 | recurse {varCtx}
     {stateTy resultTy : Ty}
-    {init body : Term primCtx}
-    (hinit : hasType primCtx primFuncCtx varCtx init stateTy)
-    (hbody : hasType primCtx primFuncCtx
+    {init body : Term ctx.primCtx}
+    (hinit : hasType ctx varCtx init stateTy)
+    (hbody : hasType ctx
               (varCtx ++ [stateTy, .func [stateTy] resultTy]) body resultTy) :
-    hasType primCtx primFuncCtx varCtx (.recurse resultTy init body) resultTy
+    hasType ctx varCtx (.recurse resultTy init body) resultTy
 
-/- a `Term` of a particular `ty : Ty` under some primitive and variable context -/
-abbrev TermOf (primCtx : PrimitiveCtx) (primFuncCtx : PrimFuncCtx primCtx) (varCtx : VarCtx) (ty : Ty) :=
-  { term : Term primCtx // term.hasType primCtx primFuncCtx varCtx ty }
+/- a `Term` of a particular `ty : Ty` under some context and variable context -/
+abbrev TermOf (ctx : Ctx) (varCtx : VarCtx) (ty : Ty) :=
+  { term : Term ctx.primCtx // term.hasType ctx varCtx ty }
