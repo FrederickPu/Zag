@@ -85,6 +85,7 @@ inductive SSAValue (primCtx : PrimitiveCtx) where
 | primEq (lhs rhs : SSAValue primCtx)
 | primLt (lhs rhs : SSAValue primCtx)
 | primGt (lhs rhs : SSAValue primCtx)
+| block (resultTy : Ty) (body : SSAExpr primCtx)
 /- access variable from scope -/
 | phi {state : List SSAVar} (scope : LoopScope state) (idx : Fin state.length)
 | loopBody
@@ -97,6 +98,7 @@ inductive SSAValue (primCtx : PrimitiveCtx) where
 inductive SSAExpr (primCtx : PrimitiveCtx) where
 | ret (value : SSAValue primCtx)
 | let_ (name : String) (value : SSAValue primCtx) (next : SSAExpr primCtx)
+| seq (expr next : SSAExpr primCtx)
 | ite (cond : SSAValue primCtx) (thenExpr elseExpr : SSAExpr primCtx)
 | yield (next : List (SSAValue primCtx))
 
@@ -124,8 +126,13 @@ end SSAValue
 
 namespace SSAExpr
 
-def seq {primCtx : PrimitiveCtx} (bindings : List (String × SSAValue primCtx)) (result : SSAValue primCtx) : SSAExpr primCtx :=
+def lets {primCtx : PrimitiveCtx} (bindings : List (String × SSAValue primCtx)) (result : SSAValue primCtx) : SSAExpr primCtx :=
   bindings.foldr (fun binding next => .let_ binding.1 binding.2 next) (.ret result)
+
+def seqLetBindings {primCtx : PrimitiveCtx} (expr next : SSAExpr primCtx) : SSAExpr primCtx :=
+  match expr with
+  | .let_ name value body => .let_ name value (seqLetBindings body next)
+  | expr => .seq expr next
 
 mutual
 
@@ -154,6 +161,8 @@ def valueToTerm? {primCtx : PrimitiveCtx} : SSAValue primCtx -> LowerCtx primCtx
     let lhsTerm <- valueToTerm? lhs ctx
     let rhsTerm <- valueToTerm? rhs ctx
     some (.primGt lhsTerm rhsTerm)
+| .block _resultTy body, ctx =>
+    toTerm? body ctx
 | @SSAValue.phi _ _ scope idx, _ctx =>
     some (scope.phiTerm idx)
 | .loopBody _varCtx state init resultTy body, ctx => do
@@ -178,6 +187,9 @@ def toTerm? {primCtx : PrimitiveCtx} : SSAExpr primCtx -> LowerCtx primCtx -> Op
 | .let_ name value next, ctx => do
     let term <- valueToTerm? value ctx
     toTerm? next { ctx with vars := (name, term) :: ctx.vars }
+| .seq expr next, ctx => do
+    let _ <- toTerm? expr ctx
+    toTerm? next ctx
 | .ite cond thenExpr elseExpr, ctx => do
     let condTerm <- valueToTerm? cond ctx
     let thenTerm <- toTerm? thenExpr ctx
@@ -311,7 +323,7 @@ def NatTy : Ty :=
   .prim "Nat"
 
 def identitySeq : SSAExpr exampleCtx :=
-  SSAExpr.seq [("x", .nat 1)] (.var "x")
+  SSAExpr.lets [("x", .nat 1)] (.var "x")
 
 def identitySeqSyntax : SSAExpr exampleCtx :=
   ssa% {

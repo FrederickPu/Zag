@@ -7,7 +7,7 @@ name = "Zag"
 
 [[lean_lib]]
 name = "Lang"
-roots = ["Lang.SSA"]
+roots = ["Lang.SSA", "Lang.Simple"]
 
 [[lean_lib]]
 name = "Test"
