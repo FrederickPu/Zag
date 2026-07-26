@@ -304,27 +304,71 @@ macro_rules
       `(Zag.Term.app (Zag.Term.mkStruct [ $[(ty% { $tys })],* ]) [ $[(zagTerm% $fields)],* ])
   | `(zagTerm% ($term:zagTerm)) => `(zagTerm% $term)
 
-/- Zag propositions (first order statements about terms and types)
+/- Zag propositions (first order statements about expressions and types)
   note that the debrujin indexes for varTy and varTerm are tracked seperately -/
-inductive Pr (primCtx : PrimitiveCtx) where
+inductive Pr (E : Type) where
 /- include a ctx so that Zag propositions can talk about bound vars
   without needing to reason about a lambda style funcion type directly -/
-| eq (ctx : List Ty) (ty : Ty) : Term primCtx → Term primCtx → Pr primCtx
-| hasType (ctx : List Ty) : Term primCtx → Ty → Pr primCtx
-| and : Pr primCtx → Pr primCtx → Pr primCtx
-| or : Pr primCtx → Pr primCtx → Pr primCtx
-| implies : Pr primCtx → Pr primCtx → Pr primCtx
+| eq (ctx : List Ty) (ty : Ty) : E → E → Pr E
+| hasType (ctx : List Ty) : E → Ty → Pr E
+| and : Pr E → Pr E → Pr E
+| or : Pr E → Pr E → Pr E
+| implies : Pr E → Pr E → Pr E
 /- quantify over Ty -/
-| forallTy : Pr primCtx → Pr primCtx
+| forallTy : Pr E → Pr E
 /- quantify over Term -/
-| forallTerm : Pr primCtx → Pr primCtx
+| forallTerm : Pr E → Pr E
+deriving DecidableEq
 
 namespace Pr
 
-def forallTermOfType {primCtx : PrimitiveCtx} (boundIdx : Nat) (ty : Ty) (body : Pr primCtx) : Pr primCtx :=
+def map {E F : Type} (f : E → F) : Pr E → Pr F
+| .eq ctx ty lhs rhs => .eq ctx ty (f lhs) (f rhs)
+| .hasType ctx e ty => .hasType ctx (f e) ty
+| .and p q => .and (p.map f) (q.map f)
+| .or p q => .or (p.map f) (q.map f)
+| .implies p q => .implies (p.map f) (q.map f)
+| .forallTy p => .forallTy (p.map f)
+| .forallTerm p => .forallTerm (p.map f)
+
+@[simp] theorem map_id {E : Type} :
+    ∀ p : Pr E, p.map id = p
+| .eq _ _ _ _ => rfl
+| .hasType _ _ _ => rfl
+| .and p q => by simp [map, map_id p, map_id q]
+| .or p q => by simp [map, map_id p, map_id q]
+| .implies p q => by simp [map, map_id p, map_id q]
+| .forallTy p => by simp [map, map_id p]
+| .forallTerm p => by simp [map, map_id p]
+
+theorem map_congr {E F : Type} {f g : E → F} (hfg : ∀ e, f e = g e) :
+    ∀ p : Pr E, p.map f = p.map g
+| .eq _ _ _ _ => by simp [map, hfg]
+| .hasType _ _ _ => by simp [map, hfg]
+| .and p q => by simp [map, map_congr hfg p, map_congr hfg q]
+| .or p q => by simp [map, map_congr hfg p, map_congr hfg q]
+| .implies p q => by simp [map, map_congr hfg p, map_congr hfg q]
+| .forallTy p => by simp [map, map_congr hfg p]
+| .forallTerm p => by simp [map, map_congr hfg p]
+
+theorem map_eq_self {E : Type} {f : E → E} (hf : ∀ e, f e = e) :
+    ∀ p : Pr E, p.map f = p
+| p => (map_congr hf p).trans (map_id p)
+
+@[simp] theorem map_map {E F G : Type} (g : F → G) (f : E → F) :
+    ∀ p : Pr E, (p.map f).map g = p.map (g ∘ f)
+| .eq _ _ _ _ => rfl
+| .hasType _ _ _ => rfl
+| .and p q => by simp [map, map_map g f p, map_map g f q]
+| .or p q => by simp [map, map_map g f p, map_map g f q]
+| .implies p q => by simp [map, map_map g f p, map_map g f q]
+| .forallTy p => by simp [map, map_map g f p]
+| .forallTerm p => by simp [map, map_map g f p]
+
+def forallTermOfType {primCtx : PrimitiveCtx} (boundIdx : Nat) (ty : Ty) (body : Pr (Term primCtx)) : Pr (Term primCtx) :=
   .forallTerm (.implies (.hasType [] (.var boundIdx) ty) body)
 
-def forallNat {primCtx : PrimitiveCtx} (boundIdx : Nat) (body : Pr primCtx) : Pr primCtx :=
+def forallNat {primCtx : PrimitiveCtx} (boundIdx : Nat) (body : Pr (Term primCtx)) : Pr (Term primCtx) :=
   forallTermOfType boundIdx (.prim "Nat") body
 
 end Pr

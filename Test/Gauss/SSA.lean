@@ -27,8 +27,8 @@ def bodyTerm : Term natCtx := .ite condTerm yieldTerm accTerm
 def loopTerm (i acc : Nat) : Term natCtx :=
   .recurse NatTy (.app (.mkStruct stateTys) [Term.nat i, Term.nat acc]) bodyTerm
 
-def lhsProgram (n : Nat) : Term natCtx :=
-  (ssa% {
+def lhsSSA (n : Nat) : SSAExpr natCtx :=
+  ssa% {
     zero := prim(0 : Nat);
     one := prim(1 : Nat);
     start := prim(n : Nat);
@@ -43,9 +43,12 @@ def lhsProgram (n : Nat) : Term natCtx :=
         acc
       }
     }
-  } : SSAExpr natCtx).toTerm
+  }
 
-def gaussStatement (n : Nat) : Pr natCtx :=
+def lhsProgram (n : Nat) : Term natCtx :=
+  (lhsSSA n).toTerm
+
+def gaussStatement (n : Nat) : Pr (Term natCtx) :=
   .eq [] NatTy (lhsProgram n) (rhsTerm n)
 
 def stateFields (i acc : Nat) : (idx : Fin stateTys.length) → Ty.type natCtx stateTys[idx]
@@ -323,5 +326,61 @@ theorem gaussProvable (n : Nat) :
 
 example : Pr.Provable peanoCtx [] [] (gaussStatement 100) :=
   gaussProvable 100
+
+/-! ### SSA proposition -/
+
+def gaussGoalSSA (n : Nat) : Pr (SSAExpr natCtx) :=
+  .eq [] NatTy (lhsSSA n) (.ret (.raw (rhsTerm n)))
+
+theorem gaussGoalSSA_toTerm (n : Nat) :
+    (gaussGoalSSA n).toTerm? = some (gaussStatement n) := rfl
+
+theorem gaussProvableSSA (n : Nat) : Language.Provable peanoCtx [] [] (gaussGoalSSA n) :=
+  ⟨gaussStatement n, rfl, gaussProvable n⟩
+
+def gaussStructuralSSA (n : Nat) :
+    Refinement peanoCtx [] [] (gaussGoalSSA n) :=
+  Tactic.raise (Pr.Refinement.structural (ctx := peanoCtx) (ctxTy := []) (ctxTerm := []))
+    (gaussGoalSSA n)
+
+def gaussConjunctionSSA (n : Nat) : Pr (SSAExpr natCtx) :=
+  .and (gaussGoalSSA n) (gaussGoalSSA n)
+
+def inductionSSA : Tactic peanoCtx [] [] (SSAExpr natCtx) :=
+  Tactic?.toTactic <| Tactic?.raise <|
+    Pr.Induction.simpleInduction (ctxTy := []) (ctxTerm := []) succName succ_spec
+
+def gaussInductionSSA (n : Nat) : Refinement peanoCtx [] [] (gaussGoalSSA n) :=
+  inductionSSA (gaussGoalSSA n)
+
+example (n : Nat) :
+    (gaussStructuralSSA n).goals =
+      [.eq [] NatTy (.ret (.raw (lhsProgram n))) (.ret (.raw (rhsTerm n)))] :=
+  rfl
+
+example (n : Nat) :
+    (Tactic.raise (Pr.Refinement.structural (ctx := peanoCtx) (ctxTy := []) (ctxTerm := []))
+      (gaussConjunctionSSA n)).goals.length = 2 := rfl
+
+example (n : Nat) : (gaussInductionSSA n).goals.length = 2 := rfl
+
+def nonInductiveSSA : Pr (SSAExpr natCtx) :=
+  .hasType [] (.ret (.raw (Term.nat 0))) NatTy
+
+example : (inductionSSA nonInductiveSSA).goals = [nonInductiveSSA] := rfl
+
+def invalidSSA : SSAExpr natCtx := .yield []
+
+def invalidGoalSSA : Pr (SSAExpr natCtx) := .hasType [] invalidSSA NatTy
+
+example : invalidGoalSSA.toTerm? = none := rfl
+
+example :
+    (Tactic.raise (Pr.Refinement.structural (ctx := peanoCtx) (ctxTy := []) (ctxTerm := []))
+      invalidGoalSSA).goals = [invalidGoalSSA] := rfl
+
+example :
+    Tactic?.raise (Pr.Induction.simpleInduction (ctx := peanoCtx) (ctxTy := []) (ctxTerm := [])
+      succName succ_spec) invalidGoalSSA = none := rfl
 
 end Zag.Test.Gauss.SSA

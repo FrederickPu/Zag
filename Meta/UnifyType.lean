@@ -33,7 +33,7 @@ end Term
 
 namespace Pr
 
-def primitiveNames {primCtx : PrimitiveCtx} : Pr primCtx → List String
+def primitiveNames {primCtx : PrimitiveCtx} : Pr (Term primCtx) → List String
 | .eq varCtx ty lhs rhs =>
     varCtx.flatMap Ty.primitiveNames ++ ty.primitiveNames ++
       lhs.primitiveNames ++ rhs.primitiveNames
@@ -45,13 +45,13 @@ def primitiveNames {primCtx : PrimitiveCtx} : Pr primCtx → List String
 | .forallTy p => p.primitiveNames
 | .forallTerm p => p.primitiveNames
 
-namespace MetaProgram
+namespace TypeUnification
 
 def primitiveTypesDeclared (primCtx : PrimitiveCtx) (names : List String) : Prop :=
   ∀ name, name ∈ names → name ∈ primCtx.map Prod.fst
 
 def statePrimitiveNames {primCtx : PrimitiveCtx}
-    (ctxTy : List Ty) (ctxTerm : List (Term primCtx)) (goal : Pr primCtx) : List String :=
+    (ctxTy : List Ty) (ctxTerm : List (Term primCtx)) (goal : Pr (Term primCtx)) : List String :=
   ctxTy.flatMap Ty.primitiveNames ++ ctxTerm.flatMap Term.primitiveNames ++ goal.primitiveNames
 
 /- Faithful context assumptions for completeness of reflected type unification.
@@ -64,7 +64,7 @@ def statePrimitiveNames {primCtx : PrimitiveCtx}
    state to be declared in `PrimitiveCtx`; this deliberately does not rely on the
    reserved `Nat`/`Bool` fallback in `PrimitiveCtx.get?`. -/
 structure UnifyTypePrecondition (ctx : Ctx)
-    (ctxTy : List Ty) (ctxTerm : List (Term ctx.primCtx)) (goal : Pr ctx.primCtx) : Prop where
+    (ctxTy : List Ty) (ctxTerm : List (Term ctx.primCtx)) (goal : Pr (Term ctx.primCtx)) : Prop where
   primitiveCtxNames : (ctx.primCtx.map Prod.fst).Nodup
   primFuncNames : (ctx.primFuncCtx.map Prod.fst).Nodup
   primitiveNames : primitiveTypesDeclared ctx.primCtx (statePrimitiveNames ctxTy ctxTerm goal)
@@ -129,13 +129,13 @@ private def varMatch? (ctxTy : List Ty) :
     | none => none
 
 private def argGoals {primCtx : PrimitiveCtx} (varCtx : List Ty) :
-    List (Term primCtx) → List Ty → List (Pr primCtx)
+    List (Term primCtx) → List Ty → List (Pr (Term primCtx))
 | arg :: args, ty :: tys => .hasType varCtx arg ty :: argGoals varCtx args tys
 | _, _ => []
 
 private def unifyTypeHasTypeGoals {ctx : Ctx}
     (ctxTy : List Ty) (ctxTerm : List (Term ctx.primCtx))
-    (varCtx : List Ty) (term : Term ctx.primCtx) (ty : Ty) : List (Pr ctx.primCtx) :=
+    (varCtx : List Ty) (term : Term ctx.primCtx) (ty : Ty) : List (Pr (Term ctx.primCtx)) :=
     match term with
     | .prim actualTy _ =>
         if actualTy = Ty.subst ctxTy ty then [] else [.hasType varCtx term ty]
@@ -188,7 +188,7 @@ private def unifyTypeHasTypeGoals {ctx : Ctx}
 
 private def unifyTypeGoals {ctx : Ctx}
     (ctxTy : List Ty) (ctxTerm : List (Term ctx.primCtx)) :
-    Pr ctx.primCtx → List (Pr ctx.primCtx)
+    Pr (Term ctx.primCtx) → List (Pr (Term ctx.primCtx))
 | .hasType varCtx term ty => unifyTypeHasTypeGoals ctxTy ctxTerm varCtx term ty
 | goal => [goal]
 
@@ -478,7 +478,7 @@ private theorem unifyTypeHasType_sound {ctx : Ctx} {ctxTy : List Ty}
           | ofProof proof => exact proof
 
 private theorem unifyType_sound {ctx : Ctx}
-    {ctxTy : List Ty} {ctxTerm : List (Term ctx.primCtx)} {goal : Pr ctx.primCtx} :
+    {ctxTy : List Ty} {ctxTerm : List (Term ctx.primCtx)} {goal : Pr (Term ctx.primCtx)} :
     (∀ subgoal, subgoal ∈ unifyTypeGoals (ctx := ctx) ctxTy ctxTerm goal →
       Pr.Provable ctx ctxTy ctxTerm subgoal) →
       Pr.Provable ctx ctxTy ctxTerm goal := by
@@ -506,17 +506,18 @@ private theorem unifyType_sound {ctx : Ctx}
       exact proveSubgoals (.forallTerm p) (by simp [unifyTypeGoals])
 
 def unifyType {ctx : Ctx}
-    {ctxTy : List Ty} {ctxTerm : List (Term ctx.primCtx)} (goal : Pr ctx.primCtx) :
-    MetaProgram ctx ctxTy ctxTerm goal where
+    {ctxTy : List Ty} {ctxTerm : List (Term ctx.primCtx)} (goal : Pr (Term ctx.primCtx)) :
+    Refinement ctx ctxTy ctxTerm goal where
   goals := unifyTypeGoals (ctx := ctx) ctxTy ctxTerm goal
   prove := by
     intro proveSubgoals
+    simp only [Language.Provable_term] at proveSubgoals ⊢
     exact unifyType_sound proveSubgoals
 
 
 /-! ### Completeness
 
-`MetaProgram.complete (unifyType goal)`: if the goal is provable, every generated
+`Refinement.complete (unifyType goal)`: if the goal is provable, every generated
 subgoal is provable.  Proved for empty type/term substitutions and unique primfunc names. -/
 
 mutual
@@ -774,10 +775,11 @@ private theorem unifyTypeHasType_complete_nil {ctx : Ctx} {varCtx : List Ty}
             subst hsubgoal; exact hgoal
 
 /-- Completeness of `unifyType` for closed proof states (empty type and term contexts). -/
-theorem unifyType_complete {ctx : Ctx} {goal : Pr ctx.primCtx}
+theorem unifyType_complete {ctx : Ctx} {goal : Pr (Term ctx.primCtx)}
     (hnames : (ctx.primFuncCtx.map Prod.fst).Nodup) :
-    complete (unifyType (ctx := ctx) (ctxTy := []) (ctxTerm := []) goal) := by
+    Refinement.complete (unifyType (ctx := ctx) (ctxTy := []) (ctxTerm := []) goal) := by
   intro hgoal subgoal hsubgoal
+  simp only [Language.Provable_term] at hgoal ⊢
   cases goal with
   | hasType varCtx term ty =>
       simp [unifyType, unifyTypeGoals] at hsubgoal
@@ -795,7 +797,7 @@ theorem unifyType_complete {ctx : Ctx} {goal : Pr ctx.primCtx}
   | forallTerm p =>
       simp [unifyType, unifyTypeGoals] at hsubgoal; subst hsubgoal; exact hgoal
 
-end MetaProgram
+end TypeUnification
 
 end Pr
 

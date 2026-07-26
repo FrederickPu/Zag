@@ -388,7 +388,7 @@ def Term.subst {primCtx : PrimitiveCtx} (ctxTerm : List (Term primCtx)) (term : 
 
 /- Zag propositions can only be assigned semantics under a fixed `Ctx` -/
 def Pr.interp (ctx : Ctx) :
-    (ctxTy : List Ty) → (ctxTerm : List (Term ctx.primCtx)) → Pr ctx.primCtx → Prop
+    (ctxTy : List Ty) → (ctxTerm : List (Term ctx.primCtx)) → Pr (Term ctx.primCtx) → Prop
 | ctxTy, ctxTerm, .eq varCtx ty x y =>
   Term.eq ctx (varCtx.map (Ty.subst ctxTy)) (Ty.subst ctxTy ty) (Term.subst ctxTerm x) (Term.subst ctxTerm y)
 | ctxTy, ctxTerm, .hasType varCtx t ty =>
@@ -406,7 +406,7 @@ def Pr.interp (ctx : Ctx) :
 
 /- metatheory (in this case lean) determines which Zag propositions are provable -/
 inductive Pr.Provable (ctx : Ctx)
-    (ctxTy : List Ty) (ctxTerm : List (Term ctx.primCtx)) (p : Pr ctx.primCtx) : Prop
+    (ctxTy : List Ty) (ctxTerm : List (Term ctx.primCtx)) (p : Pr (Term ctx.primCtx)) : Prop
 | ofProof (proof : Pr.interp ctx ctxTy ctxTerm p)
 
 end Zag

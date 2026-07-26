@@ -4,14 +4,14 @@ Program verification is a much stronger alternative to testing. When you test a 
 
 # tldr
 
-Zag lets you take a low-level program — C, LLVM IR, Zig — embed its language once, write programs in it, and prove properties about those programs in Lean. The distinctive part is *what you have to trust*. Every proof step is carried out by a `MetaProgram`: a piece of proof automation that comes packaged with a machine-checked proof of its own soundness. An unsound automation simply does not typecheck. So the only thing you trust by hand is the semantic specification of your target language — the meaning of its primitive types and operations. Everything built on top of that is checked by Lean.
+Zag lets you take a low-level program — C, LLVM IR, Zig — embed its language once, write programs and propositions in it, and prove them in Lean. The distinctive part is *what you have to trust*. Every proof step is represented by a `Refinement`: proof automation packaged with a machine-checked certificate that its subgoals imply its goal. An unsound refinement does not typecheck. The hand-written trust boundary is the target language's semantic specification: its primitive types and operations, and its lowering to Zag's core language. Everything above that boundary is checked by Lean.
 
 ```
 ┌───────────────────────────────────────────────────────────┐
 │                  what you trust by hand                   │
 │                                                           │
 │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐     │
-│  │ PrimitiveCtx │  │ PrimFuncCtx  │  │   toTerm     │     │
+│  │ PrimitiveCtx │  │ PrimFuncCtx  │  │   toTerm?    │     │
 │  │              │  │              │  │              │     │
 │  │ types and    │  │ operations   │  │ source AST → │     │
 │  │ their Lean   │  │ and how they │  │ Zag's core   │     │
@@ -33,7 +33,7 @@ Zag lets you take a low-level program — C, LLVM IR, Zig — embed its language
           │  • Term.eval           │  ← one evaluator for everything
           │  • Term.hasType        │
           │  • Pr.interp           │  ← propositions are data
-          │  • MetaProgram         │  ← automations certify themselves
+          │  • Refinement          │  ← automations certify themselves
           └────────────────────────┘
                        │
                        ▼
@@ -75,14 +75,14 @@ source language                Lean
                                  that don't suffice
 ```
 
-Zag avoids both failure modes. Against #1, you never hand-write a translator at all: you *declaratively specify* your language's semantics — its primitive types and operations, plus a structural lowering into Zag's core `Term` — and Zag supplies the single, shared evaluator that every proof runs against. There is no bespoke transpiler to get wrong, because the semantics *is* the specification. Against #2, the trust base stays just as small, but every automation is *total and self-certifying*. Instead of open-ended metacode, we reify propositions as a datatype `Pr` and automations as values of a type `MetaProgram` ([`Zag/Meta.lean`](Zag/Meta.lean)) that carries, in its type, a proof that its reduction is valid:
+Zag avoids both failure modes. Against #1, lowering is part of the language specification rather than an opaque external translation step: primitive semantics and structural lowering into Zag's core `Term` are stated explicitly, and Zag supplies the shared evaluator used by every proof. Against #2, the trust base stays small, but every automation is *total and self-certifying*. Propositions are reified as `Pr` values and proof reductions as `Refinement` values ([`Zag/Meta.lean`](Zag/Meta.lean)) carrying a proof that their subgoals suffice:
 
 ```
 source language          ┌──────────────────────────────────────┐
 ┌──────────┐             │            Zag                       │
-│  program │───toTerm──> │                                      │
+│  program │──toTerm?──> │                                      │
 └──────────┘             │  ┌────────────┐  ┌───────────────┐   │
-                         │  │ Term.eval  │  │ MetaProgram   │   │
+                         │  │ Term.eval  │  │ Refinement    │   │
                          │  │            │  │               │   │
                          │  │ one shared │  │ total, self-  │   │
                          │  │ evaluator  │  │ certifying:   │   │
@@ -100,15 +100,23 @@ source language          ┌─────────────────�
 ```
 
 ```lean
-structure MetaProgram primCtx primFuncCtx ctxTy ctxTerm goal where
-  goals : List (Pr primCtx)
+structure Refinement ctx ctxTy ctxTerm {E} [Language ctx.primCtx E] (goal : Pr E) where
+  goals : List (Pr E)
   prove : (∀ subgoal, subgoal ∈ goals →
-    Pr.Provable ... subgoal) → Pr.Provable ... goal
+    Language.Provable ... subgoal) → Language.Provable ... goal
+
+abbrev Tactic ctx ctxTy ctxTerm E [Language ctx.primCtx E] :=
+  (goal : Pr E) → Refinement ctx ctxTy ctxTerm goal
+
+abbrev Tactic? ctx ctxTy ctxTerm E [Language ctx.primCtx E] :=
+  (goal : Pr E) → Option (Refinement ctx ctxTy ctxTerm goal)
 ```
 
-A `MetaProgram` for a `goal` produces a list of sub`goals` together with `prove`: a proof that provability of all the subgoals implies provability of the goal. (`primCtx`/`primFuncCtx` are the language's primitive types and operations; `ctxTy`/`ctxTerm` are the ambient variable context.) Because `prove` is a *checked proof* the automation carries with it, you cannot construct a `MetaProgram` whose subgoals fail to imply its goal — it would not typecheck — and, being a plain total function, it always terminates. Lean's kernel already stops any tactic from proving something false; what `MetaProgram` adds is that every reduction is valid *by construction* and every automation is total, so the layer composes and extends without anyone re-auditing it by hand.
+A `Refinement` for a `goal` produces a list of sub`goals` together with `prove`: a proof that provability of all the subgoals implies provability of the goal. `ctxTy` and `ctxTerm` are the ambient variable context, while `E` identifies the language in which the goal is written. Because `prove` is checked, a refinement whose subgoals do not imply its goal cannot be constructed. Lean's kernel already prevents false theorems; `Refinement` additionally makes each reduction valid by construction and each tactic an ordinary terminating Lean function.
 
-`MetaProgram`s compose. Given a program that emits subgoals, `refine` ([`Zag/Meta.lean`](Zag/Meta.lean)) replaces each subgoal with another `MetaProgram`, and `iterate` ([`Zag/Meta.lean`](Zag/Meta.lean)) applies a step under bounded fuel — building a tree whose leaves are closed by hand-written Lean proofs, with the soundness certificate threaded through automatically. Concretely, `iterate n step goal` unfolds as:
+A `Tactic` is a total function from every goal in language `E` to a certified refinement of that same goal. It may close the goal, reduce it to new subgoals, or leave it unchanged with `Refinement.stuck`. A `Tactic?` can instead return `none` to say that it does not apply. `Tactic?.orElse` can then try another tactic without comparing goals for equality, while `Tactic?.toTactic` turns a final `none` into a stuck refinement containing the original goal.
+
+Refinements and tactics compose. Given a refinement that emits subgoals, `refine` ([`Zag/Meta.lean`](Zag/Meta.lean)) replaces each subgoal with another refinement; `Tactic.andThen` performs that operation with a tactic, and `Tactic.iterate` applies a tactic under bounded fuel. `Tactic.raise` and `Tactic?.raise` reuse core `Term` tactics for reflecting surface languages. This builds a tree whose leaves are closed by Lean proofs, with the certificate threaded through automatically. Concretely, `iterate n step goal` unfolds as:
 
 ```
 iterate n step goal  =
@@ -138,7 +146,7 @@ So for `n = 3`, expanding one branch:
            refine                            (leaf)             (leaf)
               |
       iterate 0 step g₁₁₁
-        goals: []  ← fuel exhausted, leaf
+        goals: output of the final step application
 ```
 
 After all branches close, the final program's `.goals` is `[] ++ [] ++ [] = []`. Then `toProvable program hempty` ([`Zag/Meta.lean`](Zag/Meta.lean)) (where `hempty : program.goals = []`) collapses the tree:
@@ -152,7 +160,7 @@ toProvable program hempty :
                                refine's composition
 ```
 
-Each `refine` composes the `prove` fields: the outer program's `prove` says "if my subgoals hold, I hold," and each inner program's `prove` says the same for its own subgoals. The fuel bound `n` guarantees termination — after `n` steps, remaining goals are emitted as-is — and `toProvable` checks the list is empty, converting the whole tree into a single proof.
+Each `refine` composes the `prove` fields: the outer refinement's `prove` says "if my subgoals hold, I hold," and each inner refinement's `prove` says the same for its own subgoals. Fuel `n` permits `n` recursive refinements after the initial step, so a branch sees at most `n + 1` step applications. `toProvable` checks that the resulting goal list is empty and converts the tree into one proof.
 
 # embedding a language
 
@@ -200,11 +208,20 @@ abbrev natFuncCtx : PrimFuncCtx natCtx :=
 ```
 ([`Test/Gauss/SSA.lean`](Test/Gauss/SSA.lean))
 
-**3. `toTerm`** ([`Lang/SSA.lean`](Lang/SSA.lean)) — lower the AST into Zag's core `Term`, one clause per constructor. Most are direct: a source `ite` becomes a `Term.ite`, while the interesting clauses encode control flow: a loop lowers to `Term.recurse`, a `let_` extends the variable context, and a `yield` becomes a recursive call to the enclosing loop's motive. Programs can then be written with a custom `ssa%` syntax:
+**3. A `Language` instance** ([`Zag/Meta/Language.lean`](Zag/Meta/Language.lean)) — `toTerm?` lowers the AST into Zag's core `Term`. Most clauses are direct: a source `ite` becomes a `Term.ite`, while the interesting clauses encode control flow: a loop lowers to `Term.recurse`, a `let_` extends the variable context, and a `yield` becomes a recursive call to the enclosing loop's motive. The result is an `Option`, so malformed control flow is rejected rather than assigned an arbitrary core meaning. A reflecting language also supplies `ofTerm`, allowing core tactic subgoals to be quoted back into source propositions:
 
 ```lean
-def lhsProgram (n : Nat) : Term natCtx :=
-  (ssa% {
+instance : Language.Reflects natCtx (SSAExpr natCtx) where
+  toTerm? expr := SSAExpr.toTerm? expr {}
+  ofTerm term := .ret (.raw term)
+  toTerm?_ofTerm _ := rfl
+```
+
+Programs can then be written with the custom `ssa%` syntax while retaining their SSA type:
+
+```lean
+def lhsSSA (n : Nat) : SSAExpr natCtx :=
+  ssa% {
     zero := prim(0 : Nat);
     one := prim(1 : Nat);
     start := prim(n : Nat);
@@ -219,11 +236,14 @@ def lhsProgram (n : Nat) : Term natCtx :=
         acc
       }
     }
-  } : SSAExpr natCtx).toTerm
+  }
+
+theorem lhsSSA_lowers (n : Nat) :
+    Language.toTerm? (lhsSSA n) = some (loopTerm n 0) := rfl
 ```
 ([`Test/Gauss/SSA.lean`](Test/Gauss/SSA.lean))
 
-The `ssa%` block is only sugar — `toTerm` erases it entirely, leaving a plain `Term` value. You can see the result directly (`#eval lhsProgram 3` prints the raw AST). For symbolic `n` it is the following, writing `NatTy` for `.prim "Nat"`, `stateTys` for the loop-state type `[NatTy, NatTy]`, and `Term.nat k` for a `Nat` literal:
+The `ssa%` block remains surface syntax until `toTerm?` succeeds. For symbolic `n`, the resulting core term is the following, writing `NatTy` for `.prim "Nat"`, `stateTys` for the loop-state type `[NatTy, NatTy]`, and `Term.nat k` for a `Nat` literal:
 
 ```lean
 .recurse NatTy
@@ -241,20 +261,20 @@ The whole loop is one `recurse` over a struct-packed state `(i, acc)`; `.var 0` 
 
 # propositions, and what it means to prove one
 
-So far `Pr` has just been "the type of propositions." Its design deserves a closer look, because it is what makes automation possible at all.
+So far `Pr` has just been "the type of propositions." Its parameter records the expression type used at proposition leaves, which lets goals retain their source-language syntax.
 
 `Pr` is an *inductive datatype* of propositions ([`Zag/Data.lean`](Zag/Data.lean)) — not an arbitrary Lean `Prop`, but a small fixed grammar:
 
 ```lean
-inductive Pr (primCtx : PrimitiveCtx) where
-  | eq (ctx : List Ty) (ty : Ty) : Term primCtx → Term primCtx → Pr primCtx  -- two terms equal at a type
-  | hasType (ctx : List Ty) : Term primCtx → Ty → Pr primCtx                 -- a term has a type
-  | and : Pr primCtx → Pr primCtx → Pr primCtx                               -- (also: or, implies)
-  | forallTy   : Pr primCtx → Pr primCtx                                     -- ∀ over types
-  | forallTerm : Pr primCtx → Pr primCtx                                     -- ∀ over terms
+inductive Pr (E : Type) where
+  | eq (ctx : List Ty) (ty : Ty) : E → E → Pr E
+  | hasType (ctx : List Ty) : E → Ty → Pr E
+  | and : Pr E → Pr E → Pr E
+  | forallTy   : Pr E → Pr E
+  | forallTerm : Pr E → Pr E
 ```
 
-Because a `Pr` is *data* with finitely many shapes, a `MetaProgram` can pattern-match on it and take it apart — turn a `hasType` of an `ite` into three smaller `hasType`s, peel a `forallTerm`, split an `and`. You cannot case-analyse an arbitrary Lean `Prop` like that. Restricting propositions to this grammar is exactly the price that buys the ability to automate reasoning over them.
+Core goals use `Pr (Term primCtx)`; an SSA-native goal uses `Pr (SSAExpr primCtx)`. Because a `Pr` is *data* with finitely many shapes, a tactic can pattern-match on it and take it apart — peel a `forallTerm`, split an `and`, or lower its leaves and invoke a core tactic. You cannot case-analyse an arbitrary Lean `Prop` like that. Restricting propositions to this grammar is the price that buys structural automation.
 
 A `Pr` is only syntax. Its *meaning* is a genuine Lean proposition, assigned by `Pr.interp` ([`Zag/Theory.lean`](Zag/Theory.lean)), which just reads each shape off as the corresponding logical connective:
 
@@ -264,30 +284,43 @@ Pr.interp ... (.and p q)        =  Pr.interp ... p ∧ Pr.interp ... q
 Pr.interp ... (.forallTerm p)   =  ∀ x, Pr.interp ... p
 ```
 
-And `Pr.Provable p` ([`Zag/Theory.lean`](Zag/Theory.lean)) is nothing more than *holding a Lean proof of `Pr.interp p`*:
+`Pr.Provable p` ([`Zag/Theory.lean`](Zag/Theory.lean)) is nothing more than *holding a Lean proof of `Pr.interp p`* for a core proposition:
 
 ```lean
-inductive Pr.Provable ... (p : Pr primCtx) : Prop
+inductive Pr.Provable ... (p : Pr (Term primCtx)) : Prop
   | ofProof (proof : Pr.interp ... p)
 ```
 
-That is the honest bottom line. Proving a `Pr` is *just* proving its interpretation as an ordinary Lean proposition. A `MetaProgram` never proves anything you could not have proved by hand — it only lightens the burden, rewriting one `Pr` into smaller `Pr`s whose interpretations are easier to establish, until the leaves are plain Lean proofs.
+`Language.Provable` extends this to a surface proposition: it contains a successful `Pr.toTerm?` result and a `Pr.Provable` proof of that core proposition. Thus a surface goal has no separate semantics. A refinement never proves anything unavailable by hand; it only reduces one checked proposition to smaller checked propositions.
 
 **The Gauss example.** The theorem "the loop summing `1 + 2 + ... + n` returns `n * (n + 1) / 2`" is the `Pr` that equates two programs — the loop `lhsProgram n` and the closed form `rhsTerm n`, at type `Nat` ([`Test/Gauss/Rec.lean`](Test/Gauss/Rec.lean)):
 
 ```lean
-def gaussStatement (n : Nat) : Pr natCtx :=
+def gaussStatement (n : Nat) : Pr (Term natCtx) :=
   .eq [] NatTy (lhsProgram n) (rhsTerm n)
 ```
 
-Its interpretation `Pr.interp ... (gaussStatement n)` unfolds to two familiar demands: that both programs are well-typed, and that they evaluate to the same `Nat`. The typing demand is handled by `unifyType` ([`Meta/UnifyType.lean`](Meta/UnifyType.lean)) — a `MetaProgram` that decomposes `hasType` goals by the structure of the term (e.g. `hasType ctx (ite c t e) ty` splits into `c : Bool`, `t : ty`, `e : ty`):
+The same theorem can remain in SSA syntax ([`Test/Gauss/SSA.lean`](Test/Gauss/SSA.lean)):
 
 ```lean
-theorem bodyTerm_hasType : Term.hasType natCtx natFuncCtx bodyCtx bodyTerm NatTy := by
-  let program := iterate 20 (fun g => unifyType g) (.hasType bodyCtx bodyTerm NatTy)
-  have hclosed : program.goals = [] := by native_decide
-  have hprov := toProvable program hclosed
-  ...
+def gaussGoalSSA (n : Nat) : Pr (SSAExpr natCtx) :=
+  .eq [] NatTy (lhsSSA n) (.ret (.raw (rhsTerm n)))
+
+theorem gaussGoalSSA_toTerm (n : Nat) :
+    (gaussGoalSSA n).toTerm? = some (gaussStatement n) := rfl
+```
+
+`Tactic.raise` applies a core tactic after successful lowering and quotes its generated subgoals
+back through `ofTerm`. Partial tactics use `Tactic?.raise`; if one does not apply, `toTactic`
+retains the original SSA goal instead of replacing it with raw quoted core syntax. The test suite
+runs raised structural decomposition and induction and checks this no-op behavior.
+
+Its interpretation `Pr.interp ... (gaussStatement n)` unfolds to two familiar demands: that both programs are well-typed, and that they evaluate to the same `Nat`. The Gauss proof establishes the typing lemmas directly. Zag also provides `Pr.TypeUnification.unifyType` ([`Meta/UnifyType.lean`](Meta/UnifyType.lean)), a core tactic that decomposes `hasType` goals by term structure. For example, `hasType ctx (ite c t e) ty` reduces to typing obligations for the condition and both branches.
+
+```lean
+let refinement := Tactic.iterate 20
+  (Pr.TypeUnification.unifyType (ctx := peanoCtx) (ctxTy := []) (ctxTerm := []))
+  (.hasType bodyCtx bodyTerm NatTy)
 ```
 
 Here is the goal tree that `iterate` builds for `bodyTerm` — the loop body, an `ite` on a comparison:
@@ -320,12 +353,12 @@ var 0  structProj
   ok      ok
 ```
 
-Each leaf marked ok is resolved by `unifyType` matching against `primFuncMatch?`, `varMatch?`, or a known constructor type. After 20 fuel steps `native_decide` confirms the goal list is empty, and `toProvable` collapses the tree into a single proof. The evaluation demand is the real mathematics — an ordinary Lean proof that the loop computes the closed form — and, crucially, it is a proof about the loop's *real executable semantics*, not about some unverified tool's translation of it.
+Each leaf marked ok can be resolved by `unifyType` matching against `primFuncMatch?`, `varMatch?`, or a known constructor type. Once a refinement has no goals, `Refinement.toProvable` collapses it into a single proof. The evaluation demand is the real mathematics: an ordinary Lean proof that the loop computes the closed form and, crucially, a proof about the loop's executable semantics rather than an unverified translation.
 
 Under the hood, `gaussStatement n` is obtained by instantiating a *predicate* ([`Test/Gauss/Rec.lean`](Test/Gauss/Rec.lean)) — a `Pr` with a hole for the input:
 
 ```lean
-def gaussPredicate : Pr natCtx :=
+def gaussPredicate : Pr (Term natCtx) :=
   .eq [] NatTy
     (.recurse NatTy (.var 0) bodyTerm)           -- loop with input as var 0
     (.app (.primFunc "div")                       -- closed form with var 0
@@ -335,7 +368,7 @@ def gaussPredicate : Pr natCtx :=
 
 -- gaussStatement n = substitute nat(n) for var 0:
 theorem gaussStatement_eq (n : Nat) :
-    gaussStatement n = Pr.MetaProgram.instantiateTermAt 0 gaussPredicate (Term.nat n)
+    gaussStatement n = Pr.Induction.instantiateTermAt 0 gaussPredicate (Term.nat n)
 ```
 
 So `gaussStatement n` is literally `gaussPredicate` with `Term.nat n` plugged in for `var 0`. The proof proceeds by *natural-number induction on the predicate itself*: first prove the predicate holds at `0`, then prove it lifts from any `k` to `k + 1`. The full proof tree:
@@ -382,4 +415,4 @@ At the base, both sides of `.eq` evaluate to `Val.nat 0` — the loop with `init
 
 # what you trust
 
-That closes the loop on the opening promise. The trust base is exactly the language specification — `PrimitiveCtx` and `PrimFuncCtx`, the meaning of the primitives. The `MetaProgram` layer above it, `unifyType` today and more automation as the framework grows, is *total and self-certifying*: its `prove` field is a reduction Lean checks, so a broken automation is a compile-time type error rather than an unreliable tactic you debug at proof time. (Soundness — no false theorems — is guaranteed for everything by Lean's kernel regardless; what this layer adds is automation you can trust to actually work.) What is left for a human is only the genuine mathematical content — and even there, the surrounding framework guarantees you are proving something about the actual program.
+That closes the loop on the opening promise. The trust base is the language specification: `PrimitiveCtx`, `PrimFuncCtx`, and the partial lowering that connects surface syntax to core `Term`. The `Refinement` layer above it, including `unifyType` and induction, is *total and self-certifying*: each `prove` field is a reduction Lean checks, so a broken reduction is a compile-time type error. Soundness is guaranteed by Lean's kernel; refinements additionally make automation compositional and valid by construction. What remains for a human is the genuine mathematical content, with the surrounding framework ensuring it concerns the actual program semantics.

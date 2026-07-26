@@ -29,7 +29,7 @@ def lhsProgram (n : Nat) : Term natCtx :=
 def rhsTerm (n : Nat) : Term natCtx :=
   term% { call func(div) [call func(mul) [nat(n), call func(add) [nat(n), nat(1)]], nat(2)] }
 
-def gaussStatement (n : Nat) : Pr natCtx :=
+def gaussStatement (n : Nat) : Pr (Term natCtx) :=
   .eq [] NatTy (lhsProgram n) (rhsTerm n)
 
 def loopEnv (i : Nat) (env : List (Val natCtx)) : List (Val natCtx) :=
@@ -348,33 +348,33 @@ theorem gaussEq_provable_congr {a b : Term natCtx}
   subst hnil
   rw [lhsProgramOf_congr hab, rhsTermOf_congr hab, h.eq [] rfl]
 
-def gaussPredicate : Pr natCtx :=
+def gaussPredicate : Pr (Term natCtx) :=
   .eq [] NatTy
-    (.recurse NatTy (.var 0) (Pr.MetaProgram.weakenTermAt 0 bodyTerm))
+    (.recurse NatTy (.var 0) (Pr.Induction.weakenTermAt 0 bodyTerm))
     (.app (.primFunc "div")
       [(.app (.primFunc "mul") [(.var 0), (.app (.primFunc "add") [(.var 0), Term.nat 1])]),
        Term.nat 2])
 
 theorem gaussPredicate_instantiate_eq (t : Term natCtx) :
-    Pr.MetaProgram.instantiateTermAt 0 gaussPredicate t =
+    Pr.Induction.instantiateTermAt 0 gaussPredicate t =
       .eq [] NatTy (lhsProgramOf t) (rhsTermOf t) := by
   simp [gaussPredicate, lhsProgramOf, rhsTermOf,
-    Pr.MetaProgram.instantiateTermAt, Pr.MetaProgram.instantiateTermInTerm,
-    Pr.MetaProgram.instantiateTermInTerm_weakenTermAt, Term.nat]
+    Pr.Induction.instantiateTermAt, Pr.Induction.instantiateTermInTerm,
+    Pr.Induction.instantiateTermInTerm_weakenTermAt, Term.nat]
 
 theorem gaussStatement_eq (n : Nat) :
-    gaussStatement n = Pr.MetaProgram.instantiateTermAt 0 gaussPredicate (Term.nat n) := by
+    gaussStatement n = Pr.Induction.instantiateTermAt 0 gaussPredicate (Term.nat n) := by
   rw [gaussPredicate_instantiate_eq, gaussStatement, lhsProgram_eq_lhsProgramOf,
     rhsTerm_eq_rhsTermOf]
 
 theorem gaussPredicate_quantifierFree :
-    Pr.MetaProgram.quantifierFree gaussPredicate = true := rfl
+    Pr.Induction.quantifierFree gaussPredicate = true := rfl
 
 theorem gaussPredicate_congr {t : Term natCtx} {k : Nat}
     (ht : Term.hasType peanoCtx [] t (.prim "Nat"))
     (hte : Term.eval peanoCtx [] t = some (Val.nat k)) :
     Pr.Provable peanoCtx [] []
-        (Pr.MetaProgram.instantiateTermAt 0 gaussPredicate t) ↔
+        (Pr.Induction.instantiateTermAt 0 gaussPredicate t) ↔
       Pr.Provable peanoCtx [] [] (gaussStatement k) := by
   rw [gaussPredicate_instantiate_eq, gaussStatement, lhsProgram_eq_lhsProgramOf,
     rhsTerm_eq_rhsTermOf]
@@ -422,31 +422,33 @@ theorem gaussLiteralStep (k : Nat) :
   simp [Term.evalGo, cond_eval_succ k, step_eval_succ k _ hbody, closedForm_succ]
 
 theorem gaussInductionStepProvable :
-    Pr.Provable peanoCtx [] [] (Pr.MetaProgram.natStepGoal 0 succName gaussPredicate) :=
-  Pr.MetaProgram.natStepGoal_of_literal_step succ_spec gaussPredicate_quantifierFree
+    Pr.Provable peanoCtx [] [] (Pr.Induction.natStepGoal 0 succName gaussPredicate) :=
+  Pr.Induction.natStepGoal_of_literal_step succ_spec gaussPredicate_quantifierFree
     (fun _t k ht hte => (gaussStatement_eq k) ▸ gaussPredicate_congr ht hte)
     (fun k => (gaussStatement_eq (k + 1)) ▸ (gaussStatement_eq k) ▸ gaussLiteralStep k)
 
 theorem gaussBaseProvable :
     Pr.Provable peanoCtx [] []
-      (Pr.MetaProgram.instantiateTermAt 0 gaussPredicate (Term.nat 0)) := by
+      (Pr.Induction.instantiateTermAt 0 gaussPredicate (Term.nat 0)) := by
   rw [← gaussStatement_eq 0]
   exact gaussBaseCase
 
 def gaussInductionProgram (n : Nat) :
-    Pr.MetaProgram peanoCtx [] [] (gaussStatement n) :=
-  Pr.MetaProgram.natInductionWithPredicate succName succ_spec _ gaussPredicate n (gaussStatement_eq n)
+    Refinement peanoCtx [] [] (gaussStatement n) :=
+  Pr.Induction.natInductionWithPredicate succName succ_spec _ gaussPredicate n (gaussStatement_eq n)
     gaussPredicate_quantifierFree
 
 theorem gaussProvable (n : Nat) :
-    Pr.Provable peanoCtx [] [] (gaussStatement n) :=
-  (gaussInductionProgram n).prove fun _subgoal hsubgoal => by
-    cases hsubgoal with
-    | head => exact gaussBaseProvable
-    | tail _ htail =>
-        cases htail with
-        | head => exact gaussInductionStepProvable
-        | tail _ hrest => cases hrest
+    Pr.Provable peanoCtx [] [] (gaussStatement n) := by
+  simp only [← Language.Provable_term]
+  apply (gaussInductionProgram n).prove
+  intro _subgoal hsubgoal
+  cases hsubgoal with
+  | head => exact ⟨_, Pr.toTerm?_term _, gaussBaseProvable⟩
+  | tail _ htail =>
+      cases htail with
+      | head => exact ⟨_, Pr.toTerm?_term _, gaussInductionStepProvable⟩
+      | tail _ hrest => cases hrest
 
 example : Pr.Provable peanoCtx [] [] (gaussStatement 100) :=
   gaussProvable 100

@@ -4,7 +4,7 @@ import Meta.Induction
 namespace Zag.Lib.Peano
 
 open Zag
-open Zag.Pr.MetaProgram
+open Zag.Pr.Induction
 
 abbrev natCtx : PrimitiveCtx := [("Nat", Nat), ("Bool", Bool)]
 abbrev NatTy : Ty := .prim "Nat"

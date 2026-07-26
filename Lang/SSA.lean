@@ -1,4 +1,4 @@
-import Zag.Theory
+import Zag.Meta.Language
 
 /-!
   llvm ir inspired `Single Static Assignment` style DSL for specifiying programs.
@@ -209,6 +209,11 @@ def toTerm {primCtx : PrimitiveCtx} (expr : SSAExpr primCtx) : Term primCtx :=
   (toTerm? expr {}).getD (.var 0)
 
 end SSAExpr
+
+instance instLanguageSSAExpr (primCtx : PrimitiveCtx) : Language.Reflects primCtx (SSAExpr primCtx) where
+  toTerm? expr := SSAExpr.toTerm? expr {}
+  ofTerm term := .ret (.raw term)
+  toTerm?_ofTerm _ := rfl
 
 def LoopScope.phi {primCtx : PrimitiveCtx} {state : List SSAVar} (scope : LoopScope state)
     (idx : Fin state.length) : SSAValue primCtx :=

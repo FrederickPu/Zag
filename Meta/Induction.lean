@@ -4,7 +4,7 @@ namespace Zag
 
 namespace Pr
 
-namespace MetaProgram
+namespace Induction
 
 def instantiateTermInTerm {primCtx : PrimitiveCtx} (idx : Nat) (replacement : Term primCtx) :
     Term primCtx → Term primCtx
@@ -29,7 +29,7 @@ def instantiateTermInTerm {primCtx : PrimitiveCtx} (idx : Nat) (replacement : Te
     .recurse resultTy (instantiateTermInTerm idx replacement init)
       (instantiateTermInTerm idx replacement body)
 
-def instantiateTermAt {primCtx : PrimitiveCtx} (idx : Nat) (body : Pr primCtx) (term : Term primCtx) : Pr primCtx :=
+def instantiateTermAt {primCtx : PrimitiveCtx} (idx : Nat) (body : Pr (Term primCtx)) (term : Term primCtx) : Pr (Term primCtx) :=
   match body with
   | .eq ctx ty lhs rhs => .eq ctx ty (instantiateTermInTerm idx term lhs) (instantiateTermInTerm idx term rhs)
   | .hasType ctx t ty => .hasType ctx (instantiateTermInTerm idx term t) ty
@@ -39,7 +39,7 @@ def instantiateTermAt {primCtx : PrimitiveCtx} (idx : Nat) (body : Pr primCtx) (
   | .forallTy p => .forallTy (instantiateTermAt idx p term)
   | .forallTerm p => .forallTerm (instantiateTermAt idx p term)
 
-abbrev instantiateTerm {primCtx : PrimitiveCtx} (body : Pr primCtx) (term : Term primCtx) : Pr primCtx :=
+abbrev instantiateTerm {primCtx : PrimitiveCtx} (body : Pr (Term primCtx)) (term : Term primCtx) : Pr (Term primCtx) :=
   instantiateTermAt 0 body term
 
 @[simp] theorem instantiateTermInTerm_nat {primCtx : PrimitiveCtx}
@@ -60,7 +60,7 @@ def weakenTermAt {primCtx : PrimitiveCtx} (idx : Nat) : Term primCtx → Term pr
 | .recurse resultTy init body =>
     .recurse resultTy (weakenTermAt idx init) (weakenTermAt idx body)
 
-def weaken {primCtx : PrimitiveCtx} (idx : Nat) : Pr primCtx → Pr primCtx
+def weaken {primCtx : PrimitiveCtx} (idx : Nat) : Pr (Term primCtx) → Pr (Term primCtx)
 | .eq ctx ty lhs rhs => .eq ctx ty (weakenTermAt idx lhs) (weakenTermAt idx rhs)
 | .hasType ctx t ty => .hasType ctx (weakenTermAt idx t) ty
 | .and p q => .and (weaken idx p) (weaken idx q)
@@ -120,7 +120,7 @@ theorem instantiateTermInTerm_weakenTermAtList {primCtx : PrimitiveCtx}
 end
 
 theorem instantiateTermAt_weaken {primCtx : PrimitiveCtx}
-    (idx : Nat) (replacement : Term primCtx) (body : Pr primCtx) :
+    (idx : Nat) (replacement : Term primCtx) (body : Pr (Term primCtx)) :
     instantiateTermAt idx (weaken idx body) replacement = body := by
   induction body with
   | eq ctx ty lhs rhs =>
@@ -188,7 +188,7 @@ theorem subst_instantiateTermInTermList {primCtx : PrimitiveCtx}
 
 end
 
-def quantifierFree {primCtx : PrimitiveCtx} : Pr primCtx → Bool
+def quantifierFree {primCtx : PrimitiveCtx} : Pr (Term primCtx) → Bool
 | .eq _ _ _ _ => true
 | .hasType _ _ _ => true
 | .and p q => quantifierFree p && quantifierFree q
@@ -199,7 +199,7 @@ def quantifierFree {primCtx : PrimitiveCtx} : Pr primCtx → Bool
 
 theorem interp_instantiateTermAt {ctx : Ctx}
     (ctxTy : List Ty) (ctxTerm : List (Term ctx.primCtx)) (t : Term ctx.primCtx)
-    (body : Pr ctx.primCtx) (hqf : quantifierFree body = true) :
+    (body : Pr (Term ctx.primCtx)) (hqf : quantifierFree body = true) :
     Pr.interp ctx ctxTy ctxTerm (instantiateTermAt ctxTerm.length body t) ↔
       Pr.interp ctx ctxTy (ctxTerm ++ [Term.subst ctxTerm t]) body := by
   induction body with
@@ -361,7 +361,7 @@ end
 
 theorem interp_weaken_concat {ctx : Ctx}
     (ctxTy : List Ty) (ctxTerm : List (Term ctx.primCtx)) (y : Term ctx.primCtx)
-    (body : Pr ctx.primCtx) (hqf : quantifierFree body = true) :
+    (body : Pr (Term ctx.primCtx)) (hqf : quantifierFree body = true) :
     Pr.interp ctx ctxTy (ctxTerm ++ [y]) (weaken ctxTerm.length body) ↔
       Pr.interp ctx ctxTy ctxTerm body := by
   induction body with
@@ -383,7 +383,7 @@ theorem interp_weaken_concat {ctx : Ctx}
 
 theorem interp_weaken_middle {ctx : Ctx}
     (ctxTy : List Ty) (ctxTerm : List (Term ctx.primCtx)) (x y : Term ctx.primCtx)
-    (body : Pr ctx.primCtx) (hqf : quantifierFree body = true) :
+    (body : Pr (Term ctx.primCtx)) (hqf : quantifierFree body = true) :
     Pr.interp ctx ctxTy (ctxTerm ++ [x] ++ [y]) (weaken ctxTerm.length body) ↔
       Pr.interp ctx ctxTy (ctxTerm ++ [y]) body := by
   induction body with
@@ -509,13 +509,13 @@ def findRecurseInTermList {primCtx : PrimitiveCtx} (idx : Nat) :
 
 end
 
-structure PrRecurseMatch {primCtx : PrimitiveCtx} (idx : Nat) (goal : Pr primCtx) where
+structure PrRecurseMatch {primCtx : PrimitiveCtx} (idx : Nat) (goal : Pr (Term primCtx)) where
   init : Term primCtx
-  predicate : Pr primCtx
+  predicate : Pr (Term primCtx)
   property : goal = instantiateTermAt idx predicate init
 
 def findRecurseInPr {primCtx : PrimitiveCtx} (idx : Nat) :
-    (goal : Pr primCtx) → Option (PrRecurseMatch idx goal)
+    (goal : Pr (Term primCtx)) → Option (PrRecurseMatch idx goal)
 | .eq ctx ty lhs rhs =>
     match findRecurseInTerm idx lhs with
     | some found =>
@@ -741,12 +741,12 @@ end
     Ty.ofNat, Ty.toNat, hne]
 
 structure PrAbstract {primCtx : PrimitiveCtx} (idx : Nat) (init : Term primCtx)
-    (goal : Pr primCtx) where
-  predicate : Pr primCtx
+    (goal : Pr (Term primCtx)) where
+  predicate : Pr (Term primCtx)
   property : goal = instantiateTermAt idx predicate init
 
 def abstractInitInPr {primCtx : PrimitiveCtx} (idx : Nat) (init : Term primCtx) :
-    (goal : Pr primCtx) → PrAbstract idx init goal
+    (goal : Pr (Term primCtx)) → PrAbstract idx init goal
 | .eq ctx ty lhs rhs =>
     let abstractLhs := abstractInitInTerm idx init lhs
     let abstractRhs := abstractInitInTerm idx init rhs
@@ -782,19 +782,19 @@ def abstractInitInPr {primCtx : PrimitiveCtx} (idx : Nat) (init : Term primCtx) 
 
 /-- `(succ x == y) = true`. The built-in `eq` operator forces both sides to evaluate to equal
   values (the same termination trick `lt` previously provided). -/
-def succEq {primCtx : PrimitiveCtx} (idx : Nat) (succName : String) : Pr primCtx :=
+def succEq {primCtx : PrimitiveCtx} (idx : Nat) (succName : String) : Pr (Term primCtx) :=
   .eq [] (.prim "Bool")
     (.op "eq" [.app (.primFunc succName) [.var idx], .var (idx + 1)])
     (Term.bool true)
 
-def natStepGoal {primCtx : PrimitiveCtx} (idx : Nat) (succName : String) (body : Pr primCtx) :
-    Pr primCtx :=
+def natStepGoal {primCtx : PrimitiveCtx} (idx : Nat) (succName : String) (body : Pr (Term primCtx)) :
+    Pr (Term primCtx) :=
   .forallNat idx (.forallNat (idx + 1)
     (.implies (succEq idx succName)
       (.implies (weaken (idx + 1) body) (weaken idx body))))
 
 def natInductionGoals {primCtx : PrimitiveCtx} (idx : Nat) (succName : String)
-    (body : Pr primCtx) : List (Pr primCtx) :=
+    (body : Pr (Term primCtx)) : List (Pr (Term primCtx)) :=
   [instantiateTermAt idx body (Term.nat 0), natStepGoal idx succName body]
 
 /-- `succName` is a successor primfunc: types as `Nat → Nat`, maps value `m` to `m+1`,
@@ -960,7 +960,7 @@ private theorem succEq_natLit {ctx : Ctx} {succName : String} (hspec : SuccSpec 
 /-- Builds the term-quantified step goal `natStepGoal 0 succName predicate` from a step
   function indexed by literal `Nat`s. -/
 theorem natStepGoal_of_literal_step {ctx : Ctx} {ctxTy : List Ty}
-    {predicate : Pr ctx.primCtx} {succName : String}
+    {predicate : Pr (Term ctx.primCtx)} {succName : String}
     (hspec : SuccSpec ctx succName)
     (hqf : quantifierFree predicate = true)
     (hcongr : ∀ (t : Term ctx.primCtx) (k : Nat),
@@ -1007,7 +1007,7 @@ theorem natStepGoal_of_literal_step {ctx : Ctx} {ctxTy : List Ty}
       exact hwkNext.mpr (by simpa using hyInterp)
 
 theorem natInductionChain {ctx : Ctx} {ctxTy : List Ty}
-    {ctxTerm : List (Term ctx.primCtx)} {body : Pr ctx.primCtx} {succName : String}
+    {ctxTerm : List (Term ctx.primCtx)} {body : Pr (Term ctx.primCtx)} {succName : String}
     (hspec : SuccSpec ctx succName)
     (hqf : quantifierFree body = true)
     (hbase : Pr.Provable ctx ctxTy ctxTerm
@@ -1079,25 +1079,26 @@ theorem natInductionChain {ctx : Ctx} {ctxTy : List Ty}
 
 def natInductionWithPredicate {ctx : Ctx}
     {ctxTy : List Ty} {ctxTerm : List (Term ctx.primCtx)}
-    (succName : String) (_hspec : SuccSpec ctx succName)
-    (goal : Pr ctx.primCtx) (predicate : Pr ctx.primCtx) (target : Nat)
+    (succName : String) (hspec : SuccSpec ctx succName)
+    (goal : Pr (Term ctx.primCtx)) (predicate : Pr (Term ctx.primCtx)) (target : Nat)
     (hinst : goal = instantiateTermAt ctxTerm.length predicate (Term.nat target))
     (hqf : quantifierFree predicate = true) :
-    MetaProgram ctx ctxTy ctxTerm goal :=
+    Refinement ctx ctxTy ctxTerm goal :=
   { goals := natInductionGoals ctxTerm.length succName predicate
     prove := by
       intro proveSubgoals
+      simp only [Language.Provable_term] at proveSubgoals ⊢
       have hbase := proveSubgoals (instantiateTermAt ctxTerm.length predicate (Term.nat 0))
         (by simp [natInductionGoals])
       have hstep := proveSubgoals (natStepGoal ctxTerm.length succName predicate)
         (by simp [natInductionGoals])
       rw [hinst]
-      exact natInductionChain _hspec hqf hbase hstep target }
+      exact natInductionChain hspec hqf hbase hstep target }
 
 def simpleInduction {ctx : Ctx}
     {ctxTy : List Ty} {ctxTerm : List (Term ctx.primCtx)}
     (succName : String) (hspec : SuccSpec ctx succName) :
-    (goal : Pr ctx.primCtx) → MetaProgram ctx ctxTy ctxTerm goal
+    Tactic? ctx ctxTy ctxTerm (Term ctx.primCtx)
 | goal =>
     match findRecurseInPr ctxTerm.length goal with
     | some found =>
@@ -1106,74 +1107,59 @@ def simpleInduction {ctx : Ctx}
             let abstracted := abstractInitInPr ctxTerm.length found.init goal
             let body := abstracted.predicate
             if hqf : quantifierFree body then
-              { goals := natInductionGoals ctxTerm.length succName body
-                prove := by
-                  intro proveSubgoals
-                  have hbase := proveSubgoals
-                    (instantiateTermAt ctxTerm.length body (Term.nat 0))
-                    (by simp [natInductionGoals])
-                  have hstep := proveSubgoals (natStepGoal ctxTerm.length succName body)
-                    (by simp [natInductionGoals])
-                  have htarget := natInductionChain hspec hqf hbase hstep target.val
-                  have hgoalEq :
-                      instantiateTermAt ctxTerm.length body (Term.nat target.val) = goal := by
-                    dsimp [body]
-                    calc
-                      instantiateTermAt ctxTerm.length abstracted.predicate (Term.nat target.val)
-                          = instantiateTermAt ctxTerm.length abstracted.predicate found.init := by
-                            rw [← target.property]
-                      _ = goal := abstracted.property.symm
-                  exact Eq.mp (by rw [hgoalEq]) htarget }
+              have hgoalEq :
+                  instantiateTermAt ctxTerm.length body (Term.nat target.val) = goal := by
+                dsimp [body]
+                calc
+                  instantiateTermAt ctxTerm.length abstracted.predicate (Term.nat target.val)
+                      = instantiateTermAt ctxTerm.length abstracted.predicate found.init := by
+                        rw [← target.property]
+                  _ = goal := abstracted.property.symm
+              some (natInductionWithPredicate succName hspec goal body target.val hgoalEq.symm hqf)
             else
-              { goals := [goal]
-                prove := by
-                  intro proveSubgoals
-                  exact proveSubgoals goal (by simp) }
+              none
         | none =>
             let abstracted := abstractInitInPr ctxTerm.length found.init goal
             if hqf : quantifierFree abstracted.predicate then
-              { goals :=
+              let refinement : Refinement ctx ctxTy ctxTerm goal :=
+                { goals :=
                   [ .hasType [] found.init (.prim "Nat")
-                  , .forallNat ctxTerm.length abstracted.predicate ]
-                prove := by
-                  intro proveSubgoals
-                  have htype : Pr.Provable ctx ctxTy ctxTerm
-                      (.hasType [] found.init (.prim "Nat")) :=
-                    proveSubgoals (.hasType [] found.init (.prim "Nat")) (by simp)
-                  have hforall : Pr.Provable ctx ctxTy ctxTerm
-                      (.forallNat ctxTerm.length abstracted.predicate) :=
-                    proveSubgoals
-                      (.forallNat ctxTerm.length abstracted.predicate) (by simp)
-                  cases htype with
-                  | ofProof htypeProof =>
-                      cases hforall with
-                      | ofProof hforallProof =>
-                          refine Pr.Provable.ofProof ?_
-                          have hx := hforallProof (Term.subst ctxTerm found.init)
-                          have hvar : Term.subst (ctxTerm ++ [Term.subst ctxTerm found.init])
-                              (.var ctxTerm.length) = Term.subst ctxTerm found.init := by
-                            simp [Nat.lt_add_one]
-                          have hpremise : Pr.interp ctx ctxTy
-                              (ctxTerm ++ [Term.subst ctxTerm found.init])
-                              (.hasType [] (.var ctxTerm.length) (.prim "Nat")) := by
-                            simpa [Pr.interp, hvar, Ty.subst] using htypeProof
-                          have hbody := hx hpremise
-                          show Pr.interp ctx ctxTy ctxTerm goal
-                          rw [abstracted.property]
-                          exact (interp_instantiateTermAt ctxTy ctxTerm found.init
-                            abstracted.predicate hqf).mpr hbody }
+                  , Pr.forallNat ctxTerm.length abstracted.predicate ]
+                  prove := by
+                    intro proveSubgoals
+                    simp only [Language.Provable_term] at proveSubgoals ⊢
+                    have htype : Pr.Provable ctx ctxTy ctxTerm
+                        (.hasType [] found.init (.prim "Nat")) :=
+                      proveSubgoals (.hasType [] found.init (.prim "Nat")) (by simp)
+                    have hforall : Pr.Provable ctx ctxTy ctxTerm
+                        (.forallNat ctxTerm.length abstracted.predicate) :=
+                      proveSubgoals
+                        (.forallNat ctxTerm.length abstracted.predicate) (by simp)
+                    cases htype with
+                    | ofProof htypeProof =>
+                        cases hforall with
+                        | ofProof hforallProof =>
+                            refine Pr.Provable.ofProof ?_
+                            have hx := hforallProof (Term.subst ctxTerm found.init)
+                            have hvar : Term.subst (ctxTerm ++ [Term.subst ctxTerm found.init])
+                                (.var ctxTerm.length) = Term.subst ctxTerm found.init := by
+                              simp [Nat.lt_add_one]
+                            have hpremise : Pr.interp ctx ctxTy
+                                (ctxTerm ++ [Term.subst ctxTerm found.init])
+                                (.hasType [] (.var ctxTerm.length) (.prim "Nat")) := by
+                              simpa [Pr.interp, hvar, Ty.subst] using htypeProof
+                            have hbody := hx hpremise
+                            show Pr.interp ctx ctxTy ctxTerm goal
+                            rw [abstracted.property]
+                            exact (interp_instantiateTermAt ctxTy ctxTerm found.init
+                              abstracted.predicate hqf).mpr hbody }
+              some refinement
             else
-              { goals := [goal]
-                prove := by
-                  intro proveSubgoals
-                  exact proveSubgoals goal (by simp) }
+              none
     | none =>
-        { goals := [goal]
-          prove := by
-            intro proveSubgoals
-            exact proveSubgoals goal (by simp) }
+        none
 
-end MetaProgram
+end Induction
 
 end Pr
 
