@@ -1,126 +1,18 @@
 import Lib.Peano.Defs
 
 /-!
-  A Zag-backed Simpl fragment.
+  Zag-backed Simpl fragment.
 
-  `Basic` is not an arbitrary Lean `state -> state`; it is a typed Zag term over
-  a declared Zag state.  Since Zag has no lambda term, a state transformer is
-  represented as an open body under one state variable:
+  `Basic` is a typed Zag term over a declared state, open under one state variable:
+  `[State] ⊢ body : State`.
 
-  `[State] ⊢ body : State`
-
-  The default state ABI below models `State` as a list of machine words and
-  exposes primitive functions for packing, projecting, and updating fields.
+  Outcomes model normal termination, abrupt exit (`Throw`), guard failure, and stuck
+  evaluation. The concrete word-state ABI lives in `Lang.Simple.ABI`.
 -/
 
 namespace Lang.Simple
 
 universe u v
-
-abbrev Word := Nat
-abbrev State := List Word
-
-def WordTy : Zag.Ty :=
-  .prim "Word"
-
-def StateTy : Zag.Ty :=
-  .prim "State"
-
-def primitiveCtx : Zag.PrimitiveCtx :=
-  { prims := [.of "State" State, .of "Word" Word, .of "Nat" Nat, .of "Bool" Bool]
-    M := StateM State
-    monad := inferInstance }
-
-instance : Zag.Peano.Types primitiveCtx where
-  natType := by rfl
-  boolType := by rfl
-
-namespace State
-
-def ofWords (words : State) : Zag.Ty.type primitiveCtx StateTy := by
-  simpa [StateTy, primitiveCtx, Zag.Ty.type, Zag.PrimitiveCtx.get?] using words
-
-def toWords (words : Zag.Ty.type primitiveCtx StateTy) : State := by
-  simpa [StateTy, primitiveCtx, Zag.Ty.type, Zag.PrimitiveCtx.get?] using words
-
-def ofWord (word : Word) : Zag.Ty.type primitiveCtx WordTy := by
-  simpa [WordTy, primitiveCtx, Zag.Ty.type, Zag.PrimitiveCtx.get?] using word
-
-def toWord (word : Zag.Ty.type primitiveCtx WordTy) : Word := by
-  simpa [WordTy, primitiveCtx, Zag.Ty.type, Zag.PrimitiveCtx.get?] using word
-
-def val (words : State) : Zag.Val primitiveCtx :=
-  .mk StateTy (ofWords words)
-
-def wordVal (word : Word) : Zag.Val primitiveCtx :=
-  .mk WordTy (ofWord word)
-
-def asWords? (value : Zag.Val primitiveCtx) : Option State := do
-  let words <- value.as? StateTy
-  some (toWords words)
-
-def asWord? (value : Zag.Val primitiveCtx) : Option Word := do
-  let word <- value.as? WordTy
-  some (toWord word)
-
-def setAt? : State -> Nat -> Word -> Option State
-  | [], _, _ => none
-  | _ :: words, 0, word => some (word :: words)
-  | head :: words, idx + 1, word => do
-      let words' <- setAt? words idx word
-      some (head :: words')
-
-end State
-
-def statePackName (arity : Nat) : String :=
-  "state.pack." ++ toString arity
-
-def stateGetName (idx : Nat) : String :=
-  "state.get." ++ toString idx
-
-def stateSetName (idx : Nat) : String :=
-  "state.set." ++ toString idx
-
-def statePackFunc (arity : Nat) : Zag.PrimFunc primitiveCtx where
-  args := List.replicate arity "Word"
-  out := "State"
-  hprim := by
-    intro name hname
-    simp only [List.mem_cons, List.mem_replicate] at hname
-    rcases hname with hname | ⟨_, hname⟩
-    · simp [primitiveCtx, hname]
-    · simp [primitiveCtx, hname]
-  interp := fun args => do
-    let words <- args.mapM State.asWord?
-    some (State.val words)
-
-def stateGetFunc (idx : Nat) : Zag.PrimFunc primitiveCtx where
-  args := ["State"]
-  out := "Word"
-  hprim := by decide
-  interp := fun
-    | [stateVal] => do
-        let words <- State.asWords? stateVal
-        let word <- words[idx]?
-        some (State.wordVal word)
-    | _ => none
-
-def stateSetFunc (idx : Nat) : Zag.PrimFunc primitiveCtx where
-  args := ["State", "Word"]
-  out := "State"
-  hprim := by decide
-  interp := fun
-    | [stateVal, wordVal] => do
-        let words <- State.asWords? stateVal
-        let word <- State.asWord? wordVal
-        let words' <- State.setAt? words idx word
-        some (State.val words')
-    | _ => none
-
-def statePrimFuncCtx (arity : Nat) : Zag.PrimFuncCtx primitiveCtx :=
-  (List.range arity).map (fun idx => (stateGetName idx, stateGetFunc idx)) ++
-  (List.range arity).map (fun idx => (stateSetName idx, stateSetFunc idx)) ++
-  [(statePackName arity, statePackFunc arity)]
 
 /-- The Zag context used by a Simple program. -/
 structure Context where
@@ -135,16 +27,6 @@ abbrev Context.primCtx (ctx : Context) : Zag.PrimitiveCtx := ctx.zagCtx.primCtx
 abbrev Context.primFuncCtx (ctx : Context) : Zag.PrimFuncCtx ctx.primCtx := ctx.zagCtx.primFuncCtx
 abbrev Context.opCtx (ctx : Context) : Zag.OpCtx ctx.primCtx := ctx.zagCtx.opCtx
 
-def wordStateContext (arity : Nat) : Context where
-  zagCtx := {
-    primCtx := primitiveCtx
-    primFuncCtx := statePrimFuncCtx arity
-    opCtx := Zag.Peano.opCtx primitiveCtx
-  }
-  stateTy := StateTy
-  types := inferInstance
-  iteOp := by rfl
-
 def stateVarCtx (ctx : Context) : Zag.VarCtx :=
   [ctx.stateTy]
 
@@ -154,50 +36,188 @@ abbrev Basic (ctx : Context) : Type :=
 abbrev BExp (ctx : Context) : Type :=
   Zag.TermOf ctx.zagCtx (stateVarCtx ctx) (.prim "Bool")
 
-/-- Liftable Simpl commands. Unsupported full-Simpl features are intentionally absent. -/
+/--
+  Flagged state used by the pure first-cut pipeline (M1):
+  `struct [fault, abrupt, State]`.
+-/
+def flaggedStateTy (stateTy : Zag.Ty) : Zag.Ty :=
+  .struct [.prim "Bool", .prim "Bool", stateTy]
+
+def faultIdx : Fin 3 := ⟨0, by decide⟩
+def abruptIdx : Fin 3 := ⟨1, by decide⟩
+def stateIdx : Fin 3 := ⟨2, by decide⟩
+
+/-- Liftable Simpl commands. -/
 inductive Com (ctx : Context) (proc : Type u) (fault : Type v) where
   | Skip : Com ctx proc fault
-  | Basic : Basic ctx -> Com ctx proc fault
-  | Seq : Com ctx proc fault -> Com ctx proc fault -> Com ctx proc fault
-  | Cond : BExp ctx -> Com ctx proc fault -> Com ctx proc fault -> Com ctx proc fault
-  | While : BExp ctx -> Com ctx proc fault -> Com ctx proc fault
-  | Call : proc -> Com ctx proc fault
+  | Basic : Basic ctx → Com ctx proc fault
+  | Guard : BExp ctx → Com ctx proc fault → Com ctx proc fault
+  | Seq : Com ctx proc fault → Com ctx proc fault → Com ctx proc fault
+  | Cond : BExp ctx → Com ctx proc fault → Com ctx proc fault → Com ctx proc fault
+  | While : BExp ctx → Com ctx proc fault → Com ctx proc fault
+  | Call : proc → Com ctx proc fault
   | Throw : Com ctx proc fault
-  | Catch : Com ctx proc fault -> Com ctx proc fault -> Com ctx proc fault
+  | Catch : Com ctx proc fault → Com ctx proc fault → Com ctx proc fault
+
+/-- Procedure environment: maps procedure names to bodies. -/
+abbrev ProcEnv (ctx : Context) (proc : Type u) (fault : Type v) :=
+  proc → Option (Com ctx proc fault)
 
 namespace Com
 
 variable {ctx : Context} {proc : Type u} {fault : Type v}
 
-def bseq : Com ctx proc fault -> Com ctx proc fault -> Com ctx proc fault :=
+def bseq : Com ctx proc fault → Com ctx proc fault → Com ctx proc fault :=
   .Seq
 
-def flatten : Com ctx proc fault -> List (Com ctx proc fault)
-  | .Skip => [.Skip]
-  | .Basic update => [.Basic update]
-  | .Seq c1 c2 => flatten c1 ++ flatten c2
-  | .Cond b c1 c2 => [.Cond b c1 c2]
-  | .While b c => [.While b c]
-  | .Call p => [.Call p]
-  | .Throw => [.Throw]
-  | .Catch c1 c2 => [.Catch c1 c2]
-
-def sequence (seq : Com ctx proc fault -> Com ctx proc fault -> Com ctx proc fault) :
-    List (Com ctx proc fault) -> Com ctx proc fault
-  | [] => .Skip
-  | [c] => c
-  | c :: cs => seq c (sequence seq cs)
-
-def normalize : Com ctx proc fault -> Com ctx proc fault
-  | .Skip => .Skip
-  | .Basic update => .Basic update
-  | .Seq c1 c2 => sequence .Seq (flatten (normalize c1) ++ flatten (normalize c2))
-  | .Cond b c1 c2 => .Cond b (normalize c1) (normalize c2)
-  | .While b c => .While b (normalize c)
-  | .Call p => .Call p
-  | .Throw => .Throw
-  | .Catch c1 c2 => .Catch (normalize c1) (normalize c2)
-
 end Com
+
+/-- Big-step outcomes. First cut uses unit-like fault via a carried state snapshot. -/
+inductive Outcome (ctx : Context) (fault : Type v) where
+  | normal (s : Zag.Val ctx.primCtx)
+  | abrupt (s : Zag.Val ctx.primCtx)
+  | fault (f : fault) (s : Zag.Val ctx.primCtx)
+  | stuck
+
+namespace Outcome
+
+variable {ctx : Context} {fault : Type v}
+
+def state? : Outcome ctx fault → Option (Zag.Val ctx.primCtx)
+  | .normal s => some s
+  | .abrupt s => some s
+  | .fault _ s => some s
+  | .stuck => none
+
+def isNormal : Outcome ctx fault → Bool
+  | .normal _ => true
+  | _ => false
+
+end Outcome
+
+def evalBasic? {ctx : Context}
+    (state : Zag.Val ctx.primCtx)
+    (update : Basic ctx) : Option (Zag.Val ctx.primCtx) :=
+  Zag.Term.eval ctx.zagCtx [state] update.val
+
+def evalBExp? {ctx : Context}
+    (state : Zag.Val ctx.primCtx)
+    (condition : BExp ctx) : Option Bool := do
+  let value ← Zag.Term.eval ctx.zagCtx [state] condition.val
+  value.asBool?
+
+/--
+  Outcome-indexed big-step relation.
+  Abrupt propagates through `Seq`; `Catch` intercepts it; `Guard` produces `fault`
+  when the condition is false; `Basic` produces `stuck` when evaluation fails.
+  `Call` is unsupported until a procedure environment is supplied (see `BigStep.call`).
+-/
+inductive BigStep {ctx : Context} {proc : Type u} {fault : Type v}
+    (Γ : ProcEnv ctx proc fault)
+    (unitFault : fault) :
+    Com ctx proc fault → Outcome ctx fault → Outcome ctx fault → Prop where
+  | skip (o : Outcome ctx fault) :
+      BigStep Γ unitFault .Skip o o
+  | basic {update : Basic ctx} {s s' : Zag.Val ctx.primCtx} :
+      evalBasic? s update = some s' →
+      BigStep Γ unitFault (.Basic update) (.normal s) (.normal s')
+  | basicStuck {update : Basic ctx} {s : Zag.Val ctx.primCtx} :
+      evalBasic? s update = none →
+      BigStep Γ unitFault (.Basic update) (.normal s) .stuck
+  | guardTrue {b : BExp ctx} {c : Com ctx proc fault}
+      {s : Zag.Val ctx.primCtx} {o : Outcome ctx fault} :
+      evalBExp? s b = some true →
+      BigStep Γ unitFault c (.normal s) o →
+      BigStep Γ unitFault (.Guard b c) (.normal s) o
+  | guardFalse {b : BExp ctx} {c : Com ctx proc fault} {s : Zag.Val ctx.primCtx} :
+      evalBExp? s b = some false →
+      BigStep Γ unitFault (.Guard b c) (.normal s) (.fault unitFault s)
+  | guardStuck {b : BExp ctx} {c : Com ctx proc fault} {s : Zag.Val ctx.primCtx} :
+      evalBExp? s b = none →
+      BigStep Γ unitFault (.Guard b c) (.normal s) .stuck
+  | seqNormal {c1 c2 : Com ctx proc fault}
+      {s mid : Zag.Val ctx.primCtx} {o : Outcome ctx fault} :
+      BigStep Γ unitFault c1 (.normal s) (.normal mid) →
+      BigStep Γ unitFault c2 (.normal mid) o →
+      BigStep Γ unitFault (.Seq c1 c2) (.normal s) o
+  | seqAbrupt {c1 c2 : Com ctx proc fault}
+      {s s' : Zag.Val ctx.primCtx} :
+      BigStep Γ unitFault c1 (.normal s) (.abrupt s') →
+      BigStep Γ unitFault (.Seq c1 c2) (.normal s) (.abrupt s')
+  | seqFault {c1 c2 : Com ctx proc fault}
+      {s s' : Zag.Val ctx.primCtx} {f : fault} :
+      BigStep Γ unitFault c1 (.normal s) (.fault f s') →
+      BigStep Γ unitFault (.Seq c1 c2) (.normal s) (.fault f s')
+  | seqStuck {c1 c2 : Com ctx proc fault} {s : Zag.Val ctx.primCtx} :
+      BigStep Γ unitFault c1 (.normal s) .stuck →
+      BigStep Γ unitFault (.Seq c1 c2) (.normal s) .stuck
+  | condTrue {b : BExp ctx} {c1 c2 : Com ctx proc fault}
+      {s : Zag.Val ctx.primCtx} {o : Outcome ctx fault} :
+      evalBExp? s b = some true →
+      BigStep Γ unitFault c1 (.normal s) o →
+      BigStep Γ unitFault (.Cond b c1 c2) (.normal s) o
+  | condFalse {b : BExp ctx} {c1 c2 : Com ctx proc fault}
+      {s : Zag.Val ctx.primCtx} {o : Outcome ctx fault} :
+      evalBExp? s b = some false →
+      BigStep Γ unitFault c2 (.normal s) o →
+      BigStep Γ unitFault (.Cond b c1 c2) (.normal s) o
+  | condStuck {b : BExp ctx} {c1 c2 : Com ctx proc fault} {s : Zag.Val ctx.primCtx} :
+      evalBExp? s b = none →
+      BigStep Γ unitFault (.Cond b c1 c2) (.normal s) .stuck
+  | whileTrue {b : BExp ctx} {c : Com ctx proc fault}
+      {s mid : Zag.Val ctx.primCtx} {o : Outcome ctx fault} :
+      evalBExp? s b = some true →
+      BigStep Γ unitFault c (.normal s) (.normal mid) →
+      BigStep Γ unitFault (.While b c) (.normal mid) o →
+      BigStep Γ unitFault (.While b c) (.normal s) o
+  | whileTrueAbrupt {b : BExp ctx} {c : Com ctx proc fault}
+      {s s' : Zag.Val ctx.primCtx} :
+      evalBExp? s b = some true →
+      BigStep Γ unitFault c (.normal s) (.abrupt s') →
+      BigStep Γ unitFault (.While b c) (.normal s) (.abrupt s')
+  | whileTrueFault {b : BExp ctx} {c : Com ctx proc fault}
+      {s s' : Zag.Val ctx.primCtx} {f : fault} :
+      evalBExp? s b = some true →
+      BigStep Γ unitFault c (.normal s) (.fault f s') →
+      BigStep Γ unitFault (.While b c) (.normal s) (.fault f s')
+  | whileTrueStuck {b : BExp ctx} {c : Com ctx proc fault} {s : Zag.Val ctx.primCtx} :
+      evalBExp? s b = some true →
+      BigStep Γ unitFault c (.normal s) .stuck →
+      BigStep Γ unitFault (.While b c) (.normal s) .stuck
+  | whileFalse {b : BExp ctx} {c : Com ctx proc fault} {s : Zag.Val ctx.primCtx} :
+      evalBExp? s b = some false →
+      BigStep Γ unitFault (.While b c) (.normal s) (.normal s)
+  | whileStuck {b : BExp ctx} {c : Com ctx proc fault} {s : Zag.Val ctx.primCtx} :
+      evalBExp? s b = none →
+      BigStep Γ unitFault (.While b c) (.normal s) .stuck
+  | throw {s : Zag.Val ctx.primCtx} :
+      BigStep Γ unitFault .Throw (.normal s) (.abrupt s)
+  | catchNormal {c1 c2 : Com ctx proc fault}
+      {s s' : Zag.Val ctx.primCtx} :
+      BigStep Γ unitFault c1 (.normal s) (.normal s') →
+      BigStep Γ unitFault (.Catch c1 c2) (.normal s) (.normal s')
+  | catchAbrupt {c1 c2 : Com ctx proc fault}
+      {s s' : Zag.Val ctx.primCtx} {o : Outcome ctx fault} :
+      BigStep Γ unitFault c1 (.normal s) (.abrupt s') →
+      BigStep Γ unitFault c2 (.normal s') o →
+      BigStep Γ unitFault (.Catch c1 c2) (.normal s) o
+  | catchFault {c1 c2 : Com ctx proc fault}
+      {s s' : Zag.Val ctx.primCtx} {f : fault} :
+      BigStep Γ unitFault c1 (.normal s) (.fault f s') →
+      BigStep Γ unitFault (.Catch c1 c2) (.normal s) (.fault f s')
+  | catchStuck {c1 c2 : Com ctx proc fault} {s : Zag.Val ctx.primCtx} :
+      BigStep Γ unitFault c1 (.normal s) .stuck →
+      BigStep Γ unitFault (.Catch c1 c2) (.normal s) .stuck
+  | call {p : proc} {body : Com ctx proc fault}
+      {s : Zag.Val ctx.primCtx} {o : Outcome ctx fault} :
+      Γ p = some body →
+      BigStep Γ unitFault body (.normal s) o →
+      BigStep Γ unitFault (.Call p) (.normal s) o
+  | callMissing {p : proc} {s : Zag.Val ctx.primCtx} :
+      Γ p = none →
+      BigStep Γ unitFault (.Call p) (.normal s) .stuck
+  | fromNonNormal {c : Com ctx proc fault} {o : Outcome ctx fault}
+      (h : ¬ o.isNormal) :
+      BigStep Γ unitFault c o o
 
 end Lang.Simple

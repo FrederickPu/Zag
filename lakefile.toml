@@ -11,7 +11,7 @@ roots = ["Lang.SSA", "Lang.Simple"]
 
 [[lean_lib]]
 name = "Test"
-roots = ["Test.Gauss"]
+roots = ["Test.Gauss", "Test.Monad", "Test.Peano", "Test.AutoCorres", "Test.L1", "Test.L2"]
 
 [[lean_lib]]
 name = "Lib"
