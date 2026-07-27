@@ -83,44 +83,105 @@ private def primFuncMatch? {primCtx : PrimitiveCtx} :
           some ⟨⟨found.val.val + 1, by simp [found.val.isLt]⟩, by simpa using found.property⟩
       | none => none
 
-private def iteArgs? {primCtx : PrimitiveCtx} :
-    String → List (Term primCtx) → Option (Term primCtx × Term primCtx × Term primCtx)
-| "ite", [cond, thenTerm, elseTerm] => some (cond, thenTerm, elseTerm)
-| _, _ => none
+mutual
 
-private theorem iteArgs?_eq_some {primCtx : PrimitiveCtx} {name : String}
-    {args : List (Term primCtx)} {cond thenTerm elseTerm : Term primCtx}
-    (h : iteArgs? name args = some (cond, thenTerm, elseTerm)) :
-    name = "ite" ∧ args = [cond, thenTerm, elseTerm] := by
-  unfold iteArgs? at h
-  split at h <;> simp_all
+/- Type inference, mirroring `Term.hasType` rule for rule.
 
-private def inferType? {primCtx : PrimitiveCtx} (primFuncCtx : PrimFuncCtx primCtx)
-    (varCtx : List Ty) : Term primCtx → Option Ty
+  No operator is special-cased: an operator's result type comes from `ctx.opCtx.outTy?`
+  applied to the inferred operand types, exactly as `Term.hasType.op` requires. Zag is
+  operator-agnostic, so the tactic must be too -- previously only `ite` was handled here
+  and every other operator (`eq`, `lt`, `gt`, `pure`, `bind`, ...) was inferred as `none`,
+  which is what made `unifyType` incomplete. -/
+private def inferType? (ctx : Ctx) (varCtx : List Ty) : Term ctx.primCtx → Option Ty
 | .prim ty _ => some ty
-| .primFunc name => (PrimFuncCtx.get? primFuncCtx name).map PrimFunc.ty
+| .primFunc name => (PrimFuncCtx.get? ctx.primFuncCtx name).map PrimFunc.ty
 | .var idx => varCtx[idx]?
 | .app f _ =>
-    match inferType? primFuncCtx varCtx f with
+    match inferType? ctx varCtx f with
     | some (.func _ outTy) => some outTy
     | _ => none
-| .op "ite" [_cond, thenTerm, _elseTerm] => inferType? primFuncCtx varCtx thenTerm
-| .op _ _ => none
+| .op name args =>
+    match inferTypes? ctx varCtx args with
+    | some tys => ctx.opCtx.outTy? name tys
+    | none => none
 | .mkStruct tys => some (.func tys (.struct tys))
 | .structProj tys idx => some (.func [.struct tys] tys[idx])
 | .recurse resultTy _ _ => some resultTy
 
-private def inferFuncArgs? {primCtx : PrimitiveCtx} (primFuncCtx : PrimFuncCtx primCtx)
-    (varCtx : List Ty) (term : Term primCtx) : Option (List Ty) :=
-  match inferType? primFuncCtx varCtx term with
+private def inferTypes? (ctx : Ctx) (varCtx : List Ty) :
+    List (Term ctx.primCtx) → Option (List Ty)
+| [] => some []
+| arg :: args =>
+    match inferType? ctx varCtx arg, inferTypes? ctx varCtx args with
+    | some ty, some tys => some (ty :: tys)
+    | _, _ => none
+
+end
+
+private def inferFuncArgs? (ctx : Ctx) (varCtx : List Ty) (term : Term ctx.primCtx) :
+    Option (List Ty) :=
+  match inferType? ctx varCtx term with
   | some (.func argsTy _) => some argsTy
   | _ => none
 
-private def inferPrimName? {primCtx : PrimitiveCtx} (primFuncCtx : PrimFuncCtx primCtx)
-    (varCtx : List Ty) (term : Term primCtx) : Option String :=
-  match inferType? primFuncCtx varCtx term with
-  | some (.prim name) => some name
-  | _ => none
+/- `inferTypes?` yields exactly one type per operand, so an operator branch that succeeded
+  at inference never has to consider a length mismatch. -/
+private theorem inferTypes?_length {ctx : Ctx} {varCtx : List Ty} :
+    ∀ {args : List (Term ctx.primCtx)} {tys : List Ty},
+      inferTypes? ctx varCtx args = some tys → args.length = tys.length
+| [], tys, h => by simp [inferTypes?] at h; simp [h]
+| arg :: args, tys, h => by
+    simp only [inferTypes?] at h
+    split at h
+    · next ty tys' hty htys =>
+        cases h
+        simp [inferTypes?_length htys]
+    · exact absurd h (by simp)
+
+/- `inferTypes?` is pointwise `inferType?`. -/
+private theorem inferTypes?_getElem {ctx : Ctx} {varCtx : List Ty} :
+    ∀ {args : List (Term ctx.primCtx)} {tys : List Ty},
+      inferTypes? ctx varCtx args = some tys →
+      ∀ (i : Nat) (ha : i < args.length) (ht : i < tys.length),
+        inferType? ctx varCtx args[i] = some tys[i]
+| [], _, _, _, ha, _ => absurd ha (by simp)
+| arg :: rest, tys, h, i, ha, ht => by
+    simp only [inferTypes?] at h
+    split at h
+    · next ty tys' hty htys =>
+        cases h
+        cases i with
+        | zero => simpa using hty
+        | succ j =>
+            exact inferTypes?_getElem htys j (by simpa using ha) (by simpa using ht)
+    · exact absurd h (by simp)
+
+/- Converse of `inferTypes?_getElem`: pointwise inference assembles into list inference. -/
+private theorem inferTypes?_of_getElem {ctx : Ctx} {varCtx : List Ty} :
+    ∀ {args : List (Term ctx.primCtx)} {tys : List Ty},
+      args.length = tys.length →
+      (∀ (i : Nat) (ha : i < args.length) (ht : i < tys.length),
+        inferType? ctx varCtx args[i] = some tys[i]) →
+      inferTypes? ctx varCtx args = some tys
+| [], [], _, _ => by simp [inferTypes?]
+| [], _ :: _, hlen, _ => by simp at hlen
+| _ :: _, [], hlen, _ => by simp at hlen
+| arg :: args, ty :: tys, hlen, hpt => by
+    have hhead : inferType? ctx varCtx arg = some ty :=
+      hpt 0 (by simp) (by simp)
+    have htail : inferTypes? ctx varCtx args = some tys := by
+      refine inferTypes?_of_getElem (by simpa using Nat.succ.inj hlen) ?_
+      intro i ha ht
+      exact hpt (i + 1) (by simpa using ha) (by simpa using ht)
+    simp [inferTypes?, hhead, htail]
+
+/- Substitution is the identity on each element of a list it fixes pointwise-as-a-list. -/
+private theorem subst_getElem_of_map_eq {ctxTy tys : List Ty}
+    (hsubst : tys.map (Ty.subst ctxTy) = tys) (j : Fin tys.length) :
+    Ty.subst ctxTy tys[j] = tys[j] := by
+  have h := congrArg (fun l => l[j.val]?) hsubst
+  simp only [List.getElem?_map, List.getElem?_eq_getElem j.isLt] at h
+  simpa using h
 
 private def varMatch? (ctxTy : List Ty) :
     (varCtx : List Ty) → (idx : Nat) → (ty : Ty) →
@@ -140,11 +201,13 @@ private def varMatch? (ctxTy : List Ty) :
           · simpa using found.property.right⟩
     | none => none
 
-private def argGoals {primCtx : PrimitiveCtx} (varCtx : List Ty) :
-    List (Term primCtx) → List Ty → List (Pr (Term primCtx))
-| arg :: args, ty :: tys => .hasType varCtx arg ty :: argGoals varCtx args tys
-| _, _ => []
+mutual
 
+/- Full recursive type checking: operand and subterm obligations are discharged by
+  recursing structurally on the term rather than being handed back as subgoals, so a
+  well-typed term closes outright. Recursion is on strict subterms throughout (`f` and
+  `args` under `.app`, `args` under `.op`, `init`/`body` under `.recurse`), which is why
+  this needs no fuel and admits plain structural induction. -/
 private def unifyTypeHasTypeGoals {ctx : Ctx}
     (ctxTy : List Ty) (ctxTerm : List (Term ctx.primCtx))
     (varCtx : List Ty) (term : Term ctx.primCtx) (ty : Ty) : List (Pr (Term ctx.primCtx)) :=
@@ -166,17 +229,24 @@ private def unifyTypeHasTypeGoals {ctx : Ctx}
         match ctxTerm with
         | _ :: _ => [.hasType varCtx term ty]
         | [] =>
-            match inferFuncArgs? ctx.primFuncCtx varCtx f with
+            match inferFuncArgs? ctx varCtx f with
             | some argsTy =>
                 if args.length = argsTy.length then
-                  .hasType varCtx f (.func argsTy ty) :: argGoals varCtx args argsTy
+                  unifyTypeHasTypeGoals ctxTy ctxTerm varCtx f (.func argsTy ty) ++
+                    unifyTypeArgGoals ctxTy ctxTerm varCtx args argsTy
                 else [.hasType varCtx term ty]
             | none => [.hasType varCtx term ty]
     | .op name args =>
-        match iteArgs? name args with
-        | some (cond, thenTerm, elseTerm) =>
-            [.hasType varCtx cond Peano.BoolTy, .hasType varCtx thenTerm ty,
-              .hasType varCtx elseTerm ty]
+        match inferTypes? ctx varCtx args with
+        | some tys =>
+            /- the `tys.map (Ty.subst ctxTy) = tys` guard mirrors `.recurse` below: operand
+              types are inferred before substitution, so we only proceed when substitution
+              acts as the identity on them (always true for the closed states `ctxTy = []`
+              that completeness is stated for). -/
+            if tys.map (Ty.subst ctxTy) = tys ∧
+                ctx.opCtx.outTy? name tys = some (Ty.subst ctxTy ty) then
+              unifyTypeArgGoals ctxTy ctxTerm varCtx args tys
+            else [.hasType varCtx term ty]
         | none => [.hasType varCtx term ty]
 
     | .mkStruct tys =>
@@ -187,17 +257,29 @@ private def unifyTypeHasTypeGoals {ctx : Ctx}
     | .recurse resultTy init body =>
         match ctxTerm with
         | [] =>
-            match inferType? ctx.primFuncCtx varCtx init with
+            match inferType? ctx varCtx init with
             | some stateTy =>
                 if Ty.subst ctxTy stateTy = stateTy ∧
                     Ty.subst ctxTy resultTy = resultTy ∧
                     resultTy = Ty.subst ctxTy ty then
-                  [ .hasType varCtx init stateTy
-                  , .hasType (varCtx ++ [stateTy, .func [stateTy] resultTy]) body resultTy
-                  ]
+                  unifyTypeHasTypeGoals ctxTy ctxTerm varCtx init stateTy ++
+                    unifyTypeHasTypeGoals ctxTy ctxTerm
+                      (varCtx ++ [stateTy, .func [stateTy] resultTy]) body resultTy
                 else [.hasType varCtx term ty]
             | none => [.hasType varCtx term ty]
         | _ :: _ => [.hasType varCtx term ty]
+
+/- Operand obligations, recursing into each operand. Mismatched lengths cannot arise from
+  `inferTypes?` (see `inferTypes?_length`); the `_, _` case is for totality only. -/
+private def unifyTypeArgGoals {ctx : Ctx}
+    (ctxTy : List Ty) (ctxTerm : List (Term ctx.primCtx)) (varCtx : List Ty) :
+    List (Term ctx.primCtx) → List Ty → List (Pr (Term ctx.primCtx))
+| arg :: args, argTy :: tys =>
+    unifyTypeHasTypeGoals ctxTy ctxTerm varCtx arg argTy ++
+      unifyTypeArgGoals ctxTy ctxTerm varCtx args tys
+| _, _ => []
+
+end
 
 private def unifyTypeGoals {ctx : Ctx}
     (ctxTy : List Ty) (ctxTerm : List (Term ctx.primCtx)) :
@@ -205,285 +287,296 @@ private def unifyTypeGoals {ctx : Ctx}
 | .hasType varCtx term ty => unifyTypeHasTypeGoals ctxTy ctxTerm varCtx term ty
 | goal => [goal]
 
-private theorem argGoals_sound {ctx : Ctx}
-    {ctxTy : List Ty} {ctxTerm : List (Term ctx.primCtx)} {varCtx : List Ty}
-    {args : List (Term ctx.primCtx)} {tys : List Ty}
-    (hlen : args.length = tys.length)
-    (proveSubgoals : ∀ subgoal, subgoal ∈ argGoals varCtx args tys →
-      Pr.Provable ctx ctxTy ctxTerm subgoal) :
-    ∀ idx : Fin args.length,
-      Term.hasType ctx (varCtx.map (Ty.subst ctxTy))
-        (Term.subst ctxTerm args[idx])
-        (Ty.subst ctxTy tys[Fin.cast hlen idx]) := by
-  induction args generalizing tys with
-  | nil =>
-      intro idx
-      cases idx with
-      | mk val isLt => simp at isLt
-  | cons arg args ih =>
-      cases tys with
-      | nil => simp at hlen
-      | cons ty tys =>
-          intro idx
-          cases idx with
-          | mk val isLt =>
-              cases val with
-              | zero =>
-                  have harg : Pr.Provable ctx ctxTy ctxTerm (.hasType varCtx arg ty) :=
-                    proveSubgoals (.hasType varCtx arg ty) (by simp [argGoals])
-                  cases harg with
-                  | ofProof proof => simpa [Pr.interp, Term.subst, Ty.subst] using proof
-              | succ val =>
-                  have hlenTail : args.length = tys.length := by
-                    simpa using Nat.succ.inj hlen
-                  have proveTail : ∀ subgoal, subgoal ∈ argGoals varCtx args tys →
-                      Pr.Provable ctx ctxTy ctxTerm subgoal := by
-                    intro subgoal hsubgoal
-                    exact proveSubgoals subgoal (by simp [argGoals, hsubgoal])
-                  have htail := ih hlenTail proveTail ⟨val, by simp at isLt; omega⟩
-                  simpa [Term.subst, Ty.subst] using htail
+mutual
 
 private theorem unifyTypeHasType_sound {ctx : Ctx} [Peano.Model ctx] {ctxTy : List Ty}
-    {ctxTerm : List (Term ctx.primCtx)} {varCtx : List Ty} {term : Term ctx.primCtx} {ty : Ty} :
-    (∀ subgoal, subgoal ∈ unifyTypeHasTypeGoals (ctx := ctx) ctxTy ctxTerm varCtx term ty →
-      Pr.Provable ctx ctxTy ctxTerm subgoal) →
-      Pr.interp ctx ctxTy ctxTerm (.hasType varCtx term ty) := by
-  classical
-  cases term with
-  | prim actualTy val =>
-      by_cases hty : actualTy = Ty.subst ctxTy ty
-      · intro _
-        have hprim : Term.hasType ctx (varCtx.map (Ty.subst ctxTy))
-            (.prim actualTy val) (Ty.subst ctxTy ty) := by
-          rw [← hty]
-          exact Term.hasType.prim val
+    {ctxTerm : List (Term ctx.primCtx)} {varCtx : List Ty} :
+    ∀ (term : Term ctx.primCtx) (ty : Ty),
+      (∀ subgoal, subgoal ∈ unifyTypeHasTypeGoals (ctx := ctx) ctxTy ctxTerm varCtx term ty →
+        Pr.Provable ctx ctxTy ctxTerm subgoal) →
+        Pr.interp ctx ctxTy ctxTerm (.hasType varCtx term ty)
+| .prim actualTy val, ty => by
+    classical
+    by_cases hty : actualTy = Ty.subst ctxTy ty
+    · intro _
+      have hprim : Term.hasType ctx (varCtx.map (Ty.subst ctxTy))
+          (.prim actualTy val) (Ty.subst ctxTy ty) := by
+        rw [← hty]
+        exact Term.hasType.prim val
+      simpa [Pr.interp, Term.subst] using hprim
+    · intro proveSubgoals
+      have hself := proveSubgoals (.hasType varCtx (.prim actualTy val) ty)
+        (by simp [unifyTypeHasTypeGoals, hty])
+      cases hself with
+      | ofProof proof => exact proof
+| .primFunc name, ty => by
+    classical
+    cases hmatch : primFuncMatch? ctx.primFuncCtx name (Ty.subst ctxTy ty) with
+    | some found =>
+        intro _
+        have hname := found.property.left
+        have hty := found.property.right
+        have hprim := @Term.hasType.primFunc ctx (varCtx.map (Ty.subst ctxTy)) found.val
+        rw [hname, hty] at hprim
         simpa [Pr.interp, Term.subst] using hprim
-      · intro proveSubgoals
-        have hself := proveSubgoals (.hasType varCtx (.prim actualTy val) ty)
-          (by simp [unifyTypeHasTypeGoals, hty])
+    | none =>
+        intro proveSubgoals
+        have hself := proveSubgoals (.hasType varCtx (.primFunc name) ty)
+          (by simp [unifyTypeHasTypeGoals, hmatch])
         cases hself with
         | ofProof proof => exact proof
-  | primFunc name =>
-      cases hmatch : primFuncMatch? ctx.primFuncCtx name (Ty.subst ctxTy ty) with
-      | some found =>
-          intro _
-          have hname := found.property.left
-          have hty := found.property.right
-          have hprim := @Term.hasType.primFunc ctx (varCtx.map (Ty.subst ctxTy)) found.val
-          rw [hname, hty] at hprim
-          simpa [Pr.interp, Term.subst] using hprim
-      | none =>
-          intro proveSubgoals
-          have hself := proveSubgoals (.hasType varCtx (.primFunc name) ty)
-            (by simp [unifyTypeHasTypeGoals, hmatch])
-          cases hself with
-          | ofProof proof => exact proof
-  | var idx =>
-      cases ctxTerm with
-      | nil =>
-          cases hvar : varMatch? ctxTy varCtx idx ty with
-          | some found =>
-              intro _
-              have hvarType : Term.hasType ctx (varCtx.map (Ty.subst ctxTy))
-                  (.var idx) (Ty.subst ctxTy ty) := by
-                have hraw : Term.hasType ctx (varCtx.map (Ty.subst ctxTy))
-                    (.var found.val) (Ty.subst ctxTy ty) :=
-                  Term.hasType.var (idx := found.val) found.property.right
-                simpa [found.property.left] using hraw
-              simpa [Pr.interp, Term.subst] using hvarType
-          | none =>
-              intro proveSubgoals
-              have hself := proveSubgoals (.hasType varCtx (.var idx) ty)
-                (by simp [unifyTypeHasTypeGoals, hvar])
-              cases hself with
-              | ofProof proof => exact proof
-      | cons head tail =>
-          intro proveSubgoals
-          have hself := proveSubgoals (.hasType varCtx (.var idx) ty)
-            (by simp [unifyTypeHasTypeGoals])
-          cases hself with
-          | ofProof proof => exact proof
-  | app f args =>
-      cases ctxTerm with
-      | cons head tail =>
-          intro proveSubgoals
-          have hself := proveSubgoals (.hasType varCtx (.app f args) ty)
-            (by simp [unifyTypeHasTypeGoals])
-          cases hself with
-          | ofProof proof => exact proof
-      | nil =>
-          cases hfun : inferFuncArgs? ctx.primFuncCtx varCtx f with
-          | none =>
-              intro proveSubgoals
-              have hself := proveSubgoals (.hasType varCtx (.app f args) ty)
-                (by simp [unifyTypeHasTypeGoals, hfun])
-              cases hself with
-              | ofProof proof => exact proof
-          | some argsTy =>
-              by_cases hlen : args.length = argsTy.length
-              · intro proveSubgoals
-                have hfProv : Pr.Provable ctx ctxTy []
-                    (.hasType varCtx f (.func argsTy ty)) :=
-                  proveSubgoals (.hasType varCtx f (.func argsTy ty))
-                    (by simp [unifyTypeHasTypeGoals, hfun, hlen])
-                have proveArgs : ∀ subgoal, subgoal ∈ argGoals varCtx args argsTy →
-                    Pr.Provable ctx ctxTy [] subgoal := by
-                  intro subgoal hsubgoal
-                  exact proveSubgoals subgoal
-                    (by simp [unifyTypeHasTypeGoals, hfun, hlen, hsubgoal])
-                cases hfProv with
-                | ofProof hfProof =>
-                    have hf : Term.hasType ctx (varCtx.map (Ty.subst ctxTy))
-                        (Term.subst [] f)
-                        (.func (argsTy.map (Ty.subst ctxTy)) (Ty.subst ctxTy ty)) := by
-                      simpa [Pr.interp, Ty.subst] using hfProof
-                    have hargs := argGoals_sound (ctx := ctx)
-                      (ctxTy := ctxTy) (ctxTerm := []) (varCtx := varCtx)
-                      (args := args) (tys := argsTy) hlen proveArgs
-                    have happ : Term.hasType ctx (varCtx.map (Ty.subst ctxTy))
-                        (.app (Term.subst [] f) (args.map (Term.subst [])))
-                        (Ty.subst ctxTy ty) := by
-                      refine Term.hasType.app hf ?_ ?_
-                      · simp [hlen]
-                      · intro idx
-                        have harg := hargs ⟨idx.val, by simpa using idx.isLt⟩
-                        simpa [List.getElem_map] using harg
-                    simpa [Pr.interp, Term.subst] using happ
-              · intro proveSubgoals
-                have hself := proveSubgoals (.hasType varCtx (.app f args) ty)
-                  (by simp [unifyTypeHasTypeGoals, hfun, hlen])
-                cases hself with
-                | ofProof proof => exact proof
-  | «op» name args =>
-      cases hite : iteArgs? name args with
-      | some iteArgs =>
-          rcases iteArgs with ⟨cond, thenTerm, elseTerm⟩
-          have ⟨hname, hargs⟩ := iteArgs?_eq_some hite
-          intro proveSubgoals
-          have hcondProv := proveSubgoals (.hasType varCtx cond Peano.BoolTy)
-            (by simp [unifyTypeHasTypeGoals, iteArgs?, hname, hargs])
-          have hthenProv := proveSubgoals (.hasType varCtx thenTerm ty)
-            (by simp [unifyTypeHasTypeGoals, iteArgs?, hname, hargs])
-          have helseProv := proveSubgoals (.hasType varCtx elseTerm ty)
-            (by simp [unifyTypeHasTypeGoals, iteArgs?, hname, hargs])
-          cases hcondProv with
-          | ofProof hcondProof =>
-              cases hthenProv with
-              | ofProof hthenProof =>
-                  cases helseProv with
-                  | ofProof helseProof =>
-                      have hiteType := Term.hasType.ite
-                        (show Term.hasType ctx (varCtx.map (Ty.subst ctxTy))
-                          (Term.subst ctxTerm cond) Peano.BoolTy by
-                            simpa [Pr.interp, Ty.subst] using hcondProof)
-                        (show Term.hasType ctx (varCtx.map (Ty.subst ctxTy))
-                          (Term.subst ctxTerm thenTerm) (Ty.subst ctxTy ty) by
-                            simpa [Pr.interp] using hthenProof)
-                        (show Term.hasType ctx (varCtx.map (Ty.subst ctxTy))
-                          (Term.subst ctxTerm elseTerm) (Ty.subst ctxTy ty) by
-                            simpa [Pr.interp] using helseProof)
-                      simpa [Pr.interp, Term.ite, Term.subst, hname, hargs] using hiteType
-      | none =>
-          intro proveSubgoals
-          have hself := proveSubgoals (.hasType varCtx (.op name args) ty)
-            (by simp [unifyTypeHasTypeGoals, hite])
-          cases hself with
-          | ofProof proof => exact proof
-  | mkStruct tys =>
-      by_cases hty : (.func tys (.struct tys)) = Ty.subst ctxTy ty
-      · intro _
-        have hmk : Term.hasType ctx (varCtx.map (Ty.subst ctxTy))
-            (.mkStruct tys) (Ty.subst ctxTy ty) := by
-          rw [← hty]
-          exact Term.hasType.mkStruct
-        simpa [Pr.interp, Term.subst] using hmk
-      · intro proveSubgoals
-        have hself := proveSubgoals (.hasType varCtx (.mkStruct tys) ty)
-          (by simp [unifyTypeHasTypeGoals, hty])
-        cases hself with
-        | ofProof proof => exact proof
-  | structProj tys idx =>
-      by_cases hty : (.func [.struct tys] tys[idx]) = Ty.subst ctxTy ty
-      · intro _
-        have hproj : Term.hasType ctx (varCtx.map (Ty.subst ctxTy))
-            (.structProj tys idx) (Ty.subst ctxTy ty) := by
-          rw [← hty]
-          exact Term.hasType.structProj idx
-        simpa [Pr.interp, Term.subst] using hproj
-      · intro proveSubgoals
-        have hself := proveSubgoals (.hasType varCtx (.structProj tys idx) ty)
-          (by
-            simp [unifyTypeHasTypeGoals]
-            exact hty)
-        cases hself with
-        | ofProof proof => exact proof
-  | «recurse» resultTy init body =>
-      cases ctxTerm with
-      | nil =>
-        cases hstateHint : inferType? ctx.primFuncCtx varCtx init with
+| .var idx, ty => by
+    classical
+    cases ctxTerm with
+    | nil =>
+        cases hvar : varMatch? ctxTy varCtx idx ty with
+        | some found =>
+            intro _
+            have hvarType : Term.hasType ctx (varCtx.map (Ty.subst ctxTy))
+                (.var idx) (Ty.subst ctxTy ty) := by
+              have hraw : Term.hasType ctx (varCtx.map (Ty.subst ctxTy))
+                  (.var found.val) (Ty.subst ctxTy ty) :=
+                Term.hasType.var (idx := found.val) found.property.right
+              simpa [found.property.left] using hraw
+            simpa [Pr.interp, Term.subst] using hvarType
         | none =>
             intro proveSubgoals
-            have hself := proveSubgoals (.hasType varCtx (.recurse resultTy init body) ty)
-              (by simp [unifyTypeHasTypeGoals, hstateHint])
+            have hself := proveSubgoals (.hasType varCtx (.var idx) ty)
+              (by simp [unifyTypeHasTypeGoals, hvar])
             cases hself with
             | ofProof proof => exact proof
-        | some stateTy =>
-            by_cases hcheck : Ty.subst ctxTy stateTy = stateTy ∧
-                Ty.subst ctxTy resultTy = resultTy ∧ resultTy = Ty.subst ctxTy ty
+    | cons head tail =>
+        intro proveSubgoals
+        have hself := proveSubgoals (.hasType varCtx (.var idx) ty)
+          (by simp [unifyTypeHasTypeGoals])
+        cases hself with
+        | ofProof proof => exact proof
+| .app f args, ty => by
+    classical
+    cases ctxTerm with
+    | cons head tail =>
+        intro proveSubgoals
+        have hself := proveSubgoals (.hasType varCtx (.app f args) ty)
+          (by simp [unifyTypeHasTypeGoals])
+        cases hself with
+        | ofProof proof => exact proof
+    | nil =>
+        cases hfun : inferFuncArgs? ctx varCtx f with
+        | none =>
+            intro proveSubgoals
+            have hself := proveSubgoals (.hasType varCtx (.app f args) ty)
+              (by simp [unifyTypeHasTypeGoals, hfun])
+            cases hself with
+            | ofProof proof => exact proof
+        | some argsTy =>
+            by_cases hlen : args.length = argsTy.length
             · intro proveSubgoals
-              have hstateFixed := hcheck.left
-              have hresultFixed := hcheck.right.left
-              have htarget := hcheck.right.right
-              have hinitProv : Pr.Provable ctx ctxTy []
-                  (.hasType varCtx init stateTy) :=
-                proveSubgoals (.hasType varCtx init stateTy)
-                  (by
-                    unfold unifyTypeHasTypeGoals
-                    simp [hstateHint]
-                    rw [if_pos hcheck]
-                    simp)
-              have hbodyProv : Pr.Provable ctx ctxTy []
-                  (.hasType (varCtx ++ [stateTy, .func [stateTy] resultTy]) body resultTy) :=
-                proveSubgoals
-                  (.hasType (varCtx ++ [stateTy, .func [stateTy] resultTy]) body resultTy)
-                  (by
-                    unfold unifyTypeHasTypeGoals
-                    simp [hstateHint]
-                    rw [if_pos hcheck]
-                    simp)
-              cases hinitProv with
-              | ofProof hinitProof =>
-                  cases hbodyProv with
-                  | ofProof hbodyProof =>
-                      have hinit : Term.hasType ctx (varCtx.map (Ty.subst ctxTy))
-                          (Term.subst [] init) stateTy := by
-                        simpa [Pr.interp, hstateFixed] using hinitProof
-                      have hbody : Term.hasType ctx
-                          (varCtx.map (Ty.subst ctxTy) ++ [stateTy, .func [stateTy] resultTy])
-                          (Term.subst [] body) resultTy := by
-                        simpa [Pr.interp, Ty.subst, List.map_append, hstateFixed, hresultFixed]
-                          using hbodyProof
-                      have hbodyRaw : Term.hasType ctx
-                          (varCtx.map (Ty.subst ctxTy) ++ [stateTy, .func [stateTy] resultTy])
-                          body resultTy := by
-                        simpa [Term.subst] using hbody
-                      have hrec : Term.hasType ctx (varCtx.map (Ty.subst ctxTy))
-                          (.recurse resultTy (Term.subst [] init) body)
-                          (Ty.subst ctxTy ty) := by
-                        rw [← htarget]
-                        exact Term.hasType.recurse hinit hbodyRaw
-                      simpa [Pr.interp, Term.subst] using hrec
+              have proveF : ∀ subgoal,
+                  subgoal ∈ unifyTypeHasTypeGoals (ctx := ctx) ctxTy [] varCtx f
+                    (.func argsTy ty) →
+                  Pr.Provable ctx ctxTy [] subgoal := by
+                intro subgoal hsubgoal
+                exact proveSubgoals subgoal (by
+                  simp [unifyTypeHasTypeGoals, hfun, hlen, hsubgoal])
+              have proveArgs : ∀ subgoal,
+                  subgoal ∈ unifyTypeArgGoals (ctx := ctx) ctxTy [] varCtx args argsTy →
+                  Pr.Provable ctx ctxTy [] subgoal := by
+                intro subgoal hsubgoal
+                exact proveSubgoals subgoal (by
+                  simp [unifyTypeHasTypeGoals, hfun, hlen, hsubgoal])
+              have hfInterp := unifyTypeHasType_sound f (.func argsTy ty) proveF
+              have hf : Term.hasType ctx (varCtx.map (Ty.subst ctxTy))
+                  (Term.subst [] f)
+                  (.func (argsTy.map (Ty.subst ctxTy)) (Ty.subst ctxTy ty)) := by
+                simpa [Pr.interp, Ty.subst] using hfInterp
+              have hargs := unifyTypeArg_sound args argsTy hlen proveArgs
+              have happ : Term.hasType ctx (varCtx.map (Ty.subst ctxTy))
+                  (.app (Term.subst [] f) (args.map (Term.subst [])))
+                  (Ty.subst ctxTy ty) := by
+                refine Term.hasType.app hf ?_ ?_
+                · simp [hlen]
+                · intro idx
+                  have harg := hargs ⟨idx.val, by simpa using idx.isLt⟩
+                  simpa [List.getElem_map] using harg
+              simpa [Pr.interp, Term.subst] using happ
             · intro proveSubgoals
-              have hself := proveSubgoals (.hasType varCtx (.recurse resultTy init body) ty)
-                (by simp [unifyTypeHasTypeGoals, hstateHint, hcheck])
+              have hself := proveSubgoals (.hasType varCtx (.app f args) ty)
+                (by simp [unifyTypeHasTypeGoals, hfun, hlen])
               cases hself with
               | ofProof proof => exact proof
-      | cons head tail =>
+| .op name args, ty => by
+    classical
+    cases hinf : inferTypes? ctx varCtx args with
+    | none =>
+        intro proveSubgoals
+        have hself := proveSubgoals (.hasType varCtx (.op name args) ty)
+          (by simp [unifyTypeHasTypeGoals, hinf])
+        cases hself with
+        | ofProof proof => exact proof
+    | some tys =>
+        by_cases hok : tys.map (Ty.subst ctxTy) = tys ∧
+            ctx.opCtx.outTy? name tys = some (Ty.subst ctxTy ty)
+        · obtain ⟨hsubst, hout⟩ := hok
+          have hlen : args.length = tys.length := inferTypes?_length hinf
           intro proveSubgoals
-          have hself := proveSubgoals (.hasType varCtx (.recurse resultTy init body) ty)
-            (by simp [unifyTypeHasTypeGoals])
+          have proveArgs : ∀ subgoal,
+              subgoal ∈ unifyTypeArgGoals (ctx := ctx) ctxTy ctxTerm varCtx args tys →
+              Pr.Provable ctx ctxTy ctxTerm subgoal := by
+            intro subgoal hsubgoal
+            exact proveSubgoals subgoal (by
+              simp [unifyTypeHasTypeGoals, hinf, hsubst, hout, hsubgoal])
+          have hargs := unifyTypeArg_sound args tys hlen proveArgs
+          have hopType : Term.hasType ctx (varCtx.map (Ty.subst ctxTy))
+              (.op name (args.map (Term.subst ctxTerm))) (Ty.subst ctxTy ty) := by
+            refine Term.hasType.op (tys := tys) ?_ ?_ hout
+            · simp [hlen]
+            · intro idx
+              have harg := hargs ⟨idx.val, by simpa using idx.isLt⟩
+              rw [subst_getElem_of_map_eq hsubst] at harg
+              simpa [List.getElem_map] using harg
+          simpa [Pr.interp, Term.subst] using hopType
+        · intro proveSubgoals
+          have hself := proveSubgoals (.hasType varCtx (.op name args) ty)
+            (by simp [unifyTypeHasTypeGoals, hinf, hok])
           cases hself with
           | ofProof proof => exact proof
+| .mkStruct tys, ty => by
+    classical
+    by_cases hty : (.func tys (.struct tys)) = Ty.subst ctxTy ty
+    · intro _
+      have hmk : Term.hasType ctx (varCtx.map (Ty.subst ctxTy))
+          (.mkStruct tys) (Ty.subst ctxTy ty) := by
+        rw [← hty]
+        exact Term.hasType.mkStruct
+      simpa [Pr.interp, Term.subst] using hmk
+    · intro proveSubgoals
+      have hself := proveSubgoals (.hasType varCtx (.mkStruct tys) ty)
+        (by simp [unifyTypeHasTypeGoals, hty])
+      cases hself with
+      | ofProof proof => exact proof
+| .structProj tys idx, ty => by
+    classical
+    by_cases hty : (.func [.struct tys] tys[idx]) = Ty.subst ctxTy ty
+    · intro _
+      have hproj : Term.hasType ctx (varCtx.map (Ty.subst ctxTy))
+          (.structProj tys idx) (Ty.subst ctxTy ty) := by
+        rw [← hty]
+        exact Term.hasType.structProj idx
+      simpa [Pr.interp, Term.subst] using hproj
+    · intro proveSubgoals
+      have hself := proveSubgoals (.hasType varCtx (.structProj tys idx) ty)
+        (by
+          simp [unifyTypeHasTypeGoals]
+          exact hty)
+      cases hself with
+      | ofProof proof => exact proof
+| .recurse resultTy init body, ty => by
+    classical
+    cases ctxTerm with
+    | nil =>
+      cases hstateHint : inferType? ctx varCtx init with
+      | none =>
+          intro proveSubgoals
+          have hself := proveSubgoals (.hasType varCtx (.recurse resultTy init body) ty)
+            (by simp [unifyTypeHasTypeGoals, hstateHint])
+          cases hself with
+          | ofProof proof => exact proof
+      | some stateTy =>
+          by_cases hcheck : Ty.subst ctxTy stateTy = stateTy ∧
+              Ty.subst ctxTy resultTy = resultTy ∧ resultTy = Ty.subst ctxTy ty
+          · intro proveSubgoals
+            have hstateFixed := hcheck.left
+            have hresultFixed := hcheck.right.left
+            have htarget := hcheck.right.right
+            have proveInit : ∀ subgoal,
+                subgoal ∈ unifyTypeHasTypeGoals (ctx := ctx) ctxTy [] varCtx init stateTy →
+                Pr.Provable ctx ctxTy [] subgoal := by
+              intro subgoal hsubgoal
+              exact proveSubgoals subgoal (by
+                unfold unifyTypeHasTypeGoals
+                simp only [hstateHint]
+                rw [if_pos hcheck]
+                exact List.mem_append_left _ hsubgoal)
+            have proveBody : ∀ subgoal,
+                subgoal ∈ unifyTypeHasTypeGoals (ctx := ctx) ctxTy []
+                  (varCtx ++ [stateTy, .func [stateTy] resultTy]) body resultTy →
+                Pr.Provable ctx ctxTy [] subgoal := by
+              intro subgoal hsubgoal
+              exact proveSubgoals subgoal (by
+                unfold unifyTypeHasTypeGoals
+                simp only [hstateHint]
+                rw [if_pos hcheck]
+                exact List.mem_append_right _ hsubgoal)
+            have hinitInterp := unifyTypeHasType_sound init stateTy proveInit
+            have hbodyInterp :=
+              unifyTypeHasType_sound (varCtx := varCtx ++ [stateTy, .func [stateTy] resultTy])
+                body resultTy proveBody
+            have hinit : Term.hasType ctx (varCtx.map (Ty.subst ctxTy))
+                (Term.subst [] init) stateTy := by
+              simpa [Pr.interp, hstateFixed] using hinitInterp
+            have hbody : Term.hasType ctx
+                (varCtx.map (Ty.subst ctxTy) ++ [stateTy, .func [stateTy] resultTy])
+                (Term.subst [] body) resultTy := by
+              simpa [Pr.interp, Ty.subst, List.map_append, hstateFixed, hresultFixed]
+                using hbodyInterp
+            have hbodyRaw : Term.hasType ctx
+                (varCtx.map (Ty.subst ctxTy) ++ [stateTy, .func [stateTy] resultTy])
+                body resultTy := by
+              simpa [Term.subst] using hbody
+            have hrec : Term.hasType ctx (varCtx.map (Ty.subst ctxTy))
+                (.recurse resultTy (Term.subst [] init) body)
+                (Ty.subst ctxTy ty) := by
+              rw [← htarget]
+              exact Term.hasType.recurse hinit hbodyRaw
+            simpa [Pr.interp, Term.subst] using hrec
+          · intro proveSubgoals
+            have hself := proveSubgoals (.hasType varCtx (.recurse resultTy init body) ty)
+              (by simp [unifyTypeHasTypeGoals, hstateHint, hcheck])
+            cases hself with
+            | ofProof proof => exact proof
+    | cons head tail =>
+        intro proveSubgoals
+        have hself := proveSubgoals (.hasType varCtx (.recurse resultTy init body) ty)
+          (by simp [unifyTypeHasTypeGoals])
+        cases hself with
+        | ofProof proof => exact proof
+
+private theorem unifyTypeArg_sound {ctx : Ctx} [Peano.Model ctx]
+    {ctxTy : List Ty} {ctxTerm : List (Term ctx.primCtx)} {varCtx : List Ty} :
+    ∀ (args : List (Term ctx.primCtx)) (tys : List Ty)
+      (hlen : args.length = tys.length),
+      (∀ subgoal, subgoal ∈ unifyTypeArgGoals (ctx := ctx) ctxTy ctxTerm varCtx args tys →
+        Pr.Provable ctx ctxTy ctxTerm subgoal) →
+      ∀ idx : Fin args.length,
+        Term.hasType ctx (varCtx.map (Ty.subst ctxTy))
+          (Term.subst ctxTerm args[idx])
+          (Ty.subst ctxTy tys[Fin.cast hlen idx])
+| [], [], _hlen, _proveSubgoals, idx => nomatch idx
+| arg :: args, ty :: tys, hlen, proveSubgoals, ⟨0, _⟩ => by
+    have proveHead : ∀ subgoal,
+        subgoal ∈ unifyTypeHasTypeGoals (ctx := ctx) ctxTy ctxTerm varCtx arg ty →
+        Pr.Provable ctx ctxTy ctxTerm subgoal := by
+      intro subgoal hsubgoal
+      exact proveSubgoals subgoal (by simp [unifyTypeArgGoals, hsubgoal])
+    have hhead := unifyTypeHasType_sound arg ty proveHead
+    cases (Pr.Provable.ofProof hhead : Pr.Provable ctx ctxTy ctxTerm (.hasType varCtx arg ty)) with
+    | ofProof proof =>
+        simpa [Pr.interp, Term.subst, Ty.subst] using proof
+| arg :: args, ty :: tys, hlen, proveSubgoals, ⟨val + 1, isLt⟩ => by
+    have hlenTail : args.length = tys.length := by
+      simpa using Nat.succ.inj hlen
+    have proveTail : ∀ subgoal,
+        subgoal ∈ unifyTypeArgGoals (ctx := ctx) ctxTy ctxTerm varCtx args tys →
+        Pr.Provable ctx ctxTy ctxTerm subgoal := by
+      intro subgoal hsubgoal
+      exact proveSubgoals subgoal (by simp [unifyTypeArgGoals, hsubgoal])
+    have htail := unifyTypeArg_sound args tys hlenTail proveTail
+      ⟨val, by simp at isLt; omega⟩
+    simpa [Term.subst, Ty.subst] using htail
+| [], _ :: _, hlen, _, _ => by simp at hlen
+| _ :: _, [], hlen, _, _ => by simp at hlen
+
+end
 
 private theorem unifyType_sound {ctx : Ctx} [Peano.Model ctx]
     {ctxTy : List Ty} {ctxTerm : List (Term ctx.primCtx)} {goal : Pr (Term ctx.primCtx)} :
@@ -496,7 +589,7 @@ private theorem unifyType_sound {ctx : Ctx} [Peano.Model ctx]
       exact proveSubgoals (.eq varCtx ty lhs rhs) (by simp [unifyTypeGoals])
   | hasType varCtx term ty =>
       intro proveSubgoals
-      exact Pr.Provable.ofProof (unifyTypeHasType_sound proveSubgoals)
+      exact Pr.Provable.ofProof (unifyTypeHasType_sound term ty proveSubgoals)
   | and p q =>
       intro proveSubgoals
       exact proveSubgoals (.and p q) (by simp [unifyTypeGoals])
@@ -525,8 +618,9 @@ def unifyType {ctx : Ctx} [Peano.Model ctx]
 
 /-! ### Completeness
 
-`Refinement.complete (unifyType goal)`: if the goal is provable, every generated
-subgoal is provable.  Proved for empty type/term substitutions and unique primfunc names. -/
+`Tactic.CompleteOn unifyType (hasType ·)`: every provable `hasType` goal is closed
+outright. Invertibility on closed states follows. Requires empty type/term
+substitutions and unique primfunc names. -/
 
 mutual
 private theorem Ty.subst_nil : (t : Ty) → Ty.subst [] t = t
@@ -582,10 +676,46 @@ private theorem primFuncCtx_get?_of_idx {ctx : Ctx}
   rfl
 
 /-- With empty `ctxTy`, syntactic inference recovers the unique `hasType` type. -/
+/- Totality of inference on well-typed terms: every `Term.hasType` derivation is recovered
+  exactly by `inferType?`. Together with `inferType?_eq_of_hasType_nil` (the converse) this
+  says inference decides typing, which is what makes `unifyType` complete.
+
+  This holds for *every* operator, with no per-operator knowledge: the `op` case just
+  reassembles the operand types and appeals to `ctx.opCtx.outTy?`, the same function
+  `Term.hasType.op` is stated against. -/
+private theorem inferType?_of_hasType {ctx : Ctx} [Peano.Model ctx] {varCtx : List Ty}
+    {term : Term ctx.primCtx} {ty : Ty}
+    (hnames : (ctx.primFuncCtx.map Prod.fst).Nodup)
+    (hty : Term.hasType ctx varCtx term ty) :
+    inferType? ctx varCtx term = some ty := by
+  induction hty with
+  | prim val => simp [inferType?]
+  | primFunc =>
+      rename_i varCtx' idx
+      simp only [inferType?]
+      rw [primFuncCtx_get?_of_idx (ctx := ctx) hnames idx]
+      rfl
+  | var h =>
+      rename_i varCtx' idx _
+      simp only [inferType?]
+      rw [List.getElem?_eq_getElem idx.isLt]
+      simpa using h
+  | «op» hargs₁ hargs₂ hout ih =>
+      rename_i varCtx' name args tys r
+      simp only [inferType?]
+      rw [inferTypes?_of_getElem hargs₁ (fun i ha ht => ih ⟨i, ha⟩)]
+      exact hout
+  | app hf hargs₁ hargs₂ ihf iha =>
+      rename_i varCtx' f fTy args argsTy
+      simp only [inferType?, ihf]
+  | mkStruct => simp [inferType?]
+  | structProj idx => simp [inferType?]
+  | «recurse» hinit hbody ihinit ihbody => simp [inferType?]
+
 private theorem inferType?_eq_of_hasType_nil {ctx : Ctx} [Peano.Model ctx] {varCtx : List Ty}
     {term : Term ctx.primCtx} {inferred ty : Ty}
     (hnames : (ctx.primFuncCtx.map Prod.fst).Nodup)
-    (hinf : inferType? ctx.primFuncCtx varCtx term = some inferred)
+    (hinf : inferType? ctx varCtx term = some inferred)
     (hty : Term.hasType ctx varCtx term ty) :
     ty = inferred := by
   induction hty generalizing inferred with
@@ -606,60 +736,32 @@ private theorem inferType?_eq_of_hasType_nil {ctx : Ctx} [Peano.Model ctx] {varC
       cases hinf; exact h.symm
   | «op» hargs₁ hargs₂ hout ih =>
       rename_i varCtx' name args tys r
-      cases hite : iteArgs? name args with
-      | some iteArgs =>
-          rcases iteArgs with ⟨cond, thenTerm, elseTerm⟩
-          have ⟨hname, hargs⟩ := iteArgs?_eq_some hite
-          simp only [hargs] at ih hargs₂
-          simp only [hname, hargs, inferType?] at hinf
-          have htys : tys.length = 3 := by simpa [hargs] using hargs₁.symm
-          cases tys with
-          | nil => simp at htys
-          | cons condTy tys =>
-              cases tys with
-              | nil => simp at htys
-              | cons thenTy tys =>
-                  cases tys with
-                  | nil => simp at htys
-                  | cons elseTy tys =>
-                      cases tys with
-                      | cons fourth rest => simp at htys
-                      | nil =>
-                          simp [hname, OpCtx.outTy?, Peano.Model.iteOp, Op.ite] at hout
-                          rcases hout with ⟨⟨hcondTy, hbranchTy⟩, hresultTy⟩
-                          subst condTy
-                          subst elseTy
-                          subst r
-                          have hthen := ih (inferred := inferred) ⟨1, by simp [hargs]⟩
-                          simpa [hargs] using hthen hinf
-      | none =>
-          cases args with
-          | nil => simp [inferType?] at hinf
-          | cons first args =>
-              cases args with
-              | nil => simp [inferType?] at hinf
-              | cons second args =>
-                  cases args with
-                  | nil => simp [inferType?] at hinf
-                  | cons third args =>
-                      cases args with
-                      | cons fourth rest => simp [inferType?] at hinf
-                      | nil =>
-                          by_cases hname : name = "ite"
-                          · subst name
-                            simp [iteArgs?] at hite
-                          · simp [inferType?, hname] at hinf
+      simp only [inferType?] at hinf
+      cases hinfArgs : inferTypes? ctx varCtx' args with
+      | none => simp only [hinfArgs] at hinf; exact absurd hinf (by simp)
+      | some tys' =>
+          simp only [hinfArgs] at hinf
+          -- each operand's inferred type agrees with its declared type, so `tys' = tys`
+          have hlen' : args.length = tys'.length := inferTypes?_length hinfArgs
+          have htys : tys' = tys := by
+            refine List.ext_getElem (by omega) ?_
+            intro i h1 h2
+            have hi : i < args.length := by omega
+            exact (ih ⟨i, hi⟩ (inferTypes?_getElem hinfArgs i hi h1)).symm
+          rw [htys, hout] at hinf
+          cases hinf
+          rfl
   | app hf hargs₁ hargs₂ ihf iha =>
       rename_i varCtx' f fTy args argsTy
       simp only [inferType?] at hinf
-      cases hfInf : inferType? ctx.primFuncCtx varCtx' f with
+      cases hfInf : inferType? ctx varCtx' f with
       | none =>
           simp only [hfInf] at hinf
           cases hinf
       | some fInf =>
           cases fInf with
           | func argsInf outInf =>
-              have hmatch : inferType? ctx.primFuncCtx varCtx' (.app f args) = some outInf := by
+              have hmatch : inferType? ctx varCtx' (.app f args) = some outInf := by
                 simp only [inferType?, hfInf]
               -- hinf : infer = some inferred, hmatch : infer = some outInf
               have : inferred = outInf := by
@@ -678,189 +780,186 @@ private theorem inferType?_eq_of_hasType_nil {ctx : Ctx} [Peano.Model ctx] {varC
   | «recurse» hi hb ihi ihb =>
       simp only [inferType?] at hinf; cases hinf; rfl
 
-private theorem argGoals_complete_nil {ctx : Ctx} {varCtx : List Ty}
-    {args : List (Term ctx.primCtx)} {tys : List Ty}
-    (hlen : args.length = tys.length)
-    (hargs : ∀ idx : Fin args.length,
-      Term.hasType ctx varCtx args[idx] tys[Fin.cast hlen idx]) :
-    ∀ subgoal, subgoal ∈ argGoals varCtx args tys →
-      Pr.Provable ctx [] ([] : List (Term ctx.primCtx)) subgoal := by
-  induction args generalizing tys with
-  | nil =>
-      intro subgoal hsubgoal
-      cases tys <;> simp [argGoals] at hsubgoal
-  | cons arg args ih =>
-      cases tys with
-      | nil => simp at hlen
-      | cons ty tys =>
-          intro subgoal hsubgoal
-          simp [argGoals] at hsubgoal
-          rcases hsubgoal with rfl | hsubgoal
-          · exact Pr.Provable.ofProof (by
-              simpa [Pr.interp, Term.subst, Ty.subst_nil, list_map_subst_nil]
-                using hargs ⟨0, by simp⟩)
-          · have hlenTail : args.length = tys.length := by
-              simpa using Nat.succ.inj hlen
-            exact ih hlenTail (fun idx => by
-              simpa using hargs ⟨idx.val + 1, by simp [idx.isLt]⟩) subgoal hsubgoal
+/- If `primFuncMatch?` fails, no entry has the given name and type. -/
+private theorem primFuncMatch?_eq_none {primCtx : PrimitiveCtx} :
+    ∀ (primFuncCtx : PrimFuncCtx primCtx) (name : String) (ty : Ty),
+      primFuncMatch? primFuncCtx name ty = none →
+      ∀ (i : Fin primFuncCtx.length), ¬(primFuncCtx[i].1 = name ∧ primFuncCtx[i].2.ty = ty)
+| [], _, _, _, i => Fin.elim0 i
+| hd :: tl, name, ty, hnone, i => by
+    simp only [primFuncMatch?] at hnone
+    split at hnone
+    · next h => cases hnone
+    · next hne =>
+        match i with
+        | ⟨0, _⟩ =>
+            intro h
+            exact hne (by simpa using h)
+        | ⟨n + 1, hlt⟩ =>
+            have hn : n < tl.length := by
+              simpa using hlt
+            have hrec : primFuncMatch? tl name ty = none := by
+              cases hmatch : primFuncMatch? tl name ty with
+              | none => rfl
+              | some found => simp [hmatch] at hnone
+            have := primFuncMatch?_eq_none tl name ty hrec ⟨n, hn⟩
+            intro h
+            exact this (by simpa using h)
 
-private theorem unifyTypeHasType_complete_nil {ctx : Ctx} [Peano.Model ctx] {varCtx : List Ty}
-    {term : Term ctx.primCtx} {ty : Ty}
+/- If `varMatch?` fails, the indexed variable does not have the target type. -/
+private theorem varMatch?_eq_none (ctxTy : List Ty) :
+    ∀ (varCtx : List Ty) (idx : Nat) (ty : Ty),
+      varMatch? ctxTy varCtx idx ty = none →
+      ∀ (hlt : idx < varCtx.length), ¬(Ty.subst ctxTy varCtx[idx] = Ty.subst ctxTy ty)
+| [], idx, ty, hnone, hlt => by simp at hlt
+| hd :: tl, 0, ty, hnone, hlt => by
+    simp only [varMatch?] at hnone
+    split at hnone
+    · cases hnone
+    · next hne =>
+        intro h
+        exact hne (by simpa using h)
+| hd :: tl, n + 1, ty, hnone, hlt => by
+    simp only [varMatch?] at hnone
+    have hn : n < tl.length := by
+      simpa using hlt
+    have hrec : varMatch? ctxTy tl n ty = none := by
+      cases hmatch : varMatch? ctxTy tl n ty with
+      | none => rfl
+      | some found => simp [hmatch] at hnone
+    have := varMatch?_eq_none ctxTy tl n ty hrec hn
+    intro h
+    exact this (by simpa using h)
+
+/- If every operand closes, the concatenated arg-goal list is empty. -/
+private theorem unifyTypeArgGoals_eq_nil_of_getElem {ctx : Ctx}
+    {ctxTy : List Ty} {ctxTerm : List (Term ctx.primCtx)} {varCtx : List Ty} :
+    ∀ (args : List (Term ctx.primCtx)) (tys : List Ty),
+      args.length = tys.length →
+      (∀ (i : Nat) (ha : i < args.length) (ht : i < tys.length),
+        unifyTypeHasTypeGoals (ctx := ctx) ctxTy ctxTerm varCtx args[i] tys[i] = []) →
+      unifyTypeArgGoals (ctx := ctx) ctxTy ctxTerm varCtx args tys = []
+| [], [], _, _ => rfl
+| [], _ :: _, hlen, _ => by simp at hlen
+| _ :: _, [], hlen, _ => by simp at hlen
+| arg :: args, ty :: tys, hlen, hpt => by
+    have hhead : unifyTypeHasTypeGoals (ctx := ctx) ctxTy ctxTerm varCtx arg ty = [] :=
+      hpt 0 (by simp) (by simp)
+    have htail := unifyTypeArgGoals_eq_nil_of_getElem args tys
+      (by simpa using Nat.succ.inj hlen)
+      (fun i ha ht => by
+        exact hpt (i + 1) (by simpa using ha) (by simpa using ht))
+    simp only [unifyTypeArgGoals, hhead, htail, List.nil_append]
+
+/- Every well-typed closed term is closed outright by the recursive checker. -/
+private theorem unifyTypeHasTypeGoals_eq_nil_of_hasType {ctx : Ctx} [Peano.Model ctx]
+    {varCtx : List Ty} {term : Term ctx.primCtx} {ty : Ty}
     (hnames : (ctx.primFuncCtx.map Prod.fst).Nodup)
-    (hgoal : Pr.Provable ctx [] [] (.hasType varCtx term ty)) :
-    ∀ subgoal, subgoal ∈ unifyTypeHasTypeGoals (ctx := ctx) [] [] varCtx term ty →
-      Pr.Provable ctx [] [] subgoal := by
-  classical
-  intro subgoal hsubgoal
-  have proof' : Term.hasType ctx varCtx term ty := by
-    cases hgoal with
+    (hty : Term.hasType ctx varCtx term ty) :
+    unifyTypeHasTypeGoals (ctx := ctx) [] [] varCtx term ty = [] := by
+  induction hty with
+  | prim val =>
+      simp only [unifyTypeHasTypeGoals, Ty.subst_nil, ↓reduceIte]
+  | primFunc =>
+      rename_i varCtx' idx
+      unfold unifyTypeHasTypeGoals
+      cases hmatch : primFuncMatch? ctx.primFuncCtx ctx.primFuncCtx[idx].1
+          (Ty.subst [] ctx.primFuncCtx[idx].2.ty) with
+      | some _ => rfl
+      | none =>
+          have htyEq : ctx.primFuncCtx[idx].2.ty = Ty.subst [] ctx.primFuncCtx[idx].2.ty :=
+            (Ty.subst_nil _).symm
+          exact absurd ⟨rfl, htyEq⟩
+            (primFuncMatch?_eq_none ctx.primFuncCtx _ _ hmatch idx)
+  | var h =>
+      rename_i varCtx' idx ty'
+      have hget : varCtx'[idx.val] = ty' := by
+        simpa [List.get_eq_getElem] using h
+      unfold unifyTypeHasTypeGoals
+      cases hvar : varMatch? ([] : List Ty) varCtx' idx.val ty' with
+      | some _ => rfl
+      | none =>
+          have hne := varMatch?_eq_none ([] : List Ty) varCtx' idx.val ty' hvar idx.isLt
+          exact absurd (by simp [Ty.subst_nil, hget]) hne
+  | «op» hargs₁ hargs₂ hout ih =>
+      rename_i varCtx' name args tys r
+      have hinf : inferTypes? ctx varCtx' args = some tys :=
+        inferTypes?_of_getElem hargs₁ fun i ha _ht =>
+          inferType?_of_hasType hnames (hargs₂ ⟨i, ha⟩)
+      have hsubst : tys.map (Ty.subst ([] : List Ty)) = tys := Ty.subst_nil_list tys
+      have hout' : ctx.opCtx.outTy? name tys = some (Ty.subst [] r) := by
+        rw [Ty.subst_nil]; exact hout
+      have hargsNil : unifyTypeArgGoals (ctx := ctx) [] [] varCtx' args tys = [] :=
+        unifyTypeArgGoals_eq_nil_of_getElem (ctx := ctx) (ctxTy := [])
+          (ctxTerm := []) (varCtx := varCtx') args tys hargs₁ fun i ha _ht =>
+            ih ⟨i, ha⟩
+      unfold unifyTypeHasTypeGoals
+      simp only [hinf]
+      have hok : tys.map (Ty.subst ([] : List Ty)) = tys ∧
+          ctx.opCtx.outTy? name tys = some (Ty.subst [] r) := ⟨hsubst, hout'⟩
+      rw [if_pos hok, hargsNil]
+  | app hf hargs₁ hargs₂ ihf iha =>
+      rename_i varCtx' f fTy args argsTy
+      have hinfF : inferType? ctx varCtx' f = some (.func argsTy fTy) :=
+        inferType?_of_hasType hnames hf
+      have hfun : inferFuncArgs? ctx varCtx' f = some argsTy := by
+        simp only [inferFuncArgs?, hinfF]
+      have hargsNil : unifyTypeArgGoals (ctx := ctx) [] [] varCtx' args argsTy = [] :=
+        unifyTypeArgGoals_eq_nil_of_getElem (ctx := ctx) (ctxTy := [])
+          (ctxTerm := []) (varCtx := varCtx') args argsTy hargs₁ fun i ha _ht =>
+            iha ⟨i, ha⟩
+      unfold unifyTypeHasTypeGoals
+      simp only [hfun]
+      rw [if_pos hargs₁, ihf, hargsNil]
+      simp only [List.nil_append]
+  | mkStruct =>
+      simp only [unifyTypeHasTypeGoals, Ty.subst_nil, ↓reduceIte]
+  | structProj idx =>
+      simp only [unifyTypeHasTypeGoals, Ty.subst_nil, ↓reduceIte]
+  | «recurse» hinit hbody ihinit ihbody =>
+      rename_i varCtx' stateTy resultTy init body
+      have hstate : inferType? ctx varCtx' init = some stateTy :=
+        inferType?_of_hasType hnames hinit
+      have hcheck : Ty.subst ([] : List Ty) stateTy = stateTy ∧
+          Ty.subst ([] : List Ty) resultTy = resultTy ∧
+          resultTy = Ty.subst ([] : List Ty) resultTy :=
+        ⟨Ty.subst_nil stateTy, Ty.subst_nil resultTy, (Ty.subst_nil resultTy).symm⟩
+      unfold unifyTypeHasTypeGoals
+      simp only [hstate]
+      rw [if_pos hcheck, ihinit, ihbody]
+      simp only [List.nil_append]
+
+/-- Every provable `hasType` goal is closed outright by `unifyType`. -/
+theorem unifyType_completeOn_hasType {ctx : Ctx} [Peano.Model ctx]
+    (hnames : (ctx.primFuncCtx.map Prod.fst).Nodup) :
+    Tactic.CompleteOn
+      (ctx := ctx) (ctxTy := []) (ctxTerm := [])
+      unifyType
+      (fun goal => ∃ varCtx term ty, goal = .hasType varCtx term ty) := by
+  intro goal hdomain hprov
+  rcases hdomain with ⟨varCtx, term, ty, rfl⟩
+  simp only [unifyType, unifyTypeGoals]
+  simp only [Language.Provable_term] at hprov
+  have hty : Term.hasType ctx varCtx term ty := by
+    cases hprov with
     | ofProof p =>
         simpa [Pr.interp, Term.subst, Ty.subst_nil, list_map_subst_nil] using p
-  cases term with
-  | prim actualTy val =>
-      by_cases hty : actualTy = Ty.subst [] ty
-      · simp [unifyTypeHasTypeGoals, hty] at hsubgoal
-      · simp [unifyTypeHasTypeGoals, hty] at hsubgoal; subst hsubgoal; exact hgoal
-  | primFunc name =>
-      cases hmatch : primFuncMatch? ctx.primFuncCtx name (Ty.subst [] ty) with
-      | some _ => simp [unifyTypeHasTypeGoals, hmatch] at hsubgoal
-      | none =>
-          simp [unifyTypeHasTypeGoals, hmatch] at hsubgoal; subst hsubgoal; exact hgoal
-  | var idx =>
-      cases hvar : varMatch? [] varCtx idx ty with
-      | some _ => simp [unifyTypeHasTypeGoals, hvar] at hsubgoal
-      | none =>
-          simp [unifyTypeHasTypeGoals, hvar] at hsubgoal; subst hsubgoal; exact hgoal
-  | app f args =>
-      cases hfun : inferFuncArgs? ctx.primFuncCtx varCtx f with
-      | none =>
-          simp [unifyTypeHasTypeGoals, hfun] at hsubgoal; subst hsubgoal; exact hgoal
-      | some argsTy =>
-          by_cases hlen : args.length = argsTy.length
-          · simp [unifyTypeHasTypeGoals, hfun, hlen] at hsubgoal
-            cases proof' with
-            | app hf hargs₁ hargs₂ =>
-                rename_i argsTy'
-                have ⟨out, hinfF⟩ : ∃ out,
-                    inferType? ctx.primFuncCtx varCtx f = some (.func argsTy out) := by
-                  simp [inferFuncArgs?] at hfun
-                  split at hfun
-                  · next out heq => cases hfun; exact ⟨out, heq⟩
-                  · cases hfun
-                have hfEq := inferType?_eq_of_hasType_nil hnames hinfF hf
-                injection hfEq with hargsEq hretEq
-                rcases hsubgoal with rfl | hsg
-                · have hf' : Term.hasType ctx varCtx f (.func argsTy ty) := by
-                    rwa [hargsEq] at hf
-                  exact Pr.Provable.ofProof (by
-                    simpa [Pr.interp, Term.subst, Ty.subst_nil, list_map_subst_nil, Ty.subst]
-                      using hf')
-                · refine argGoals_complete_nil hlen ?_ subgoal hsg
-                  intro idx
-                  simpa [hargsEq, Fin.cast] using hargs₂ idx
-          · simp [unifyTypeHasTypeGoals, hfun, hlen] at hsubgoal
-            subst hsubgoal; exact hgoal
-  | «op» name args =>
-      cases hite : iteArgs? name args with
-      | some iteArgs =>
-          rcases iteArgs with ⟨cond, thenTerm, elseTerm⟩
-          have ⟨hname, hargs⟩ := iteArgs?_eq_some hite
-          simp [unifyTypeHasTypeGoals, iteArgs?, hname, hargs] at hsubgoal
-          cases proof' with
-          | «op» hargs₁ hargs₂ hout =>
-              rename_i tys
-              simp only [hargs] at hargs₂
-              have htys : tys.length = 3 := by simpa [hargs] using hargs₁.symm
-              cases tys with
-              | nil => simp at htys
-              | cons condTy tys =>
-                  cases tys with
-                  | nil => simp at htys
-                  | cons thenTy tys =>
-                      cases tys with
-                      | nil => simp at htys
-                      | cons elseTy tys =>
-                          cases tys with
-                          | cons fourth rest => simp at htys
-                          | nil =>
-                              simp [hname, OpCtx.outTy?, Peano.Model.iteOp, Op.ite] at hout
-                              rcases hout with ⟨⟨hcondTy, hbranchTy⟩, hresultTy⟩
-                              subst condTy
-                              subst elseTy
-                              subst ty
-                              rcases hsubgoal with rfl | rfl | rfl
-                              · exact Pr.Provable.ofProof (by
-                                  simpa [Pr.interp, Term.subst, Ty.subst_nil,
-                                    list_map_subst_nil] using hargs₂ ⟨0, by simp [hargs]⟩)
-                              · exact Pr.Provable.ofProof (by
-                                  simpa [Pr.interp, Term.subst, Ty.subst_nil,
-                                    list_map_subst_nil] using hargs₂ ⟨1, by simp [hargs]⟩)
-                              · exact Pr.Provable.ofProof (by
-                                  simpa [Pr.interp, Term.subst, Ty.subst_nil,
-                                    list_map_subst_nil] using hargs₂ ⟨2, by simp [hargs]⟩)
-      | none =>
-          simp [unifyTypeHasTypeGoals, hite] at hsubgoal
-          subst hsubgoal
-          exact hgoal
-  | mkStruct tys =>
-      by_cases hty : (.func tys (.struct tys)) = Ty.subst [] ty
-      · simp [unifyTypeHasTypeGoals, hty] at hsubgoal
-      · simp [unifyTypeHasTypeGoals, hty] at hsubgoal; subst hsubgoal; exact hgoal
-  | structProj tys idx =>
-      by_cases hty : (.func [.struct tys] tys[idx]) = Ty.subst [] ty
-      · have hty' : (.func [.struct tys] tys[idx.val]) = Ty.subst [] ty := hty
-        simp [unifyTypeHasTypeGoals, hty'] at hsubgoal
-      · have hty' : ¬((.func [.struct tys] tys[idx.val]) = Ty.subst [] ty) := hty
-        simp [unifyTypeHasTypeGoals, hty'] at hsubgoal; subst hsubgoal; exact hgoal
-  | «recurse» resultTy init body =>
-      cases hstate : inferType? ctx.primFuncCtx varCtx init with
-      | none =>
-          simp [unifyTypeHasTypeGoals, hstate] at hsubgoal; subst hsubgoal; exact hgoal
-      | some stateTy =>
-          -- Ty.subst [] is id, so the check simplifies
-          have hstateFixed := Ty.subst_nil stateTy
-          have hresultFixed := Ty.subst_nil resultTy
-          by_cases htarget : resultTy = ty
-          · have hcheck : Ty.subst [] stateTy = stateTy ∧
-                Ty.subst [] resultTy = resultTy ∧ resultTy = Ty.subst [] ty := by
-              refine ⟨hstateFixed, hresultFixed, ?_⟩
-              rwa [Ty.subst_nil]
-            unfold unifyTypeHasTypeGoals at hsubgoal
-            simp [hstate] at hsubgoal
-            rw [if_pos hcheck] at hsubgoal
-            simp at hsubgoal
-            cases proof' with
-            | «recurse» hinit hbody =>
-                rename_i stateTy'
-                have hstateEq := inferType?_eq_of_hasType_nil hnames hstate hinit
-                rcases hsubgoal with rfl | rfl
-                · exact Pr.Provable.ofProof (by
-                    simp [Pr.interp, list_map_subst_nil, Ty.subst_nil]
-                    rwa [hstateEq] at hinit)
-                · -- term is recurse ty init body (resultTy unified with ty)
-                  have hbody' : Term.hasType ctx
-                      (varCtx ++ [stateTy, .func [stateTy] ty]) body ty := by
-                    rwa [hstateEq] at hbody
-                  exact Pr.Provable.ofProof (by
-                    simpa [Pr.interp, Term.subst, Ty.subst_nil, list_map_subst_nil,
-                      List.map_append, Ty.subst] using hbody')
-          · have hcheck : ¬(Ty.subst [] stateTy = stateTy ∧
-                Ty.subst [] resultTy = resultTy ∧ resultTy = Ty.subst [] ty) := by
-              intro ⟨_, _, ht⟩
-              exact htarget (by rwa [Ty.subst_nil] at ht)
-            simp [unifyTypeHasTypeGoals, hstate, hcheck] at hsubgoal
-            subst hsubgoal; exact hgoal
+  exact unifyTypeHasTypeGoals_eq_nil_of_hasType hnames hty
 
-/-- Completeness of `unifyType` for closed proof states (empty type and term contexts). -/
-theorem unifyType_complete {ctx : Ctx} [Peano.Model ctx] {goal : Pr (Term ctx.primCtx)}
+/-- Invertibility of `unifyType` for closed proof states follows from completeness on
+  `hasType` goals and the identity behaviour on every other connective. -/
+theorem unifyType_invertible {ctx : Ctx} [Peano.Model ctx] {goal : Pr (Term ctx.primCtx)}
     (hnames : (ctx.primFuncCtx.map Prod.fst).Nodup) :
-    Refinement.complete (unifyType (ctx := ctx) (ctxTy := []) (ctxTerm := []) goal) := by
+    Refinement.invertible (unifyType (ctx := ctx) (ctxTy := []) (ctxTerm := []) goal) := by
   intro hgoal subgoal hsubgoal
   simp only [Language.Provable_term] at hgoal ⊢
   cases goal with
   | hasType varCtx term ty =>
-      simp [unifyType, unifyTypeGoals] at hsubgoal
-      exact unifyTypeHasType_complete_nil hnames hgoal subgoal hsubgoal
+      have hnil := unifyType_completeOn_hasType (ctx := ctx) hnames
+        (.hasType varCtx term ty) ⟨varCtx, term, ty, rfl⟩ (by
+          simpa only [Language.Provable_term] using hgoal)
+      simp [unifyType, unifyTypeGoals] at hsubgoal hnil
+      simp [hnil] at hsubgoal
   | eq varCtx ty lhs rhs =>
       simp [unifyType, unifyTypeGoals] at hsubgoal; subst hsubgoal; exact hgoal
   | and p q =>

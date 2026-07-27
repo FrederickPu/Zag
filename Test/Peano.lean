@@ -1,6 +1,24 @@
 import Lib.Peano.Defs
+import Meta.UnifyType
 
 namespace Zag
+
+open Lib.Peano
+open Pr.TypeUnification
+
+/- Recursive `unifyType` closes well-typed operator applications outright. -/
+private def ltGoal : Pr (Term natCtx) :=
+  Pr.hasType [] (.op "lt" [Term.nat 1, Term.nat 2]) Peano.BoolTy
+
+example : (unifyType (ctx := peanoCtx) (ctxTy := []) (ctxTerm := []) ltGoal).goals.length = 0 := by
+  native_decide
+
+private def iteGoal : Pr (Term natCtx) :=
+  Pr.hasType [] (.op "ite" [Term.bool true, Term.nat 1, Term.nat 2]) Peano.NatTy
+
+example :
+    (unifyType (ctx := peanoCtx) (ctxTy := []) (ctxTerm := []) iteGoal).goals.length = 0 := by
+  native_decide
 
 private abbrev comparisonCtx : PrimitiveCtx :=
   .ofPrims [

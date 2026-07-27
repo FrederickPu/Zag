@@ -828,29 +828,25 @@ theorem succEq_extract {ctx : Ctx} [Peano.Model ctx]
   cases happ : Term.evalGo ctx [] [] (.app (.primFunc succName) [x]) with
   | none =>
       simp [Term.evalGo, Peano.Model.eqOp, happ, Term.bool, Op.eq,
-        Op.compare, Op.Signature.eagerBody, Op.Signature.apply] at heval
+        Op.compare] at heval
   | some va =>
     obtain ⟨m, hx, rfl⟩ := hspec.eval_succ_inv x va happ
     cases hy : Term.evalGo ctx [] [] y with
     | none =>
       simp [Term.evalGo, Peano.Model.eqOp, happ, hy, Term.bool, Op.eq,
-        Op.compare, Op.Signature.eagerBody, Op.Signature.apply] at heval
+        Op.compare] at heval
     | some vb =>
       have hcmp : Val.primEq? (Val.nat (primCtx := ctx.primCtx) (m + 1)) vb = some true := by
-        simp [Term.evalGo, Peano.Model.eqOp, happ, hy, Term.bool, Op.eq, Op.compare,
-          Op.Signature.eagerBody,
-          Op.Signature.apply] at heval
-        have heval' : Val.bool (primCtx := ctx.primCtx)
-            ((Val.primEq? (Val.nat (primCtx := ctx.primCtx) (m + 1)) vb).getD false) =
-            Val.bool (primCtx := ctx.primCtx) true := by
-          rw [← heval]
-          congr 3
-        have hbool := valBool_inj heval'
-        cases hraw : Val.primEq? (Val.nat (primCtx := ctx.primCtx) (m + 1)) vb with
-        | none => simp [hraw] at hbool
-        | some result =>
-          simp [hraw] at hbool
-          simp [hbool]
+        simp [Term.evalGo, Peano.Model.eqOp, happ, hy, Term.bool, Op.eq, Op.compare] at heval
+        by_cases hty : (Val.nat (primCtx := ctx.primCtx) (m + 1)).ty = vb.ty
+        · rw [if_pos hty] at heval
+          cases hraw : Val.primEq? (Val.nat (primCtx := ctx.primCtx) (m + 1)) vb with
+          | none => rw [hraw] at heval; simp at heval
+          | some result =>
+              rw [hraw] at heval
+              simp at heval
+              simp [valBool_inj heval]
+        · rw [if_neg hty] at heval; simp at heval
       unfold Val.primEq? at hcmp
       simp at hcmp
       cases h : vb.asNat? with
@@ -886,10 +882,11 @@ private theorem succEq_natLit {ctx : Ctx} [Peano.Model ctx]
       simp [Term.evalGo, Peano.Model.eqOp, hs', hy, Term.bool, Op.eq, Op.compare,
         Op.Signature.eagerBody,
         Op.Signature.apply]
-      apply congrArg Val.bool
-      change (Val.primEq? (Val.nat (primCtx := ctx.primCtx) (k + 1))
-        (Val.nat (k + 1))).getD false = true
-      simp [Val.primEq?])
+      have hEq : Val.primEq? (Val.nat (primCtx := ctx.primCtx) (k + 1))
+          (Val.nat (k + 1)) = some true := by
+        simp [Val.primEq?]
+      rw [hEq]
+      simp)
 
 /-- Builds the term-quantified step goal `natStepGoal 0 succName predicate` from a step
   function indexed by literal `Nat`s. -/

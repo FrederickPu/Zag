@@ -55,26 +55,34 @@ def andThen {goal : Pr E} (refinement : Refinement ctx ctxTy ctxTerm goal)
     (next : Tactic ctx ctxTy ctxTerm E) : Refinement ctx ctxTy ctxTerm goal :=
   refinement.refine fun subgoal _ => next subgoal
 
-def complete {goal : Pr E} (refinement : Refinement ctx ctxTy ctxTerm goal) : Prop :=
+/- The refinement loses no provability: a provable goal only ever generates provable subgoals.
+  In sequent-calculus terms this is *invertibility* of the rule, and it is the converse of the
+  soundness carried by the `prove` field.
+
+  This is NOT completeness, and must not be read as such: `stuck` satisfies it (see
+  `stuck_invertible`), so the identity tactic is invertible. It says the refinement never
+  turns a provable goal into an unprovable one -- not that it makes any progress.
+  For "provable goals actually get closed", see `Tactic.CompleteOn`. -/
+def invertible {goal : Pr E} (refinement : Refinement ctx ctxTy ctxTerm goal) : Prop :=
   Language.Provable ctx ctxTy ctxTerm goal →
     ∀ subgoal, subgoal ∈ refinement.goals → Language.Provable ctx ctxTy ctxTerm subgoal
 
-theorem lift_complete {goal : Pr E} (proof : Language.Provable ctx ctxTy ctxTerm goal) :
-    complete (lift proof) := by
+theorem lift_invertible {goal : Pr E} (proof : Language.Provable ctx ctxTy ctxTerm goal) :
+    invertible (lift proof) := by
   intro _ subgoal hsubgoal
   simp [lift] at hsubgoal
 
-theorem stuck_complete (goal : Pr E) :
-    complete (stuck (ctx := ctx) (ctxTy := ctxTy) (ctxTerm := ctxTerm) goal) := by
+theorem stuck_invertible (goal : Pr E) :
+    invertible (stuck (ctx := ctx) (ctxTy := ctxTy) (ctxTerm := ctxTerm) goal) := by
   intro hgoal subgoal hsubgoal
   simp [stuck] at hsubgoal
   exact hsubgoal ▸ hgoal
 
-theorem refine_complete {goal : Pr E} (refinement : Refinement ctx ctxTy ctxTerm goal)
+theorem refine_invertible {goal : Pr E} (refinement : Refinement ctx ctxTy ctxTerm goal)
     (next : ∀ subgoal, subgoal ∈ refinement.goals → Refinement ctx ctxTy ctxTerm subgoal)
-    (hrefinement : complete refinement)
-    (hnext : ∀ subgoal hsubgoal, complete (next subgoal hsubgoal)) :
-    complete (refinement.refine next) := by
+    (hrefinement : invertible refinement)
+    (hnext : ∀ subgoal hsubgoal, invertible (next subgoal hsubgoal)) :
+    invertible (refinement.refine next) := by
   intro hgoal generated hgenerated
   rcases List.mem_flatMap.mp hgenerated with ⟨attached, _hattached, hgeneratedNext⟩
   rcases attached with ⟨subgoal, hsubgoal⟩
@@ -125,14 +133,31 @@ def iterate (fuel : Nat) (step : Tactic ctx ctxTy ctxTerm E) : Tactic ctx ctxTy 
     | 0 => step goal
     | n + 1 => (step goal).refine fun subgoal _ => iterate n step subgoal
 
-def complete (tactic : Tactic ctx ctxTy ctxTerm E) : Prop :=
-  ∀ goal, Refinement.complete (tactic goal)
+def invertible (tactic : Tactic ctx ctxTy ctxTerm E) : Prop :=
+  ∀ goal, Refinement.invertible (tactic goal)
 
-theorem iterate_complete {step : Tactic ctx ctxTy ctxTerm E} (hstep : complete step) :
-    ∀ fuel, complete (iterate fuel step)
+theorem iterate_invertible {step : Tactic ctx ctxTy ctxTerm E} (hstep : invertible step) :
+    ∀ fuel, invertible (iterate fuel step)
 | 0 => hstep
 | n + 1 => fun goal =>
-    Refinement.refine_complete _ _ (hstep goal) (fun subgoal _ => iterate_complete hstep n subgoal)
+    Refinement.refine_invertible _ _ (hstep goal)
+      (fun subgoal _ => iterate_invertible hstep n subgoal)
+
+/- Completeness proper, relative to a `domain` of goals the tactic claims to decide:
+  every provable goal in the domain is closed outright (no residual subgoals).
+
+  Unlike `invertible` this is not satisfied by `stuck`, and it is the property that makes
+  `tactic` a decision procedure on `domain` -- see `decides`. -/
+def CompleteOn (tactic : Tactic ctx ctxTy ctxTerm E) (domain : Pr E → Prop) : Prop :=
+  ∀ goal, domain goal → Language.Provable ctx ctxTy ctxTerm goal → (tactic goal).goals = []
+
+/- On its domain, a complete tactic decides provability: the goal is provable exactly when
+  the tactic closes it. The `←` direction is soundness (`Refinement.toProvable`), which every
+  `Refinement` carries by construction; `CompleteOn` supplies `→`. -/
+theorem decides {tactic : Tactic ctx ctxTy ctxTerm E} {domain : Pr E → Prop}
+    (hcomplete : CompleteOn tactic domain) (goal : Pr E) (hdomain : domain goal) :
+    Language.Provable ctx ctxTy ctxTerm goal ↔ (tactic goal).goals = [] :=
+  ⟨hcomplete goal hdomain, fun hclosed => (tactic goal).toProvable hclosed⟩
 
 end Tactic
 
