@@ -1,60 +1,10 @@
-import Zag.Theory
+import Lib.Peano.Defs
 import Meta.Induction
 
 namespace Zag.Lib.Peano
 
 open Zag
 open Zag.Pr.Induction
-
-abbrev natCtx : PrimitiveCtx := [("Nat", Nat), ("Bool", Bool)]
-abbrev NatTy : Ty := .prim "Nat"
-
-def natBinaryFunc (f : Nat → Nat → Nat) : PrimFunc natCtx where
-  args := ["Nat", "Nat"]
-  out := "Nat"
-  hprim := by
-    intro x hx
-    simp at hx
-    simp [natCtx]
-    exact Or.inl hx
-  interp := fun
-    | [lhsVal, rhsVal] => do
-        let lhs ← lhsVal.asNat?
-        let rhs ← rhsVal.asNat?
-        some (Val.nat (f lhs rhs))
-    | _ => none
-
-def succFunc : PrimFunc natCtx where
-  args := ["Nat"]
-  out := "Nat"
-  hprim := by
-    intro x hx
-    simp at hx
-    simp [natCtx]
-    exact Or.inl hx
-  interp := fun
-    | [v] => do
-        let n ← v.asNat?
-        some (Val.nat (n + 1))
-    | _ => none
-
-def natFuncCtx : PrimFuncCtx natCtx :=
-  [ ("add", natBinaryFunc Nat.add)
-  , ("sub", natBinaryFunc Nat.sub)
-  , ("mul", natBinaryFunc Nat.mul)
-  , ("div", natBinaryFunc Nat.div)
-  , ("succ", succFunc)
-  ]
-
-def natOpCtx : OpCtx natCtx :=
-  [ ("lt", Op.compare Val.primLt?)
-  , ("gt", Op.compare Val.primGt?)
-  ]
-
-abbrev peanoCtx : Ctx :=
-  { primCtx := natCtx
-  , primFuncCtx := natFuncCtx
-  , opCtx := natOpCtx }
 
 def succName : String := "succ"
 
@@ -74,7 +24,7 @@ private theorem asNat?_eq_some {v : Val natCtx} {k : Nat}
 
 private theorem apply_succ_nat (m : Nat) :
     PrimFunc.apply succFunc [Val.nat (primCtx := natCtx) m] = some (Val.nat (m + 1)) := by
-  simp [PrimFunc.apply, succFunc]
+  simp [PrimFunc.apply, PrimFunc.outTy, succFunc]
 
 /-- `app succ [t]` evaluates like `app succ [nat m]` when `t ↝ m`. -/
 private theorem eval_succ_congr (t : Term natCtx) (m : Nat)

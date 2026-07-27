@@ -128,8 +128,6 @@ partial def termToSSAValue? {simpleCtx : _root_.Lang.Simple.Context}
       some (.raw (.mkStruct tys))
   | .structProj tys idx =>
       some (.raw (.structProj tys idx))
-  | .ite _ _ _ =>
-      none
   | .recurse _ _ _ =>
       none
 
@@ -280,25 +278,16 @@ theorem evalSSAValueWithLocals?_block_ite_true {simpleCtx : _root_.Lang.Simple.C
           have hElseTerm' :
               Zag.Lang.SSA.SSAExpr.toTerm? elseExpr { vars := ctx.inputEnv } = some elseTerm := by
             simpa [toTermWithLocals?] using hElseTerm
-          have hCondEval :
-              Zag.Term.eval simpleCtx.zagCtx env condTerm =
-                some (Zag.Val.bool true) := by
-            simpa [hCondTerm] using hCond
-          have hThenEval :
-              Zag.Term.eval simpleCtx.zagCtx env thenTerm =
-                some target := by
-            simpa [hThenTerm] using hThen
           have hCondEvalGo :
               Zag.Term.evalGo simpleCtx.zagCtx [] env condTerm =
                 some (Zag.Val.bool true) := by
-            simpa [Zag.Term.eval] using hCondEval
+            simpa [Zag.Term.eval, hCondTerm] using hCond
           have hThenEvalGo :
-              Zag.Term.evalGo simpleCtx.zagCtx [] env thenTerm =
-                some target := by
-            simpa [Zag.Term.eval] using hThenEval
+              Zag.Term.evalGo simpleCtx.zagCtx [] env thenTerm = some target := by
+            simpa [Zag.Term.eval, hThenTerm] using hThen
           simp [Zag.Lang.SSA.SSAExpr.valueToTerm?, Zag.Lang.SSA.SSAExpr.toTerm?,
             hCondTerm, hThenTerm', hElseTerm', Zag.Term.eval, Zag.Term.evalGo,
-            hCondEvalGo, hThenEvalGo]
+            Zag.Term.ite, simpleCtx.iteOp, Zag.Op.ite, hCondEvalGo, hThenEvalGo]
 
 theorem evalSSAValueWithLocals?_block_ite_false {simpleCtx : _root_.Lang.Simple.Context}
     (ctx : LocalContext)
@@ -329,25 +318,16 @@ theorem evalSSAValueWithLocals?_block_ite_false {simpleCtx : _root_.Lang.Simple.
           have hElseTerm' :
               Zag.Lang.SSA.SSAExpr.toTerm? elseExpr { vars := ctx.inputEnv } = some elseTerm := by
             simpa [toTermWithLocals?] using hElseTerm
-          have hCondEval :
-              Zag.Term.eval simpleCtx.zagCtx env condTerm =
-                some (Zag.Val.bool false) := by
-            simpa [hCondTerm] using hCond
-          have hElseEval :
-              Zag.Term.eval simpleCtx.zagCtx env elseTerm =
-                some target := by
-            simpa [hElseTerm] using hElse
           have hCondEvalGo :
               Zag.Term.evalGo simpleCtx.zagCtx [] env condTerm =
                 some (Zag.Val.bool false) := by
-            simpa [Zag.Term.eval] using hCondEval
+            simpa [Zag.Term.eval, hCondTerm] using hCond
           have hElseEvalGo :
-              Zag.Term.evalGo simpleCtx.zagCtx [] env elseTerm =
-                some target := by
-            simpa [Zag.Term.eval] using hElseEval
+              Zag.Term.evalGo simpleCtx.zagCtx [] env elseTerm = some target := by
+            simpa [Zag.Term.eval, hElseTerm] using hElse
           simp [Zag.Lang.SSA.SSAExpr.valueToTerm?, Zag.Lang.SSA.SSAExpr.toTerm?,
             hCondTerm, hThenTerm', hElseTerm', Zag.Term.eval, Zag.Term.evalGo,
-            hCondEvalGo, hElseEvalGo]
+            Zag.Term.ite, simpleCtx.iteOp, Zag.Op.ite, hCondEvalGo, hElseEvalGo]
 
 def evalBasic? {simpleCtx : _root_.Lang.Simple.Context}
     (state : Zag.Val simpleCtx.zagCtx.primCtx)

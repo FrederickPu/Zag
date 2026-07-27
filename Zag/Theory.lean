@@ -11,97 +11,11 @@ namespace Zag
 
 namespace Val
 
-def as? {primCtx : PrimitiveCtx} (ty : Ty) (v : Val primCtx) : Option (Ty.type primCtx ty) :=
-  if h : v.ty = ty then
-    some (cast (congrArg (Ty.type primCtx) h) v.val)
-  else none
-
-def nat {primCtx : PrimitiveCtx} (n : Nat) : Val primCtx :=
-  .mk (.prim "Nat") (Ty.ofNat primCtx n)
-
-def bool {primCtx : PrimitiveCtx} (b : Bool) : Val primCtx :=
-  .mk (.prim "Bool") (Ty.ofBool primCtx b)
-
-def asNat? {primCtx : PrimitiveCtx} (v : Val primCtx) : Option Nat := do
-  let raw ← v.as? (.prim "Nat")
-  some (Ty.toNat primCtx raw)
-
-def asBool? {primCtx : PrimitiveCtx} (v : Val primCtx) : Option Bool := do
-  let raw ← v.as? (.prim "Bool")
-  some (Ty.toBool primCtx raw)
-
 @[simp] theorem as?_mk {primCtx : PrimitiveCtx} (ty : Ty) (val : Ty.type primCtx ty) :
     (Val.mk ty val).as? ty = some val := by
   simp [as?]
 
-@[simp] theorem asNat?_nat {primCtx : PrimitiveCtx} (n : Nat) :
-    (Val.nat (primCtx := primCtx) n).asNat? = some n := by
-  simp [asNat?, nat, Ty.toNat, Ty.ofNat]
-
-@[simp] theorem asBool?_bool {primCtx : PrimitiveCtx} (b : Bool) :
-    (Val.bool (primCtx := primCtx) b).asBool? = some b := by
-  simp [asBool?, bool, Ty.toBool, Ty.ofBool]
-
-@[simp] theorem as?_nat {primCtx : PrimitiveCtx} (n : Nat) :
-    (Val.nat (primCtx := primCtx) n).as? (.prim "Nat") = some (Ty.ofNat primCtx n) := by
-  simp [nat]
-
-@[simp] theorem as?_bool {primCtx : PrimitiveCtx} (b : Bool) :
-    (Val.bool (primCtx := primCtx) b).as? (.prim "Bool") = some (Ty.ofBool primCtx b) := by
-  simp [bool]
-
-@[simp] theorem mk_ofNat {primCtx : PrimitiveCtx} (n : Nat) :
-    (Val.mk (.prim "Nat") (Ty.ofNat primCtx n) : Val primCtx) = Val.nat n := rfl
-
-@[simp] theorem mk_ofBool {primCtx : PrimitiveCtx} (b : Bool) :
-    (Val.mk (.prim "Bool") (Ty.ofBool primCtx b) : Val primCtx) = Val.bool b := rfl
-
-def primEq? {primCtx : PrimitiveCtx} (lhs rhs : Val primCtx) : Option Bool :=
-  match lhs.asNat?, rhs.asNat? with
-  | some lhs, some rhs => some (decide (lhs = rhs))
-  | _, _ =>
-      match lhs.asBool?, rhs.asBool? with
-      | some lhs, some rhs => some (decide (lhs = rhs))
-      | _, _ => none
-
-def primLt? {primCtx : PrimitiveCtx} (lhs rhs : Val primCtx) : Option Bool :=
-  match lhs.asNat?, rhs.asNat? with
-  | some lhs, some rhs => some (decide (lhs < rhs))
-  | _, _ =>
-      match lhs.asBool?, rhs.asBool? with
-      | some lhs, some rhs => some (decide (lhs = false ∧ rhs = true))
-      | _, _ => none
-
-def primGt? {primCtx : PrimitiveCtx} (lhs rhs : Val primCtx) : Option Bool :=
-  Val.primLt? rhs lhs
-
 end Val
-
-namespace Op
-
-/- binary comparison operator built from a raw `Val` comparator: defined on two operands of the
-  same type, always yielding `Bool`. `eq` is built from this; `lt`/`gt` implementations
-  (e.g. in a Peano library) are too. -/
-def compare {primCtx : PrimitiveCtx} (cmp : Val primCtx → Val primCtx → Option Bool) : Op primCtx where
-  arity := 2
-  out tys := if tys 0 = tys 1 then some (.prim "Bool") else none
-  interp {_tys _r} _hout vals :=
-    match vals with
-    | [lhs, rhs] => do
-        let b ← cmp lhs rhs
-        (Val.bool b).as? _r
-    | _ => none
-
-/- the built-in equality operator; pinned to `Val.primEq?` -/
-def eq {primCtx : PrimitiveCtx} : Op primCtx := compare Val.primEq?
-
-end Op
-
-/- Look up the operator named `name`: `eq` is built in (like `Nat`/`Bool` in `PrimitiveCtx.get?`),
-  every other operator — including `lt`/`gt` — must be supplied by the context. -/
-def OpCtx.get? {primCtx : PrimitiveCtx} (opCtx : OpCtx primCtx) (name : String) : Option (Op primCtx) :=
-  if name = "eq" then some Op.eq
-  else (opCtx.find? (·.1 = name)).map (·.2)
 
 /- converts a partial function `f?` into a total function `f` if `f?` returns a value on all inputs
   otherwise returns none -/
@@ -120,21 +34,45 @@ def valsAs? {primCtx : PrimitiveCtx} (tys : List Ty) (vals : List (Val primCtx))
       v.as? tys[idx])
   else none
 
+def Op.Body.applyVals {primCtx : PrimitiveCtx} :
+    Op.Body primCtx → List (Val primCtx) → Option (Val primCtx)
+| .fail, _ => none
+| .done value, _ => some value
+| .next _ _, [] => none
+| .next evaluate resume, value :: rest =>
+    (resume (if evaluate then some value else none)).applyVals rest
+termination_by _ vals => vals.length
+
+/- apply an operator after dynamically checking its arity and domain -/
+def Op.applyVals {primCtx : PrimitiveCtx} (oper : Op primCtx) (vals : List (Val primCtx)) :
+    Option (Val primCtx) :=
+  if vals.length = oper.arity then
+    oper.body.applyVals vals
+  else none
+
+@[simp] theorem Op.Signature.applyVals_unary {primCtx : PrimitiveCtx} (output : Ty → Ty)
+    (run : (input : Ty) → Ty.type primCtx input → Ty.type primCtx (output input))
+    (input : Ty) (value : Ty.type primCtx input) :
+    Op.applyVals (Signature.unary output run).toOp [Val.mk input value] =
+      some (Val.mk (output input) (run input value)) := by
+  simp [Op.applyVals, Signature.toOp, Signature.unary, Signature.eagerBody,
+    Signature.apply, Op.Body.applyVals]
+
 def PrimFunc.apply {primCtx : PrimitiveCtx} (pfunc : PrimFunc primCtx) (vargs : List (Val primCtx)) : Option (Val primCtx) :=
   if vargs.length = pfunc.args.length then do
-    let raw ← (← pfunc.interp vargs).as? (.prim pfunc.out)
-    some (Val.mk (.prim pfunc.out) raw)
+    let raw ← (← pfunc.interp vargs).as? pfunc.outTy
+    some (Val.mk pfunc.outTy raw)
   else none
 
 def PrimFunc.toVal {primCtx : PrimitiveCtx} (pfunc : PrimFunc primCtx) : Val primCtx :=
   Val.mk pfunc.ty
-    (cast (Ty.type.eq_6 primCtx (pfunc.args.map (.prim ·)) (.prim pfunc.out)).symm
+    (cast (Ty.type.eq_6 primCtx (pfunc.args.map (.prim ·)) pfunc.outTy).symm
       (fun args => do
         let argTys := pfunc.args.map (.prim ·)
         let vargs := (List.finRange argTys.length).map fun idx =>
           Val.mk argTys[idx] (args idx)
         let result ← pfunc.apply vargs
-        result.as? (.prim pfunc.out)))
+        result.as? pfunc.outTy))
 
 def Term.evalMkStruct {primCtx : PrimitiveCtx} (tys : List Ty) (vargs : List (Val primCtx)) : Option (Val primCtx) := do
   let fields ← valsAs? tys vargs
@@ -181,8 +119,9 @@ def Term.evalGo (ctx : Ctx)
 | .var idx => env[idx]?
 | .op name args => do
     let oper ← ctx.opCtx.get? name
-    let vargs ← Term.evalList ctx motives env args
-    oper.applyVals vargs
+    if args.length = oper.arity then
+      Term.evalBody ctx motives env args oper.body
+    else none
 | .mkStruct tys =>
     some <| Val.mk (.func tys (.struct tys))
       (cast (Ty.type.eq_6 ctx.primCtx tys (.struct tys)).symm
@@ -191,12 +130,6 @@ def Term.evalGo (ctx : Ctx)
     some <| Val.mk (.func [.struct tys] tys[idx])
       (cast (Ty.type.eq_6 ctx.primCtx [.struct tys] tys[idx]).symm
         (fun args => some ((cast (Ty.type.eq_5 ctx.primCtx tys) (args 0)) idx)))
-| .ite cond thenTerm elseTerm => do
-    let v ← Term.evalGo ctx motives env cond
-    match v.asBool? with
-    | some true => Term.evalGo ctx motives env thenTerm
-    | some false => Term.evalGo ctx motives env elseTerm
-    | none => none
 | .app (.primFunc name) args => do
     let pfunc ← ctx.primFuncCtx.get? name
     let vargs ← Term.evalList ctx motives env args
@@ -243,44 +176,129 @@ def Term.evalList (ctx : Ctx)
   terms.mapM (Term.evalGo ctx motives env)
 partial_fixpoint
 
+def Term.evalBody (ctx : Ctx)
+    (motives : List (Term.MotiveCtx ctx.primCtx)) (env : List (Val ctx.primCtx)) :
+    List (Term ctx.primCtx) → Op.Body ctx.primCtx → Option (Val ctx.primCtx)
+| _, .fail => none
+| _, .done value => some value
+| [], .next _ _ => none
+| term :: terms, .next evaluate resume =>
+    if evaluate then do
+      let value ← Term.evalGo ctx motives env term
+      Term.evalBody ctx motives env terms (resume (some value))
+    else
+      Term.evalBody ctx motives env terms (resume none)
+partial_fixpoint
+
 end
+
+theorem Term.evalBody_nil (ctx : Ctx)
+    (motives : List (Term.MotiveCtx ctx.primCtx)) (env : List (Val ctx.primCtx))
+    (body : Op.Body ctx.primCtx) :
+    Term.evalBody ctx motives env [] body = body.applyVals [] := by
+  rw [Term.evalBody.eq_def]
+  cases body <;> simp [Op.Body.applyVals]
+
+@[simp] theorem Term.evalBody_fail (ctx : Ctx)
+    (motives : List (Term.MotiveCtx ctx.primCtx)) (env : List (Val ctx.primCtx))
+    (terms : List (Term ctx.primCtx)) :
+    Term.evalBody ctx motives env terms .fail = none := by
+  rw [Term.evalBody.eq_def]
+
+@[simp] theorem Term.evalBody_done (ctx : Ctx)
+    (motives : List (Term.MotiveCtx ctx.primCtx)) (env : List (Val ctx.primCtx))
+    (terms : List (Term ctx.primCtx)) (value : Val ctx.primCtx) :
+    Term.evalBody ctx motives env terms (.done value) = some value := by
+  rw [Term.evalBody.eq_def]
+
+@[simp] theorem Term.evalBody_next_nil (ctx : Ctx)
+    (motives : List (Term.MotiveCtx ctx.primCtx)) (env : List (Val ctx.primCtx))
+    (evaluate : Bool) (resume : Option (Val ctx.primCtx) → Op.Body ctx.primCtx) :
+    Term.evalBody ctx motives env [] (.next evaluate resume) = none := by
+  rw [Term.evalBody.eq_def]
+
+@[simp] theorem Term.evalBody_next_true (ctx : Ctx)
+    (motives : List (Term.MotiveCtx ctx.primCtx)) (env : List (Val ctx.primCtx))
+    (term : Term ctx.primCtx) (terms : List (Term ctx.primCtx))
+    (resume : Option (Val ctx.primCtx) → Op.Body ctx.primCtx) :
+    Term.evalBody ctx motives env (term :: terms) (.next true resume) = (do
+      let value ← Term.evalGo ctx motives env term
+      Term.evalBody ctx motives env terms (resume (some value))) := by
+  rw [Term.evalBody.eq_def]
+  rfl
+
+@[simp] theorem Term.evalBody_next_false (ctx : Ctx)
+    (motives : List (Term.MotiveCtx ctx.primCtx)) (env : List (Val ctx.primCtx))
+    (term : Term ctx.primCtx) (terms : List (Term ctx.primCtx))
+    (resume : Option (Val ctx.primCtx) → Op.Body ctx.primCtx) :
+    Term.evalBody ctx motives env (term :: terms) (.next false resume) =
+      Term.evalBody ctx motives env terms (resume none) := by
+  rw [Term.evalBody.eq_def]
+  rfl
+
+@[simp] theorem Term.evalBody_eagerBody_one (ctx : Ctx)
+    (motives : List (Term.MotiveCtx ctx.primCtx)) (env : List (Val ctx.primCtx))
+    (sig : Op.Signature ctx.primCtx 1) (term : Term ctx.primCtx) (value : Val ctx.primCtx)
+    (heval : Term.evalGo ctx motives env term = some value) :
+    Term.evalBody ctx motives env [term] (sig.eagerBody 1 []) =
+      (sig.eagerBody 1 []).applyVals [value] := by
+  simp [Op.Signature.eagerBody, heval, Term.evalBody_nil, Op.Body.applyVals]
+
+@[simp] theorem Term.evalBody_eagerBody_two (ctx : Ctx)
+    (motives : List (Term.MotiveCtx ctx.primCtx)) (env : List (Val ctx.primCtx))
+    (sig : Op.Signature ctx.primCtx 2) (a b : Term ctx.primCtx) (va vb : Val ctx.primCtx)
+    (ha : Term.evalGo ctx motives env a = some va)
+    (hb : Term.evalGo ctx motives env b = some vb) :
+    Term.evalBody ctx motives env [a, b] (sig.eagerBody 2 []) =
+      (sig.eagerBody 2 []).applyVals [va, vb] := by
+  simp [Op.Signature.eagerBody, ha, hb, Term.evalBody_nil, Op.Body.applyVals]
 
 def Term.eval (ctx : Ctx)
     (env : List (Val ctx.primCtx)) (term : Term ctx.primCtx) : Option (Val ctx.primCtx) :=
   Term.evalGo ctx [] env term
 
-/- Evaluating a comparison operator built by `Op.compare` on two values of equal type. -/
-theorem Op.applyVals_compare {primCtx : PrimitiveCtx}
-    (cmp : Val primCtx → Val primCtx → Option Bool)
-    (va vb : Val primCtx) (hty : va.ty = vb.ty) :
-    Op.applyVals (Op.compare cmp) [va, vb] = (cmp va vb).map Val.bool := by
-  dsimp [Op.applyVals, Op.compare]
-  rw [if_pos hty]
-  cases cmp va vb with
-  | none => rfl
-  | some c => rfl
+theorem Term.hasType_lift {ctx : Ctx}
+    {varCtx : VarCtx} {term : Term ctx.primCtx} {ty : Ty}
+    (hterm : term.hasType ctx varCtx ty) :
+    (Term.lift term).hasType ctx varCtx (.m ty) := by
+  apply Term.hasType.op (tys := [ty]) (by rfl)
+  · intro idx
+    have hlt := idx.isLt
+    change idx.val < 1 at hlt
+    have hval : idx.val = 0 := Nat.eq_zero_of_le_zero (Nat.le_of_lt_succ hlt)
+    have hidx : idx = 0 := Fin.ext hval
+    subst idx
+    simpa using hterm
+  · unfold OpCtx.outTy?
+    simp [OpCtx.get?, Op.pure]
 
-theorem Term.evalGo_op_compare {ctx : Ctx}
-    {motives : List (Term.MotiveCtx ctx.primCtx)} {env : List (Val ctx.primCtx)}
-    {name : String} {a b : Term ctx.primCtx}
-    {cmp : Val ctx.primCtx → Val ctx.primCtx → Option Bool}
-    {va vb : Val ctx.primCtx}
-    (hop : ctx.opCtx.get? name = some (Op.compare cmp))
-    (ha : Term.evalGo ctx motives env a = some va)
-    (hb : Term.evalGo ctx motives env b = some vb)
-    (hty : va.ty = vb.ty) :
-    Term.evalGo ctx motives env (.op name [a, b]) = (cmp va vb).map Val.bool := by
-  have hform :
-      Term.evalGo ctx motives env (.op name [a, b]) =
-        Op.applyVals (Op.compare cmp) [va, vb] := by
-    simp [Term.evalGo, hop, Term.evalList, ha, hb]
-  rw [hform, Op.applyVals_compare cmp va vb hty]
+theorem Op.applyVals_pure {primCtx : PrimitiveCtx} (value : Val primCtx) :
+    Op.applyVals Op.pure [value] =
+      some (Val.mk (.m value.ty)
+        (Ty.ofM primCtx value.ty (Pure.pure (some value.val)))) := by
+  exact Signature.applyVals_unary .m
+    (fun ty value => Ty.ofM primCtx ty (Pure.pure (some value))) value.ty value.val
 
-/- Termination of a partial `Option` evaluator is successful evaluation. -/
+theorem Term.evalGo_lift {ctx : Ctx}
+    {motives : List (Term.MotiveCtx ctx.primCtx)}
+    {env : List (Val ctx.primCtx)} {term : Term ctx.primCtx} {value : Val ctx.primCtx}
+    (heval : Term.evalGo ctx motives env term = some value) :
+    Term.evalGo ctx motives env (Term.lift term) =
+      some (Val.mk (.m value.ty)
+        (Ty.ofM ctx.primCtx value.ty (Pure.pure (some value.val)))) := by
+  have hform : Term.evalGo ctx motives env (Term.lift term) =
+      Op.applyVals Op.pure [value] := by
+    rw [Term.evalGo.eq_def]
+    simp [Term.lift, OpCtx.get?, heval, Op.pure, Op.applyVals,
+      Op.Signature.eagerBody, Op.Body.applyVals, Term.evalBody_nil]
+  rw [hform, Op.applyVals_pure]
+
+/- termination of a partial `Option` evaluator is successful evaluation -/
 def Term.Terminates (ctx : Ctx)
     (env : List (Val ctx.primCtx)) (term : Term ctx.primCtx) : Prop :=
   ∃ v, Term.eval ctx env term = some v
 
+/- equality at `m` types is the equality supplied by the context's monad -/
 structure Term.eq (ctx : Ctx) (varCtx : VarCtx) (ty : Ty) (t₁ t₂ : Term ctx.primCtx) : Prop where
   hasType₁ : hasType ctx varCtx t₁ ty
   hasType₂ : hasType ctx varCtx t₂ ty
@@ -298,6 +316,7 @@ def Ty.subst (ctxTy : List Ty) : Ty → Ty
 | .union tys => .union (tys.map (Ty.subst ctxTy))
 | .struct tys => .struct (tys.map (Ty.subst ctxTy))
 | .func args ret => .func (args.map (Ty.subst ctxTy)) (Ty.subst ctxTy ret)
+| .m ty => .m (Ty.subst ctxTy ty)
 
 def Term.subst {primCtx : PrimitiveCtx} (ctxTerm : List (Term primCtx)) (term : Term primCtx) : Term primCtx :=
   match ctxTerm with
@@ -315,8 +334,6 @@ def Term.subst {primCtx : PrimitiveCtx} (ctxTerm : List (Term primCtx)) (term : 
       | .app f args => .app (Term.subst ctxTerm f) (args.map (Term.subst ctxTerm))
       | .mkStruct tys => .mkStruct tys
       | .structProj tys idx => .structProj tys idx
-      | .ite cond thenTerm elseTerm =>
-          .ite (Term.subst ctxTerm cond) (Term.subst ctxTerm thenTerm) (Term.subst ctxTerm elseTerm)
       | .recurse resultTy init body =>
           .recurse resultTy (Term.subst ctxTerm init) (Term.subst ctxTerm body)
 
@@ -372,12 +389,6 @@ def Term.subst {primCtx : PrimitiveCtx} (ctxTerm : List (Term primCtx)) (term : 
 @[simp] theorem Term.subst_structProj {primCtx : PrimitiveCtx} (ctxTerm : List (Term primCtx))
     (tys : List Ty) (idx : Fin tys.length) :
     Term.subst ctxTerm (.structProj tys idx) = .structProj tys idx := by
-  cases ctxTerm <;> simp [Term.subst]
-
-@[simp] theorem Term.subst_ite {primCtx : PrimitiveCtx} (ctxTerm : List (Term primCtx))
-    (cond thenTerm elseTerm : Term primCtx) :
-    Term.subst ctxTerm (.ite cond thenTerm elseTerm) =
-      .ite (Term.subst ctxTerm cond) (Term.subst ctxTerm thenTerm) (Term.subst ctxTerm elseTerm) := by
   cases ctxTerm <;> simp [Term.subst]
 
 @[simp] theorem Term.subst_recurse {primCtx : PrimitiveCtx} (ctxTerm : List (Term primCtx))

@@ -138,7 +138,9 @@ theorem bodyTerm_hasType : Term.hasType peanoCtx bodyCtx bodyTerm NatTy := by
   have hcond : Term.hasType peanoCtx bodyCtx condTerm (.prim "Bool") := by
     unfold condTerm
     have hout : peanoCtx.opCtx.outTy? "gt" [NatTy, NatTy] = some (.prim "Bool") := by
-      simp [OpCtx.outTy?, peanoCtx, natOpCtx, NatTy, Op.compare]
+      unfold OpCtx.outTy?
+      rw [Peano.Model.gtOp]
+      simp [Op.compare]
     refine Term.hasType.op rfl ?_ hout
     intro idx
     cases idx using Fin.cases with
@@ -149,7 +151,6 @@ theorem bodyTerm_hasType : Term.hasType peanoCtx bodyCtx bodyTerm NatTy := by
         | succ idx => exact Fin.elim0 idx
   unfold bodyTerm
   exact Term.hasType.ite hcond hyield hacc
-
 
 theorem loopTerm_hasType (i acc : Nat) : Term.hasType peanoCtx [] (loopTerm i acc) NatTy := by
   unfold loopTerm
@@ -193,7 +194,7 @@ private theorem accTerm_eval (i acc : Nat) :
   simp [Term.evalGo, stateVal, stateFields, stateTy, stateTys, Val.as?, Val.nat, Ty.ofNat]
 
 private theorem get_gt : peanoCtx.opCtx.get? "gt" = some (Op.compare Val.primGt?) := by
-  simp [peanoCtx, natOpCtx, OpCtx.get?]
+  exact Peano.Model.gtOp
 
 theorem cond_eval_zero (acc : Nat) :
     Term.evalGo peanoCtx [loopRecCtx []] (loopEnv 0 acc []) condTerm =
@@ -228,8 +229,8 @@ private theorem nextITerm_eval_succ (i acc : Nat) :
   rw [Term.evalList.eq_def]
   simp only [List.mapM, List.mapM.loop]
   rw [iTerm_eval]
-  simp [Term.evalGo, Term.nat, PrimFunc.apply, PrimFuncCtx.get?, peanoCtx, natFuncCtx,
-    natBinaryFunc]
+  simp [Term.evalGo, Term.nat, PrimFunc.apply, PrimFunc.outTy, PrimFuncCtx.get?, peanoCtx,
+    natFuncCtx, natBinaryFunc]
 
 private theorem nextAccTerm_eval_succ (i acc : Nat) :
     Term.evalGo peanoCtx [loopRecCtx []] (loopEnv (i + 1) acc []) nextAccTerm =
@@ -240,7 +241,7 @@ private theorem nextAccTerm_eval_succ (i acc : Nat) :
   rw [Term.evalList.eq_def]
   simp only [List.mapM, List.mapM.loop]
   rw [accTerm_eval, iTerm_eval]
-  simp [PrimFunc.apply, PrimFuncCtx.get?, peanoCtx, natFuncCtx, natBinaryFunc]
+  simp [PrimFunc.apply, PrimFunc.outTy, PrimFuncCtx.get?, peanoCtx, natFuncCtx, natBinaryFunc]
 
 private theorem nextStateTerm_eval_succ (i acc : Nat) :
     Term.evalGo peanoCtx [loopRecCtx []] (loopEnv (i + 1) acc []) nextStateTerm =
@@ -277,16 +278,13 @@ theorem loopTerm_eval_sumTo (i acc : Nat) :
   | zero =>
       rw [loopTerm_eval_unfold]
       unfold loopBodyEval bodyTerm
-      rw [Term.evalGo.eq_def]
-      simp only
-      rw [cond_eval_zero]
+      rw [Term.evalGo_ite, cond_eval_zero]
       simpa [sumTo] using accTerm_eval 0 acc
   | succ i ih =>
       rw [loopTerm_eval_unfold]
       unfold loopBodyEval bodyTerm
-      rw [Term.evalGo.eq_def]
-      simp only
-      rw [cond_eval_succ, yield_eval_succ]
+      rw [Term.evalGo_ite, cond_eval_succ]
+      rw [yield_eval_succ]
       rw [← loopTerm_eval_unfold, ih]
       simp [sumTo]
       apply congrArg Val.nat
@@ -327,7 +325,7 @@ theorem gaussProvable (n : Nat) :
 example : Pr.Provable peanoCtx [] [] (gaussStatement 100) :=
   gaussProvable 100
 
-/-! ### SSA proposition -/
+/-! ### ssa proposition -/
 
 def gaussGoalSSA (n : Nat) : Pr (SSAExpr natCtx) :=
   .eq [] NatTy (lhsSSA n) (.ret (.raw (rhsTerm n)))

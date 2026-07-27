@@ -1,4 +1,4 @@
-import Zag.Theory
+import Lib.Peano.Defs
 
 /-!
   A Zag-backed Simpl fragment.
@@ -27,7 +27,13 @@ def StateTy : Zag.Ty :=
   .prim "State"
 
 def primitiveCtx : Zag.PrimitiveCtx :=
-  [("State", State), ("Word", Word), ("Nat", Nat), ("Bool", Bool)]
+  { prims := [.of "State" State, .of "Word" Word, .of "Nat" Nat, .of "Bool" Bool]
+    M := StateM State
+    monad := inferInstance }
+
+instance : Zag.Peano.Types primitiveCtx where
+  natType := by rfl
+  boolType := by rfl
 
 namespace State
 
@@ -120,6 +126,10 @@ def statePrimFuncCtx (arity : Nat) : Zag.PrimFuncCtx primitiveCtx :=
 structure Context where
   zagCtx : Zag.Ctx
   stateTy : Zag.Ty
+  types : Zag.Peano.Types zagCtx.primCtx
+  iteOp : zagCtx.opCtx.get? "ite" = some Zag.Op.ite
+
+attribute [instance] Context.types
 
 abbrev Context.primCtx (ctx : Context) : Zag.PrimitiveCtx := ctx.zagCtx.primCtx
 abbrev Context.primFuncCtx (ctx : Context) : Zag.PrimFuncCtx ctx.primCtx := ctx.zagCtx.primFuncCtx
@@ -129,9 +139,11 @@ def wordStateContext (arity : Nat) : Context where
   zagCtx := {
     primCtx := primitiveCtx
     primFuncCtx := statePrimFuncCtx arity
-    opCtx := []
+    opCtx := Zag.Peano.opCtx primitiveCtx
   }
   stateTy := StateTy
+  types := inferInstance
+  iteOp := by rfl
 
 def stateVarCtx (ctx : Context) : Zag.VarCtx :=
   [ctx.stateTy]

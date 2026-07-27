@@ -1,4 +1,5 @@
 import Zag.Meta
+import Lib.Peano.Defs
 
 namespace Zag
 
@@ -11,6 +12,7 @@ def primitiveNames : Ty → List String
 | .union tys => tys.flatMap primitiveNames
 | .struct tys => tys.flatMap primitiveNames
 | .func args result => args.flatMap primitiveNames ++ result.primitiveNames
+| .m ty => ty.primitiveNames
 
 end Ty
 
@@ -24,8 +26,6 @@ def primitiveNames {primCtx : PrimitiveCtx} : Term primCtx → List String
 | .op _ args => args.flatMap primitiveNames
 | .mkStruct tys => tys.flatMap Ty.primitiveNames
 | .structProj tys _ => tys.flatMap Ty.primitiveNames
-| .ite cond thenTerm elseTerm =>
-    cond.primitiveNames ++ thenTerm.primitiveNames ++ elseTerm.primitiveNames
 | .recurse resultTy init body =>
     resultTy.primitiveNames ++ init.primitiveNames ++ body.primitiveNames
 
@@ -48,7 +48,7 @@ def primitiveNames {primCtx : PrimitiveCtx} : Pr (Term primCtx) → List String
 namespace TypeUnification
 
 def primitiveTypesDeclared (primCtx : PrimitiveCtx) (names : List String) : Prop :=
-  ∀ name, name ∈ names → name ∈ primCtx.map Prod.fst
+  ∀ name, name ∈ names → name ∈ primCtx.prims.map Primitive.name
 
 def statePrimitiveNames {primCtx : PrimitiveCtx}
     (ctxTy : List Ty) (ctxTerm : List (Term primCtx)) (goal : Pr (Term primCtx)) : List String :=
@@ -65,7 +65,7 @@ def statePrimitiveNames {primCtx : PrimitiveCtx}
    reserved `Nat`/`Bool` fallback in `PrimitiveCtx.get?`. -/
 structure UnifyTypePrecondition (ctx : Ctx)
     (ctxTy : List Ty) (ctxTerm : List (Term ctx.primCtx)) (goal : Pr (Term ctx.primCtx)) : Prop where
-  primitiveCtxNames : (ctx.primCtx.map Prod.fst).Nodup
+  primitiveCtxNames : (ctx.primCtx.prims.map Primitive.name).Nodup
   primFuncNames : (ctx.primFuncCtx.map Prod.fst).Nodup
   primitiveNames : primitiveTypesDeclared ctx.primCtx (statePrimitiveNames ctxTy ctxTerm goal)
 
@@ -83,6 +83,18 @@ private def primFuncMatch? {primCtx : PrimitiveCtx} :
           some ⟨⟨found.val.val + 1, by simp [found.val.isLt]⟩, by simpa using found.property⟩
       | none => none
 
+private def iteArgs? {primCtx : PrimitiveCtx} :
+    String → List (Term primCtx) → Option (Term primCtx × Term primCtx × Term primCtx)
+| "ite", [cond, thenTerm, elseTerm] => some (cond, thenTerm, elseTerm)
+| _, _ => none
+
+private theorem iteArgs?_eq_some {primCtx : PrimitiveCtx} {name : String}
+    {args : List (Term primCtx)} {cond thenTerm elseTerm : Term primCtx}
+    (h : iteArgs? name args = some (cond, thenTerm, elseTerm)) :
+    name = "ite" ∧ args = [cond, thenTerm, elseTerm] := by
+  unfold iteArgs? at h
+  split at h <;> simp_all
+
 private def inferType? {primCtx : PrimitiveCtx} (primFuncCtx : PrimFuncCtx primCtx)
     (varCtx : List Ty) : Term primCtx → Option Ty
 | .prim ty _ => some ty
@@ -92,10 +104,10 @@ private def inferType? {primCtx : PrimitiveCtx} (primFuncCtx : PrimFuncCtx primC
     match inferType? primFuncCtx varCtx f with
     | some (.func _ outTy) => some outTy
     | _ => none
+| .op "ite" [_cond, thenTerm, _elseTerm] => inferType? primFuncCtx varCtx thenTerm
 | .op _ _ => none
 | .mkStruct tys => some (.func tys (.struct tys))
 | .structProj tys idx => some (.func [.struct tys] tys[idx])
-| .ite _ thenTerm _ => inferType? primFuncCtx varCtx thenTerm
 | .recurse resultTy _ _ => some resultTy
 
 private def inferFuncArgs? {primCtx : PrimitiveCtx} (primFuncCtx : PrimFuncCtx primCtx)
@@ -160,17 +172,18 @@ private def unifyTypeHasTypeGoals {ctx : Ctx}
                   .hasType varCtx f (.func argsTy ty) :: argGoals varCtx args argsTy
                 else [.hasType varCtx term ty]
             | none => [.hasType varCtx term ty]
-    | .op _ _ =>
-        [.hasType varCtx term ty]
+    | .op name args =>
+        match iteArgs? name args with
+        | some (cond, thenTerm, elseTerm) =>
+            [.hasType varCtx cond Peano.BoolTy, .hasType varCtx thenTerm ty,
+              .hasType varCtx elseTerm ty]
+        | none => [.hasType varCtx term ty]
 
     | .mkStruct tys =>
         if (.func tys (.struct tys)) = Ty.subst ctxTy ty then [] else [.hasType varCtx term ty]
     | .structProj tys idx =>
         if (.func [.struct tys] tys[idx]) = Ty.subst ctxTy ty then []
         else [.hasType varCtx term ty]
-    | .ite cond thenTerm elseTerm =>
-        [.hasType varCtx cond (.prim "Bool"), .hasType varCtx thenTerm ty,
-          .hasType varCtx elseTerm ty]
     | .recurse resultTy init body =>
         match ctxTerm with
         | [] =>
@@ -230,7 +243,7 @@ private theorem argGoals_sound {ctx : Ctx}
                   have htail := ih hlenTail proveTail ⟨val, by simp at isLt; omega⟩
                   simpa [Term.subst, Ty.subst] using htail
 
-private theorem unifyTypeHasType_sound {ctx : Ctx} {ctxTy : List Ty}
+private theorem unifyTypeHasType_sound {ctx : Ctx} [Peano.Model ctx] {ctxTy : List Ty}
     {ctxTerm : List (Term ctx.primCtx)} {varCtx : List Ty} {term : Term ctx.primCtx} {ty : Ty} :
     (∀ subgoal, subgoal ∈ unifyTypeHasTypeGoals (ctx := ctx) ctxTy ctxTerm varCtx term ty →
       Pr.Provable ctx ctxTy ctxTerm subgoal) →
@@ -342,11 +355,40 @@ private theorem unifyTypeHasType_sound {ctx : Ctx} {ctxTy : List Ty}
                 cases hself with
                 | ofProof proof => exact proof
   | «op» name args =>
-      intro proveSubgoals
-      have hself := proveSubgoals (.hasType varCtx (.op name args) ty)
-        (by simp [unifyTypeHasTypeGoals])
-      cases hself with
-      | ofProof proof => exact proof
+      cases hite : iteArgs? name args with
+      | some iteArgs =>
+          rcases iteArgs with ⟨cond, thenTerm, elseTerm⟩
+          have ⟨hname, hargs⟩ := iteArgs?_eq_some hite
+          intro proveSubgoals
+          have hcondProv := proveSubgoals (.hasType varCtx cond Peano.BoolTy)
+            (by simp [unifyTypeHasTypeGoals, iteArgs?, hname, hargs])
+          have hthenProv := proveSubgoals (.hasType varCtx thenTerm ty)
+            (by simp [unifyTypeHasTypeGoals, iteArgs?, hname, hargs])
+          have helseProv := proveSubgoals (.hasType varCtx elseTerm ty)
+            (by simp [unifyTypeHasTypeGoals, iteArgs?, hname, hargs])
+          cases hcondProv with
+          | ofProof hcondProof =>
+              cases hthenProv with
+              | ofProof hthenProof =>
+                  cases helseProv with
+                  | ofProof helseProof =>
+                      have hiteType := Term.hasType.ite
+                        (show Term.hasType ctx (varCtx.map (Ty.subst ctxTy))
+                          (Term.subst ctxTerm cond) Peano.BoolTy by
+                            simpa [Pr.interp, Ty.subst] using hcondProof)
+                        (show Term.hasType ctx (varCtx.map (Ty.subst ctxTy))
+                          (Term.subst ctxTerm thenTerm) (Ty.subst ctxTy ty) by
+                            simpa [Pr.interp] using hthenProof)
+                        (show Term.hasType ctx (varCtx.map (Ty.subst ctxTy))
+                          (Term.subst ctxTerm elseTerm) (Ty.subst ctxTy ty) by
+                            simpa [Pr.interp] using helseProof)
+                      simpa [Pr.interp, Term.ite, Term.subst, hname, hargs] using hiteType
+      | none =>
+          intro proveSubgoals
+          have hself := proveSubgoals (.hasType varCtx (.op name args) ty)
+            (by simp [unifyTypeHasTypeGoals, hite])
+          cases hself with
+          | ofProof proof => exact proof
   | mkStruct tys =>
       by_cases hty : (.func tys (.struct tys)) = Ty.subst ctxTy ty
       · intro _
@@ -375,40 +417,6 @@ private theorem unifyTypeHasType_sound {ctx : Ctx} {ctxTy : List Ty}
             exact hty)
         cases hself with
         | ofProof proof => exact proof
-  | ite cond thenTerm elseTerm =>
-      intro proveSubgoals
-      have hcondProv : Pr.Provable ctx ctxTy ctxTerm
-          (.hasType varCtx cond (.prim "Bool")) :=
-        proveSubgoals (.hasType varCtx cond (.prim "Bool"))
-          (by simp [unifyTypeHasTypeGoals])
-      have hthenProv : Pr.Provable ctx ctxTy ctxTerm
-          (.hasType varCtx thenTerm ty) :=
-        proveSubgoals (.hasType varCtx thenTerm ty)
-          (by simp [unifyTypeHasTypeGoals])
-      have helseProv : Pr.Provable ctx ctxTy ctxTerm
-          (.hasType varCtx elseTerm ty) :=
-        proveSubgoals (.hasType varCtx elseTerm ty)
-          (by simp [unifyTypeHasTypeGoals])
-      cases hcondProv with
-      | ofProof hcondProof =>
-          cases hthenProv with
-          | ofProof hthenProof =>
-              cases helseProv with
-              | ofProof helseProof =>
-                  have hcond : Term.hasType ctx (varCtx.map (Ty.subst ctxTy))
-                      (Term.subst ctxTerm cond) (.prim "Bool") := by
-                    simpa [Pr.interp, Ty.subst] using hcondProof
-                  have hthen : Term.hasType ctx (varCtx.map (Ty.subst ctxTy))
-                      (Term.subst ctxTerm thenTerm) (Ty.subst ctxTy ty) := by
-                    simpa [Pr.interp] using hthenProof
-                  have helse : Term.hasType ctx (varCtx.map (Ty.subst ctxTy))
-                      (Term.subst ctxTerm elseTerm) (Ty.subst ctxTy ty) := by
-                    simpa [Pr.interp] using helseProof
-                  have hite : Term.hasType ctx (varCtx.map (Ty.subst ctxTy))
-                      (.ite (Term.subst ctxTerm cond) (Term.subst ctxTerm thenTerm)
-                        (Term.subst ctxTerm elseTerm)) (Ty.subst ctxTy ty) :=
-                    Term.hasType.ite hcond hthen helse
-                  simpa [Pr.interp, Term.subst] using hite
   | «recurse» resultTy init body =>
       cases ctxTerm with
       | nil =>
@@ -477,7 +485,7 @@ private theorem unifyTypeHasType_sound {ctx : Ctx} {ctxTy : List Ty}
           cases hself with
           | ofProof proof => exact proof
 
-private theorem unifyType_sound {ctx : Ctx}
+private theorem unifyType_sound {ctx : Ctx} [Peano.Model ctx]
     {ctxTy : List Ty} {ctxTerm : List (Term ctx.primCtx)} {goal : Pr (Term ctx.primCtx)} :
     (∀ subgoal, subgoal ∈ unifyTypeGoals (ctx := ctx) ctxTy ctxTerm goal →
       Pr.Provable ctx ctxTy ctxTerm subgoal) →
@@ -505,7 +513,7 @@ private theorem unifyType_sound {ctx : Ctx}
       intro proveSubgoals
       exact proveSubgoals (.forallTerm p) (by simp [unifyTypeGoals])
 
-def unifyType {ctx : Ctx}
+def unifyType {ctx : Ctx} [Peano.Model ctx]
     {ctxTy : List Ty} {ctxTerm : List (Term ctx.primCtx)} (goal : Pr (Term ctx.primCtx)) :
     Refinement ctx ctxTy ctxTerm goal where
   goals := unifyTypeGoals (ctx := ctx) ctxTy ctxTerm goal
@@ -528,6 +536,7 @@ private theorem Ty.subst_nil : (t : Ty) → Ty.subst [] t = t
 | .union tys => by simp [Ty.subst, Ty.subst_nil_list tys]
 | .struct tys => by simp [Ty.subst, Ty.subst_nil_list tys]
 | .func args ret => by simp [Ty.subst, Ty.subst_nil_list args, Ty.subst_nil ret]
+| .m ty => by simp [Ty.subst, Ty.subst_nil ty]
 private theorem Ty.subst_nil_list : (ts : List Ty) → ts.map (Ty.subst []) = ts
 | [] => rfl
 | t :: ts => by simp [Ty.subst_nil t, Ty.subst_nil_list ts]
@@ -573,7 +582,7 @@ private theorem primFuncCtx_get?_of_idx {ctx : Ctx}
   rfl
 
 /-- With empty `ctxTy`, syntactic inference recovers the unique `hasType` type. -/
-private theorem inferType?_eq_of_hasType_nil {ctx : Ctx} {varCtx : List Ty}
+private theorem inferType?_eq_of_hasType_nil {ctx : Ctx} [Peano.Model ctx] {varCtx : List Ty}
     {term : Term ctx.primCtx} {inferred ty : Ty}
     (hnames : (ctx.primFuncCtx.map Prod.fst).Nodup)
     (hinf : inferType? ctx.primFuncCtx varCtx term = some inferred)
@@ -596,8 +605,50 @@ private theorem inferType?_eq_of_hasType_nil {ctx : Ctx} {varCtx : List Ty}
       simp only [List.getElem?_eq_getElem hidx] at hinf
       cases hinf; exact h.symm
   | «op» hargs₁ hargs₂ hout ih =>
-      simp only [inferType?] at hinf
-      cases hinf
+      rename_i varCtx' name args tys r
+      cases hite : iteArgs? name args with
+      | some iteArgs =>
+          rcases iteArgs with ⟨cond, thenTerm, elseTerm⟩
+          have ⟨hname, hargs⟩ := iteArgs?_eq_some hite
+          simp only [hargs] at ih hargs₂
+          simp only [hname, hargs, inferType?] at hinf
+          have htys : tys.length = 3 := by simpa [hargs] using hargs₁.symm
+          cases tys with
+          | nil => simp at htys
+          | cons condTy tys =>
+              cases tys with
+              | nil => simp at htys
+              | cons thenTy tys =>
+                  cases tys with
+                  | nil => simp at htys
+                  | cons elseTy tys =>
+                      cases tys with
+                      | cons fourth rest => simp at htys
+                      | nil =>
+                          simp [hname, OpCtx.outTy?, Peano.Model.iteOp, Op.ite] at hout
+                          rcases hout with ⟨⟨hcondTy, hbranchTy⟩, hresultTy⟩
+                          subst condTy
+                          subst elseTy
+                          subst r
+                          have hthen := ih (inferred := inferred) ⟨1, by simp [hargs]⟩
+                          simpa [hargs] using hthen hinf
+      | none =>
+          cases args with
+          | nil => simp [inferType?] at hinf
+          | cons first args =>
+              cases args with
+              | nil => simp [inferType?] at hinf
+              | cons second args =>
+                  cases args with
+                  | nil => simp [inferType?] at hinf
+                  | cons third args =>
+                      cases args with
+                      | cons fourth rest => simp [inferType?] at hinf
+                      | nil =>
+                          by_cases hname : name = "ite"
+                          · subst name
+                            simp [iteArgs?] at hite
+                          · simp [inferType?, hname] at hinf
   | app hf hargs₁ hargs₂ ihf iha =>
       rename_i varCtx' f fTy args argsTy
       simp only [inferType?] at hinf
@@ -624,9 +675,6 @@ private theorem inferType?_eq_of_hasType_nil {ctx : Ctx} {varCtx : List Ty}
       simp only [inferType?] at hinf; cases hinf; rfl
   | structProj =>
       simp only [inferType?] at hinf; cases hinf; rfl
-  | ite hc ht he ihc iht ihe =>
-      simp only [inferType?] at hinf
-      exact iht hinf
   | «recurse» hi hb ihi ihb =>
       simp only [inferType?] at hinf; cases hinf; rfl
 
@@ -656,7 +704,7 @@ private theorem argGoals_complete_nil {ctx : Ctx} {varCtx : List Ty}
             exact ih hlenTail (fun idx => by
               simpa using hargs ⟨idx.val + 1, by simp [idx.isLt]⟩) subgoal hsubgoal
 
-private theorem unifyTypeHasType_complete_nil {ctx : Ctx} {varCtx : List Ty}
+private theorem unifyTypeHasType_complete_nil {ctx : Ctx} [Peano.Model ctx] {varCtx : List Ty}
     {term : Term ctx.primCtx} {ty : Ty}
     (hnames : (ctx.primFuncCtx.map Prod.fst).Nodup)
     (hgoal : Pr.Provable ctx [] [] (.hasType varCtx term ty)) :
@@ -713,7 +761,47 @@ private theorem unifyTypeHasType_complete_nil {ctx : Ctx} {varCtx : List Ty}
           · simp [unifyTypeHasTypeGoals, hfun, hlen] at hsubgoal
             subst hsubgoal; exact hgoal
   | «op» name args =>
-      simp [unifyTypeHasTypeGoals] at hsubgoal; subst hsubgoal; exact hgoal
+      cases hite : iteArgs? name args with
+      | some iteArgs =>
+          rcases iteArgs with ⟨cond, thenTerm, elseTerm⟩
+          have ⟨hname, hargs⟩ := iteArgs?_eq_some hite
+          simp [unifyTypeHasTypeGoals, iteArgs?, hname, hargs] at hsubgoal
+          cases proof' with
+          | «op» hargs₁ hargs₂ hout =>
+              rename_i tys
+              simp only [hargs] at hargs₂
+              have htys : tys.length = 3 := by simpa [hargs] using hargs₁.symm
+              cases tys with
+              | nil => simp at htys
+              | cons condTy tys =>
+                  cases tys with
+                  | nil => simp at htys
+                  | cons thenTy tys =>
+                      cases tys with
+                      | nil => simp at htys
+                      | cons elseTy tys =>
+                          cases tys with
+                          | cons fourth rest => simp at htys
+                          | nil =>
+                              simp [hname, OpCtx.outTy?, Peano.Model.iteOp, Op.ite] at hout
+                              rcases hout with ⟨⟨hcondTy, hbranchTy⟩, hresultTy⟩
+                              subst condTy
+                              subst elseTy
+                              subst ty
+                              rcases hsubgoal with rfl | rfl | rfl
+                              · exact Pr.Provable.ofProof (by
+                                  simpa [Pr.interp, Term.subst, Ty.subst_nil,
+                                    list_map_subst_nil] using hargs₂ ⟨0, by simp [hargs]⟩)
+                              · exact Pr.Provable.ofProof (by
+                                  simpa [Pr.interp, Term.subst, Ty.subst_nil,
+                                    list_map_subst_nil] using hargs₂ ⟨1, by simp [hargs]⟩)
+                              · exact Pr.Provable.ofProof (by
+                                  simpa [Pr.interp, Term.subst, Ty.subst_nil,
+                                    list_map_subst_nil] using hargs₂ ⟨2, by simp [hargs]⟩)
+      | none =>
+          simp [unifyTypeHasTypeGoals, hite] at hsubgoal
+          subst hsubgoal
+          exact hgoal
   | mkStruct tys =>
       by_cases hty : (.func tys (.struct tys)) = Ty.subst [] ty
       · simp [unifyTypeHasTypeGoals, hty] at hsubgoal
@@ -724,17 +812,6 @@ private theorem unifyTypeHasType_complete_nil {ctx : Ctx} {varCtx : List Ty}
         simp [unifyTypeHasTypeGoals, hty'] at hsubgoal
       · have hty' : ¬((.func [.struct tys] tys[idx.val]) = Ty.subst [] ty) := hty
         simp [unifyTypeHasTypeGoals, hty'] at hsubgoal; subst hsubgoal; exact hgoal
-  | ite cond thenTerm elseTerm =>
-      simp [unifyTypeHasTypeGoals] at hsubgoal
-      cases proof' with
-      | ite hcond hthen helse =>
-          rcases hsubgoal with rfl | rfl | rfl
-          · exact Pr.Provable.ofProof (by
-              simpa [Pr.interp, Term.subst, Ty.subst_nil, list_map_subst_nil] using hcond)
-          · exact Pr.Provable.ofProof (by
-              simpa [Pr.interp, Term.subst, Ty.subst_nil, list_map_subst_nil] using hthen)
-          · exact Pr.Provable.ofProof (by
-              simpa [Pr.interp, Term.subst, Ty.subst_nil, list_map_subst_nil] using helse)
   | «recurse» resultTy init body =>
       cases hstate : inferType? ctx.primFuncCtx varCtx init with
       | none =>
@@ -775,7 +852,7 @@ private theorem unifyTypeHasType_complete_nil {ctx : Ctx} {varCtx : List Ty}
             subst hsubgoal; exact hgoal
 
 /-- Completeness of `unifyType` for closed proof states (empty type and term contexts). -/
-theorem unifyType_complete {ctx : Ctx} {goal : Pr (Term ctx.primCtx)}
+theorem unifyType_complete {ctx : Ctx} [Peano.Model ctx] {goal : Pr (Term ctx.primCtx)}
     (hnames : (ctx.primFuncCtx.map Prod.fst).Nodup) :
     Refinement.complete (unifyType (ctx := ctx) (ctxTy := []) (ctxTerm := []) goal) := by
   intro hgoal subgoal hsubgoal

@@ -6,7 +6,7 @@ namespace Zag.Test.Gauss.Rec
 
 open Zag.Lib.Peano
 
-def sumTo : Nat -> Nat
+def sumTo : Nat → Nat
 | 0 => 0
 | n + 1 => sumTo n + (n + 1)
 
@@ -53,13 +53,11 @@ private theorem var1_motive {varCtx : VarCtx} (h : varCtx = bodyCtx) :
 
 private theorem subFunc_hasType {varCtx : VarCtx} :
     Term.hasType peanoCtx varCtx (.primFunc "sub") (.func [NatTy, NatTy] NatTy) := by
-  have hf := Term.hasType.primFunc (ctx := peanoCtx) (varCtx := varCtx) (idx := ⟨1, by decide⟩)
-  exact hf
+  exact Term.hasType.primFunc (idx := ⟨1, by decide⟩)
 
 private theorem addFunc_hasType_aux {varCtx : VarCtx} :
     Term.hasType peanoCtx varCtx (.primFunc "add") (.func [NatTy, NatTy] NatTy) := by
-  have hf := Term.hasType.primFunc (ctx := peanoCtx) (varCtx := varCtx) (idx := ⟨0, by decide⟩)
-  exact hf
+  exact Term.hasType.primFunc (idx := ⟨0, by decide⟩)
 
 private theorem two_args {varCtx : VarCtx} {fn a b : Term natCtx} {ty : Ty}
     (hfn : Term.hasType peanoCtx varCtx fn (.func [ty, ty] ty))
@@ -85,14 +83,15 @@ private theorem one_arg {varCtx : VarCtx} {fn a : Term natCtx} {ty rty : Ty}
   | zero => exact ha
   | succ idx => exact Fin.elim0 idx
 
-private theorem gt_hasType {varCtx : VarCtx} {a b : Term peanoCtx.primCtx}
+private theorem gt_hasType {varCtx : VarCtx} {a b : Term natCtx}
     (ha : Term.hasType peanoCtx varCtx a NatTy)
     (hb : Term.hasType peanoCtx varCtx b NatTy) :
     Term.hasType peanoCtx varCtx (.op "gt" [a, b]) (.prim "Bool") := by
   have hout : peanoCtx.opCtx.outTy? "gt" [NatTy, NatTy] = some (.prim "Bool") := by
-    simp [OpCtx.outTy?, peanoCtx, natOpCtx, NatTy, Op.compare]
-  refine Term.hasType.op (ctx := peanoCtx) (varCtx := varCtx) (name := "gt")
-    (args := [a, b]) (tys := [NatTy, NatTy]) (r := .prim "Bool") rfl ?_ hout
+    unfold OpCtx.outTy?
+    rw [Peano.Model.gtOp]
+    simp [Op.compare]
+  refine Term.hasType.op rfl ?_ hout
   intro idx
   cases idx using Fin.cases with
   | zero => exact ha
@@ -105,7 +104,7 @@ theorem bodyTerm_hasType : Term.hasType peanoCtx bodyCtx bodyTerm NatTy := by
   unfold bodyTerm stepTerm recurseTerm prevTerm condTerm iTerm
   refine Term.hasType.ite ?hcond ?hthen ?helse
   · exact gt_hasType (var0_nat rfl) (natType 0)
-  · exact two_args (addFunc_hasType_aux)
+  · exact two_args addFunc_hasType_aux
       (one_arg (var1_motive rfl)
         (two_args subFunc_hasType (var0_nat rfl) (natType 1)))
       (var0_nat rfl)
@@ -122,13 +121,11 @@ theorem addFunc_hasType {varCtx : VarCtx} :
 
 theorem mulFunc_hasType {varCtx : VarCtx} :
     Term.hasType peanoCtx varCtx (.primFunc "mul") (.func [NatTy, NatTy] NatTy) := by
-  have hf := Term.hasType.primFunc (ctx := peanoCtx) (varCtx := varCtx) (idx := ⟨2, by decide⟩)
-  exact hf
+  exact Term.hasType.primFunc (idx := ⟨2, by decide⟩)
 
 theorem divFunc_hasType {varCtx : VarCtx} :
     Term.hasType peanoCtx varCtx (.primFunc "div") (.func [NatTy, NatTy] NatTy) := by
-  have hf := Term.hasType.primFunc (ctx := peanoCtx) (varCtx := varCtx) (idx := ⟨3, by decide⟩)
-  exact hf
+  exact Term.hasType.primFunc (idx := ⟨3, by decide⟩)
 
 theorem natBinaryApp_hasType {varCtx : VarCtx} {fn lhs rhs : Term natCtx}
     (hfn : Term.hasType peanoCtx varCtx fn (.func [NatTy, NatTy] NatTy))
@@ -137,16 +134,12 @@ theorem natBinaryApp_hasType {varCtx : VarCtx} {fn lhs rhs : Term natCtx}
     Term.hasType peanoCtx varCtx (.app fn [lhs, rhs]) NatTy := by
   refine Term.hasType.app hfn rfl ?_
   intro idx
-  cases idx with
-  | mk val isLt =>
-      cases val with
-      | zero => exact hlhs
-      | succ val =>
-          cases val with
-          | zero => exact hrhs
-          | succ _ =>
-              simp at isLt
-              omega
+  cases idx using Fin.cases with
+  | zero => exact hlhs
+  | succ idx =>
+      cases idx using Fin.cases with
+      | zero => exact hrhs
+      | succ idx => exact Fin.elim0 idx
 
 theorem rhsTerm_hasType (n : Nat) :
     Term.hasType peanoCtx [] (rhsTerm n) NatTy := by
@@ -158,11 +151,11 @@ theorem rhsTerm_hasType (n : Nat) :
 
 theorem lhsProgram_subst_nil (n : Nat) :
     Term.subst [] (lhsProgram n) = lhsProgram n := by
-  simp
+  simp [lhsProgram, bodyTerm, stepTerm, recurseTerm, prevTerm, condTerm, iTerm, Term.nat]
 
 theorem rhsTerm_subst_nil (n : Nat) :
     Term.subst [] (rhsTerm n) = rhsTerm n := by
-  simp
+  simp [rhsTerm, Term.nat]
 
 theorem lhsProgram_eval_unfold (i : Nat) :
     Term.eval peanoCtx [] (lhsProgram i) = loopBodyEval i [] := by
@@ -174,7 +167,7 @@ theorem lhsProgram_eval_unfold (i : Nat) :
   rfl
 
 private theorem get_gt : peanoCtx.opCtx.get? "gt" = some (Op.compare Val.primGt?) := by
-  simp [peanoCtx, natOpCtx, OpCtx.get?]
+  exact Peano.Model.gtOp
 
 theorem cond_eval_zero :
     Term.evalGo peanoCtx [loopRecCtx []] (loopEnv 0 []) condTerm =
@@ -217,7 +210,7 @@ theorem recurse_eval_succ (i V : Nat)
       (.app (.var 1) [prevTerm]) = some (Val.nat V)
   unfold prevTerm iTerm loopRecCtx
   rw [Term.evalGo.eq_def]
-  simp [Term.evalGo, Term.evalList, PrimFunc.apply, PrimFuncCtx.get?, peanoCtx,
+  simp [Term.evalGo, Term.evalList, PrimFunc.apply, PrimFunc.outTy, PrimFuncCtx.get?, peanoCtx,
     natFuncCtx, natBinaryFunc, Term.nat, List.mapM, List.mapM.loop]
   change (loopBodyEval i []).bind
       (fun result => (Val.as? NatTy result).bind fun resultRaw => some (Val.mk NatTy resultRaw)) =
@@ -237,7 +230,7 @@ theorem step_eval_succ (i V : Nat)
   simp only
   simp only [List.mapM, List.mapM.loop]
   rw [hrec]
-  simp [loopEnv, Term.evalGo, PrimFunc.apply, PrimFuncCtx.get?, peanoCtx,
+  simp [loopEnv, Term.evalGo, PrimFunc.apply, PrimFunc.outTy, PrimFuncCtx.get?, peanoCtx,
     natFuncCtx, natBinaryFunc]
 
 theorem two_mul_sumTo (n : Nat) : 2 * sumTo n = n * (n + 1) := by
@@ -245,8 +238,7 @@ theorem two_mul_sumTo (n : Nat) : 2 * sumTo n = n * (n + 1) := by
   | zero => simp [sumTo]
   | succ n ih =>
       calc
-        2 * sumTo (n + 1)
-            = 2 * (sumTo n + (n + 1)) := by simp [sumTo]
+        2 * sumTo (n + 1) = 2 * (sumTo n + (n + 1)) := by simp [sumTo]
         _ = 2 * sumTo n + 2 * (n + 1) := by rw [Nat.left_distrib]
         _ = n * (n + 1) + 2 * (n + 1) := by rw [ih]
         _ = (n + 2) * (n + 1) := by rw [(Nat.add_mul n 2 (n + 1)).symm]
@@ -256,17 +248,11 @@ theorem sumTo_eq_closed (n : Nat) : sumTo n = n * (n + 1) / 2 := by
   have h2 : Not ((2 : Nat) = 0) := by decide
   exact Nat.eq_div_of_mul_eq_right h2 (two_mul_sumTo n)
 
-/-- The closed-form value at `k + 1` is the closed-form value at `k` plus `k + 1` — pure
-  arithmetic, needed by the induction step to relate consecutive closed-form values without
-  re-deriving either one from scratch. -/
 theorem closedForm_succ (k : Nat) :
     k * (k + 1) / 2 + (k + 1) = (k + 1) * (k + 2) / 2 := by
   rw [← sumTo_eq_closed k, ← sumTo_eq_closed (k + 1)]
   rfl
 
-/-- General-purpose unwrap for `.eq` goals under the empty context: `Pr.Provable` of a
-  `.eq [] NatTy lhs rhs` is just `Term.eq ... NatTy lhs rhs` once `Term.subst []`/`Ty.subst []`
-  are stripped — this pattern otherwise repeats at the start of every such proof. -/
 theorem gaussEq_provable_iff {lhs rhs : Term natCtx} :
     Pr.Provable peanoCtx [] [] (.eq [] NatTy lhs rhs) ↔
       Term.eq peanoCtx [] NatTy lhs rhs := by
@@ -280,7 +266,7 @@ theorem gaussEq_provable_iff {lhs rhs : Term natCtx} :
 theorem rhsTerm_eval_rhs (n : Nat) :
     Term.eval peanoCtx [] (rhsTerm n) = some (Val.nat (n * (n + 1) / 2)) := by
   simp [rhsTerm, Term.eval, Term.evalGo, Term.evalList,
-    PrimFunc.apply, PrimFuncCtx.get?, natFuncCtx, natBinaryFunc, Term.nat]
+    PrimFunc.apply, PrimFunc.outTy, PrimFuncCtx.get?, natFuncCtx, natBinaryFunc, Term.nat]
   rfl
 
 def lhsProgramOf (t : Term natCtx) : Term natCtx :=
@@ -317,9 +303,6 @@ theorem lhsProgramOf_eval_unfold {t : Term natCtx} {k : Nat}
     loopBodyEval k []
   rfl
 
-/-- `lhsProgramOf`'s evaluated value only depends on its argument's evaluated value, not its
-  syntax — this is what lets a term `x` and the literal `nat k` it evaluates to stand in for
-  each other freely. -/
 theorem lhsProgramOf_congr {a b : Term natCtx}
     (h : Term.evalGo peanoCtx [] [] a = Term.evalGo peanoCtx [] [] b) :
     Term.eval peanoCtx [] (lhsProgramOf a) = Term.eval peanoCtx [] (lhsProgramOf b) := by
@@ -332,10 +315,6 @@ theorem rhsTermOf_congr {a b : Term natCtx}
   unfold rhsTermOf Term.eval
   simp [Term.evalGo, Term.evalList, h]
 
-/-- Transports provability of `gaussStatement`'s underlying equation across any two terms
-  `a, b` with the same evaluated value — the one genuinely predicate-specific fact `hcongr`
-  needs, since `lhsProgramOf`/`rhsTermOf`'s *shape* (not just value) could in principle matter
-  to a less well-behaved predicate. -/
 theorem gaussEq_provable_congr {a b : Term natCtx}
     (hta : Term.hasType peanoCtx [] a NatTy)
     (hab : Term.evalGo peanoCtx [] [] a = Term.evalGo peanoCtx [] [] b)
@@ -394,10 +373,8 @@ theorem gaussBaseCase :
   subst hnil
   rw [lhsProgram_eval_unfold]
   change Term.evalGo peanoCtx [loopRecCtx []] (loopEnv 0 [])
-    (.ite condTerm stepTerm (Term.nat 0)) = Term.eval peanoCtx [] (rhsTerm 0)
-  rw [rhsTerm_eval_rhs]
-  simp only [Term.evalGo]
-  rw [cond_eval_zero]
+    (Term.ite condTerm stepTerm (Term.nat 0)) = Term.eval peanoCtx [] (rhsTerm 0)
+  rw [rhsTerm_eval_rhs, Term.evalGo_ite, cond_eval_zero]
   simp [Term.evalGo, Term.nat]
 
 theorem gaussLiteralStep (k : Nat) :
@@ -417,9 +394,9 @@ theorem gaussLiteralStep (k : Nat) :
     exact hprevVal
   rw [lhsProgram_eval_unfold]
   change Term.evalGo peanoCtx [loopRecCtx []] (loopEnv (k + 1) [])
-    (.ite condTerm stepTerm (Term.nat 0)) = Term.eval peanoCtx [] (rhsTerm (k + 1))
-  rw [rhsTerm_eval_rhs]
-  simp [Term.evalGo, cond_eval_succ k, step_eval_succ k _ hbody, closedForm_succ]
+    (Term.ite condTerm stepTerm (Term.nat 0)) = Term.eval peanoCtx [] (rhsTerm (k + 1))
+  rw [rhsTerm_eval_rhs, Term.evalGo_ite, cond_eval_succ k, step_eval_succ k _ hbody]
+  simp [closedForm_succ]
 
 theorem gaussInductionStepProvable :
     Pr.Provable peanoCtx [] [] (Pr.Induction.natStepGoal 0 succName gaussPredicate) :=

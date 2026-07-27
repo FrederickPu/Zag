@@ -1,4 +1,5 @@
 import Zag.Meta
+import Lib.Peano.Defs
 
 namespace Zag
 
@@ -21,10 +22,6 @@ def instantiateTermInTerm {primCtx : PrimitiveCtx} (idx : Nat) (replacement : Te
 | .op name args => .op name (args.map (instantiateTermInTerm idx replacement))
 | .mkStruct tys => .mkStruct tys
 | .structProj tys fieldIdx => .structProj tys fieldIdx
-| .ite cond thenTerm elseTerm =>
-    .ite (instantiateTermInTerm idx replacement cond)
-      (instantiateTermInTerm idx replacement thenTerm)
-      (instantiateTermInTerm idx replacement elseTerm)
 | .recurse resultTy init body =>
     .recurse resultTy (instantiateTermInTerm idx replacement init)
       (instantiateTermInTerm idx replacement body)
@@ -42,7 +39,7 @@ def instantiateTermAt {primCtx : PrimitiveCtx} (idx : Nat) (body : Pr (Term prim
 abbrev instantiateTerm {primCtx : PrimitiveCtx} (body : Pr (Term primCtx)) (term : Term primCtx) : Pr (Term primCtx) :=
   instantiateTermAt 0 body term
 
-@[simp] theorem instantiateTermInTerm_nat {primCtx : PrimitiveCtx}
+@[simp] theorem instantiateTermInTerm_nat {primCtx : PrimitiveCtx} [Peano.Types primCtx]
     (idx n : Nat) (replacement : Term primCtx) :
     instantiateTermInTerm idx replacement (Term.nat (primCtx := primCtx) n) = Term.nat n := by
   simp [instantiateTermInTerm, Term.nat]
@@ -55,8 +52,6 @@ def weakenTermAt {primCtx : PrimitiveCtx} (idx : Nat) : Term primCtx → Term pr
 | .op name args => .op name (args.map (weakenTermAt idx))
 | .mkStruct tys => .mkStruct tys
 | .structProj tys fieldIdx => .structProj tys fieldIdx
-| .ite cond thenTerm elseTerm =>
-    .ite (weakenTermAt idx cond) (weakenTermAt idx thenTerm) (weakenTermAt idx elseTerm)
 | .recurse resultTy init body =>
     .recurse resultTy (weakenTermAt idx init) (weakenTermAt idx body)
 
@@ -69,7 +64,7 @@ def weaken {primCtx : PrimitiveCtx} (idx : Nat) : Pr (Term primCtx) → Pr (Term
 | .forallTy p => .forallTy (weaken idx p)
 | .forallTerm p => .forallTerm (weaken idx p)
 
-@[simp] theorem weakenTermAt_nat {primCtx : PrimitiveCtx} (idx n : Nat) :
+@[simp] theorem weakenTermAt_nat {primCtx : PrimitiveCtx} [Peano.Types primCtx] (idx n : Nat) :
     weakenTermAt idx (Term.nat (primCtx := primCtx) n) = Term.nat n := by
   simp [weakenTermAt, Term.nat]
 
@@ -98,11 +93,6 @@ theorem instantiateTermInTerm_weakenTermAt {primCtx : PrimitiveCtx}
         instantiateTermInTerm_weakenTermAtList idx replacement args]
   | mkStruct tys => simp [weakenTermAt, instantiateTermInTerm]
   | structProj tys fieldIdx => simp [weakenTermAt, instantiateTermInTerm]
-  | ite cond thenTerm elseTerm =>
-      simp [weakenTermAt, instantiateTermInTerm,
-        instantiateTermInTerm_weakenTermAt idx replacement cond,
-        instantiateTermInTerm_weakenTermAt idx replacement thenTerm,
-        instantiateTermInTerm_weakenTermAt idx replacement elseTerm]
   | «recurse» resultTy init body =>
       simp [weakenTermAt, instantiateTermInTerm,
         instantiateTermInTerm_weakenTermAt idx replacement init,
@@ -168,10 +158,6 @@ theorem subst_instantiateTermInTerm {primCtx : PrimitiveCtx}
       simp [instantiateTermInTerm, hargs]
   | mkStruct tys => simp [instantiateTermInTerm]
   | structProj tys fieldIdx => simp [instantiateTermInTerm]
-  | ite cond thenTerm elseTerm =>
-      simp [instantiateTermInTerm, subst_instantiateTermInTerm ctxTerm t cond,
-        subst_instantiateTermInTerm ctxTerm t thenTerm,
-        subst_instantiateTermInTerm ctxTerm t elseTerm]
   | «recurse» resultTy init body =>
       simp [instantiateTermInTerm, subst_instantiateTermInTerm ctxTerm t init,
         subst_instantiateTermInTerm ctxTerm t body]
@@ -250,10 +236,6 @@ theorem subst_weakenTermAt_concat {primCtx : PrimitiveCtx}
       simp [weakenTermAt, hargs]
   | mkStruct tys => simp [weakenTermAt]
   | structProj tys fieldIdx => simp [weakenTermAt]
-  | ite cond thenTerm elseTerm =>
-      simp [weakenTermAt, subst_weakenTermAt_concat ctxTerm y cond,
-        subst_weakenTermAt_concat ctxTerm y thenTerm,
-        subst_weakenTermAt_concat ctxTerm y elseTerm]
   | «recurse» resultTy init body =>
       simp [weakenTermAt, subst_weakenTermAt_concat ctxTerm y init,
         subst_weakenTermAt_concat ctxTerm y body]
@@ -339,10 +321,6 @@ theorem subst_weakenTermAt_middle {primCtx : PrimitiveCtx}
       simp [weakenTermAt, hargs]
   | mkStruct tys => simp [weakenTermAt]
   | structProj tys fieldIdx => simp [weakenTermAt]
-  | ite cond thenTerm elseTerm =>
-      simp [weakenTermAt, subst_weakenTermAt_middle ctxTerm x y cond,
-        subst_weakenTermAt_middle ctxTerm x y thenTerm,
-        subst_weakenTermAt_middle ctxTerm x y elseTerm]
   | «recurse» resultTy init body =>
       simp [weakenTermAt, subst_weakenTermAt_middle ctxTerm x y init,
         subst_weakenTermAt_middle ctxTerm x y body]
@@ -455,28 +433,6 @@ def findRecurseInTerm {primCtx : PrimitiveCtx} (idx : Nat) :
     | none => none
 | .mkStruct _ => none
 | .structProj _ _ => none
-| .ite cond thenTerm elseTerm =>
-    match findRecurseInTerm idx cond with
-    | some found =>
-        some
-          { init := found.init
-            predicateTerm := .ite found.predicateTerm (weakenTermAt idx thenTerm) (weakenTermAt idx elseTerm)
-            property := by simp [instantiateTermInTerm, found.property, instantiateTermInTerm_weakenTermAt] }
-    | none =>
-        match findRecurseInTerm idx thenTerm with
-        | some found =>
-            some
-              { init := found.init
-                predicateTerm := .ite (weakenTermAt idx cond) found.predicateTerm (weakenTermAt idx elseTerm)
-                property := by simp [instantiateTermInTerm, found.property, instantiateTermInTerm_weakenTermAt] }
-        | none =>
-            match findRecurseInTerm idx elseTerm with
-            | some found =>
-                some
-                  { init := found.init
-                    predicateTerm := .ite (weakenTermAt idx cond) (weakenTermAt idx thenTerm) found.predicateTerm
-                    property := by simp [instantiateTermInTerm, found.property, instantiateTermInTerm_weakenTermAt] }
-            | none => none
 | .recurse resultTy init body =>
     some
       { init := init
@@ -601,7 +557,7 @@ def findRecurseInPr {primCtx : PrimitiveCtx} (idx : Nat) :
             property := by simp [instantiateTermAt, found.property] }
     | none => none
 
-def sameKnownTerm? {primCtx : PrimitiveCtx} (term init : Term primCtx) :
+def sameKnownTerm? {primCtx : PrimitiveCtx} [Peano.Types primCtx] (term init : Term primCtx) :
     Option { _witness : Unit // term = init } :=
   match term, init with
   | .var termIdx, .var initIdx =>
@@ -629,7 +585,8 @@ structure TermListAbstract {primCtx : PrimitiveCtx} (idx : Nat) (init : Term pri
 
 mutual
 
-def abstractInitInTerm {primCtx : PrimitiveCtx} (idx : Nat) (init : Term primCtx) :
+def abstractInitInTerm {primCtx : PrimitiveCtx} [Peano.Types primCtx]
+    (idx : Nat) (init : Term primCtx) :
     (term : Term primCtx) → TermAbstract idx init term
 | .prim ty val =>
     match sameKnownTerm? (.prim ty val) init with
@@ -690,19 +647,6 @@ def abstractInitInTerm {primCtx : PrimitiveCtx} (idx : Nat) (init : Term primCtx
     | none =>
         { predicateTerm := weakenTermAt idx (.structProj tys fieldIdx)
           property := instantiateTermInTerm_weakenTermAt idx init (.structProj tys fieldIdx) }
-| .ite cond thenTerm elseTerm =>
-    match sameKnownTerm? (.ite cond thenTerm elseTerm) init with
-    | some h =>
-        { predicateTerm := .var idx
-          property := by rw [h.property]; simp [instantiateTermInTerm] }
-    | none =>
-        let abstractCond := abstractInitInTerm idx init cond
-        let abstractThen := abstractInitInTerm idx init thenTerm
-        let abstractElse := abstractInitInTerm idx init elseTerm
-        { predicateTerm := .ite abstractCond.predicateTerm abstractThen.predicateTerm abstractElse.predicateTerm
-          property := by
-            simp [instantiateTermInTerm, abstractCond.property, abstractThen.property,
-              abstractElse.property] }
 | .recurse resultTy recInit body =>
     match sameKnownTerm? (.recurse resultTy recInit body) init with
     | some h =>
@@ -715,7 +659,8 @@ def abstractInitInTerm {primCtx : PrimitiveCtx} (idx : Nat) (init : Term primCtx
             simp [instantiateTermInTerm, abstractInit.property,
               instantiateTermInTerm_weakenTermAt] }
 
-def abstractInitInTermList {primCtx : PrimitiveCtx} (idx : Nat) (init : Term primCtx) :
+def abstractInitInTermList {primCtx : PrimitiveCtx} [Peano.Types primCtx]
+    (idx : Nat) (init : Term primCtx) :
     (terms : List (Term primCtx)) → TermListAbstract idx init terms
 | [] =>
     { predicateTerms := []
@@ -728,12 +673,14 @@ def abstractInitInTermList {primCtx : PrimitiveCtx} (idx : Nat) (init : Term pri
 
 end
 
-@[simp] theorem abstractInitInTerm_nat_self {primCtx : PrimitiveCtx} (idx n : Nat) :
+@[simp] theorem abstractInitInTerm_nat_self {primCtx : PrimitiveCtx} [Peano.Types primCtx]
+    (idx n : Nat) :
     (abstractInitInTerm idx (Term.nat (primCtx := primCtx) n) (Term.nat n)).predicateTerm =
       .var idx := by
   simp [abstractInitInTerm, sameKnownTerm?, Term.natLit?, Term.nat, Ty.ofNat, Ty.toNat]
 
-@[simp] theorem abstractInitInTerm_nat_ne {primCtx : PrimitiveCtx} (idx m n : Nat)
+@[simp] theorem abstractInitInTerm_nat_ne {primCtx : PrimitiveCtx} [Peano.Types primCtx]
+    (idx m n : Nat)
     (hne : ¬ m = n) :
     (abstractInitInTerm idx (Term.nat (primCtx := primCtx) n) (Term.nat m)).predicateTerm =
       Term.nat m := by
@@ -745,7 +692,8 @@ structure PrAbstract {primCtx : PrimitiveCtx} (idx : Nat) (init : Term primCtx)
   predicate : Pr (Term primCtx)
   property : goal = instantiateTermAt idx predicate init
 
-def abstractInitInPr {primCtx : PrimitiveCtx} (idx : Nat) (init : Term primCtx) :
+def abstractInitInPr {primCtx : PrimitiveCtx} [Peano.Types primCtx]
+    (idx : Nat) (init : Term primCtx) :
     (goal : Pr (Term primCtx)) → PrAbstract idx init goal
 | .eq ctx ty lhs rhs =>
     let abstractLhs := abstractInitInTerm idx init lhs
@@ -782,24 +730,27 @@ def abstractInitInPr {primCtx : PrimitiveCtx} (idx : Nat) (init : Term primCtx) 
 
 /-- `(succ x == y) = true`. The built-in `eq` operator forces both sides to evaluate to equal
   values (the same termination trick `lt` previously provided). -/
-def succEq {primCtx : PrimitiveCtx} (idx : Nat) (succName : String) : Pr (Term primCtx) :=
+def succEq {primCtx : PrimitiveCtx} [Peano.Types primCtx]
+    (idx : Nat) (succName : String) : Pr (Term primCtx) :=
   .eq [] (.prim "Bool")
     (.op "eq" [.app (.primFunc succName) [.var idx], .var (idx + 1)])
     (Term.bool true)
 
-def natStepGoal {primCtx : PrimitiveCtx} (idx : Nat) (succName : String) (body : Pr (Term primCtx)) :
+def natStepGoal {primCtx : PrimitiveCtx} [Peano.Types primCtx]
+    (idx : Nat) (succName : String) (body : Pr (Term primCtx)) :
     Pr (Term primCtx) :=
   .forallNat idx (.forallNat (idx + 1)
     (.implies (succEq idx succName)
       (.implies (weaken (idx + 1) body) (weaken idx body))))
 
-def natInductionGoals {primCtx : PrimitiveCtx} (idx : Nat) (succName : String)
+def natInductionGoals {primCtx : PrimitiveCtx} [Peano.Types primCtx]
+    (idx : Nat) (succName : String)
     (body : Pr (Term primCtx)) : List (Pr (Term primCtx)) :=
   [instantiateTermAt idx body (Term.nat 0), natStepGoal idx succName body]
 
 /-- `succName` is a successor primfunc: types as `Nat → Nat`, maps value `m` to `m+1`,
   and inverts whenever the application evaluates. -/
-structure SuccSpec (ctx : Ctx) (succName : String) : Prop where
+structure SuccSpec (ctx : Ctx) [Peano.Types ctx.primCtx] (succName : String) : Prop where
   hasType_app : ∀ (varCtx : VarCtx) (t : Term ctx.primCtx),
     Term.hasType ctx varCtx t (.prim "Nat") →
     Term.hasType ctx varCtx (.app (.primFunc succName) [t]) (.prim "Nat")
@@ -810,22 +761,27 @@ structure SuccSpec (ctx : Ctx) (succName : String) : Prop where
     Term.eval ctx [] (.app (.primFunc succName) [t]) = some v →
     ∃ m : Nat, Term.eval ctx [] t = some (Val.nat m) ∧ v = Val.nat (m + 1)
 
-private theorem natLit_hasType {ctx : Ctx} (varCtx : VarCtx) (n : Nat) :
+private theorem natLit_hasType {ctx : Ctx} [Peano.Types ctx.primCtx]
+    (varCtx : VarCtx) (n : Nat) :
     Term.hasType ctx varCtx (Term.nat n) (.prim "Nat") :=
   Term.hasType.prim (Ty.ofNat ctx.primCtx n)
 
-private theorem boolLit_hasType {ctx : Ctx} (varCtx : VarCtx) (b : Bool) :
+private theorem boolLit_hasType {ctx : Ctx} [Peano.Types ctx.primCtx]
+    (varCtx : VarCtx) (b : Bool) :
     Term.hasType ctx varCtx (Term.bool b) (.prim "Bool") :=
   Term.hasType.prim (Ty.ofBool ctx.primCtx b)
 
-private theorem eval_natLit {ctx : Ctx} (n : Nat) :
+private theorem eval_natLit {ctx : Ctx} [Peano.Types ctx.primCtx] (n : Nat) :
     Term.eval ctx [] (Term.nat n) = some (Val.nat n) := by
   simp [Term.eval, Term.evalGo, Term.nat]
 
-private theorem op_eq_hasType {ctx : Ctx} {varCtx : VarCtx} {a b : Term ctx.primCtx} {ty : Ty}
-    (ha : Term.hasType ctx varCtx a ty) (hb : Term.hasType ctx varCtx b ty) :
+private theorem op_eq_hasType {ctx : Ctx} [Peano.Model ctx]
+    {varCtx : VarCtx} {a b : Term ctx.primCtx}
+    (ha : Term.hasType ctx varCtx a Peano.NatTy)
+    (hb : Term.hasType ctx varCtx b Peano.NatTy) :
     Term.hasType ctx varCtx (.op "eq" [a, b]) (.prim "Bool") := by
-  refine Term.hasType.op (name := "eq") (args := [a, b]) (tys := [ty, ty]) rfl ?_ ?_
+  refine Term.hasType.op (name := "eq") (args := [a, b])
+    (tys := [Peano.NatTy, Peano.NatTy]) rfl ?_ ?_
   · intro idx
     match idx with
     | ⟨0, _⟩ => simpa using ha
@@ -833,14 +789,15 @@ private theorem op_eq_hasType {ctx : Ctx} {varCtx : VarCtx} {a b : Term ctx.prim
     | ⟨n + 2, h⟩ =>
         simp at h
         omega
-  · simp [OpCtx.outTy?]
+  · simp [OpCtx.outTy?, Peano.Model.eqOp, Op.eq, Op.compare]
 
-private theorem valBool_inj {primCtx : PrimitiveCtx} {a b : Bool}
+private theorem valBool_inj {primCtx : PrimitiveCtx} [Peano.Types primCtx] {a b : Bool}
     (h : (Val.bool (primCtx := primCtx) a) = Val.bool b) : a = b := by
   have := congrArg Val.asBool? h
   simpa using this
 
-private theorem asNat?_eq_some {primCtx : PrimitiveCtx} {v : Val primCtx} {k : Nat}
+private theorem asNat?_eq_some {primCtx : PrimitiveCtx} [Peano.Types primCtx]
+    {v : Val primCtx} {k : Nat}
     (h : v.asNat? = some k) : v = Val.nat k := by
   unfold Val.asNat? Val.as? at h
   by_cases hty : v.ty = .prim "Nat"
@@ -855,48 +812,9 @@ private theorem asNat?_eq_some {primCtx : PrimitiveCtx} {v : Val primCtx} {k : N
         simp [Ty.ofNat, Ty.toNat]
   · simp [hty] at h
 
-private theorem eval_op_eq_bool {ctx : Ctx} {a b : Term ctx.primCtx} {c : Bool}
-    (h : Term.eq ctx [] (.prim "Bool") (.op "eq" [a, b]) (Term.bool c)) :
-    ∃ va vb, Term.eval ctx [] a = some va ∧ Term.eval ctx [] b = some vb ∧
-      Val.primEq? va vb = some c ∧ va.ty = vb.ty := by
-  have heval := h.eq [] rfl
-  simp only [Term.eval] at heval
-  cases ha : Term.evalGo ctx [] [] a with
-  | none =>
-      simp [Term.evalGo, Term.evalList, OpCtx.get?, Op.eq, ha, Term.bool] at heval
-  | some va =>
-      cases hb : Term.evalGo ctx [] [] b with
-      | none =>
-          simp [Term.evalGo, Term.evalList, OpCtx.get?, Op.eq, ha, hb, Term.bool] at heval
-      | some vb =>
-          -- heval : evalGo (op eq [a,b]) = evalGo (bool c) = some (Val.bool c)
-          have hrhs : Term.evalGo ctx [] [] (Term.bool c) = some (Val.bool c) := by
-            simp [Term.evalGo, Term.bool]
-          rw [hrhs] at heval
-          -- Need va.ty = vb.ty for applyVals_compare. Derive by cases: if unequal, LHS is none.
-          by_cases hty : va.ty = vb.ty
-          · have hcmp_form := Term.evalGo_op_compare
-              (ctx := ctx) (motives := []) (env := []) (name := "eq")
-              (cmp := Val.primEq?) (va := va) (vb := vb)
-              (by simp [OpCtx.get?, Op.eq]) ha hb hty
-            rw [hcmp_form] at heval
-            cases hcmp : Val.primEq? va vb with
-            | none => simp [hcmp] at heval
-            | some c' =>
-                simp [hcmp] at heval
-                exact ⟨va, vb, ha, hb, by rw [hcmp, valBool_inj heval], hty⟩
-          · have hform :
-                Term.evalGo ctx [] [] (.op "eq" [a, b]) =
-                  Op.applyVals (Op.eq (primCtx := ctx.primCtx)) [va, vb] := by
-              simp [Term.evalGo, Term.evalList, OpCtx.get?, Op.eq, ha, hb]
-            rw [hform] at heval
-            have hnone : Op.applyVals (Op.eq (primCtx := ctx.primCtx)) [va, vb] = none := by
-              dsimp [Op.applyVals, Op.eq, Op.compare]
-              rw [if_neg hty]
-            simp [hnone] at heval
-
 /-- From `succEq` holding of `(x, y)`, extract `x ↝ nat k` and `y ↝ nat (k + 1)`. -/
-theorem succEq_extract {ctx : Ctx} {ctxTy : List Ty} {ctxTerm : List (Term ctx.primCtx)}
+theorem succEq_extract {ctx : Ctx} [Peano.Model ctx]
+    {ctxTy : List Ty} {ctxTerm : List (Term ctx.primCtx)}
     {x y : Term ctx.primCtx} {succName : String}
     (hspec : SuccSpec ctx succName)
     (hsucc : Pr.interp ctx ctxTy (ctxTerm ++ [x, y]) (succEq ctxTerm.length succName)) :
@@ -905,28 +823,48 @@ theorem succEq_extract {ctx : Ctx} {ctxTy : List Ty} {ctxTerm : List (Term ctx.p
   have heq : Term.eq ctx [] (.prim "Bool")
       (.op "eq" [.app (.primFunc succName) [x], y]) (Term.bool true) := by
     simpa [Pr.interp, succEq, Ty.subst, Term.bool, Term.subst, Nat.lt_add_one] using hsucc
-  obtain ⟨va, vb, hva, hvb, hcmp, _hty⟩ := eval_op_eq_bool heq
-  obtain ⟨m, hx, rfl⟩ := hspec.eval_succ_inv x va hva
-  have hna : (Val.nat (primCtx := ctx.primCtx) (m + 1)).asNat? = some (m + 1) := by
-    simp [Val.asNat?, Val.as?, Val.nat, Ty.toNat, Ty.ofNat]
-  cases hnb : vb.asNat? with
+  have heval := heq.eq [] rfl
+  simp only [Term.eval] at heval
+  cases happ : Term.evalGo ctx [] [] (.app (.primFunc succName) [x]) with
   | none =>
+      simp [Term.evalGo, Peano.Model.eqOp, happ, Term.bool, Op.eq,
+        Op.compare, Op.Signature.eagerBody, Op.Signature.apply] at heval
+  | some va =>
+    obtain ⟨m, hx, rfl⟩ := hspec.eval_succ_inv x va happ
+    cases hy : Term.evalGo ctx [] [] y with
+    | none =>
+      simp [Term.evalGo, Peano.Model.eqOp, happ, hy, Term.bool, Op.eq,
+        Op.compare, Op.Signature.eagerBody, Op.Signature.apply] at heval
+    | some vb =>
+      have hcmp : Val.primEq? (Val.nat (primCtx := ctx.primCtx) (m + 1)) vb = some true := by
+        simp [Term.evalGo, Peano.Model.eqOp, happ, hy, Term.bool, Op.eq, Op.compare,
+          Op.Signature.eagerBody,
+          Op.Signature.apply] at heval
+        have heval' : Val.bool (primCtx := ctx.primCtx)
+            ((Val.primEq? (Val.nat (primCtx := ctx.primCtx) (m + 1)) vb).getD false) =
+            Val.bool (primCtx := ctx.primCtx) true := by
+          rw [← heval]
+          congr 3
+        have hbool := valBool_inj heval'
+        cases hraw : Val.primEq? (Val.nat (primCtx := ctx.primCtx) (m + 1)) vb with
+        | none => simp [hraw] at hbool
+        | some result =>
+          simp [hraw] at hbool
+          simp [hbool]
       unfold Val.primEq? at hcmp
-      rw [hna, hnb] at hcmp
-      have hba : (Val.nat (primCtx := ctx.primCtx) (m + 1)).asBool? = none := rfl
-      simp [hba] at hcmp
-  | some m' =>
-      unfold Val.primEq? at hcmp
-      rw [hna, hnb] at hcmp
-      have hm' : m' = m + 1 := by
-        have : decide (m + 1 = m') = true := Option.some.inj hcmp
-        exact (of_decide_eq_true this).symm
-      have hvbeq : vb = Val.nat (m + 1) := by
-        rw [hm'] at hnb
-        exact asNat?_eq_some hnb
-      exact ⟨m, hx, hvbeq ▸ hvb⟩
+      simp at hcmp
+      cases h : vb.asNat? with
+      | none =>
+        have hbool : (Val.nat (primCtx := ctx.primCtx) (m + 1)).asBool? = none := rfl
+        simp [h, hbool] at hcmp
+      | some n =>
+        simp [h] at hcmp
+        have hn : n = m + 1 := hcmp.symm
+        rw [hn] at h
+        exact ⟨m, hx, (asNat?_eq_some h) ▸ hy⟩
 
-private theorem succEq_natLit {ctx : Ctx} {succName : String} (hspec : SuccSpec ctx succName)
+private theorem succEq_natLit {ctx : Ctx} [Peano.Model ctx]
+    {succName : String} (hspec : SuccSpec ctx succName)
     (k : Nat) :
     Term.eq ctx [] (.prim "Bool")
       (.op "eq" [.app (.primFunc succName) [Term.nat k], Term.nat (k + 1)])
@@ -945,21 +883,17 @@ private theorem succEq_natLit {ctx : Ctx} {succName : String} (hspec : SuccSpec 
       have hy : Term.evalGo ctx [] [] (Term.nat (k + 1)) = some (Val.nat (k + 1)) := by
         simp [Term.evalGo, Term.nat]
       simp only [Term.eval]
-      have hgo := Term.evalGo_op_compare
-        (ctx := ctx) (motives := []) (env := []) (name := "eq")
-        (cmp := Val.primEq?) (va := Val.nat (k + 1)) (vb := Val.nat (k + 1))
-        (by simp [OpCtx.get?, Op.eq]) hs' hy rfl
-      have hpe : Val.primEq? (Val.nat (primCtx := ctx.primCtx) (k + 1)) (Val.nat (k + 1)) =
-          some true := by
-        simp [Val.primEq?, Val.asNat?, Val.as?, Val.nat, Ty.toNat, Ty.ofNat]
-      rw [hgo, hpe]
-      -- RHS is evalGo (bool true) = some (Val.bool true)
-      change some (Val.bool true) = Term.evalGo ctx [] [] (Term.bool true)
-      simp [Term.evalGo, Term.bool])
+      simp [Term.evalGo, Peano.Model.eqOp, hs', hy, Term.bool, Op.eq, Op.compare,
+        Op.Signature.eagerBody,
+        Op.Signature.apply]
+      apply congrArg Val.bool
+      change (Val.primEq? (Val.nat (primCtx := ctx.primCtx) (k + 1))
+        (Val.nat (k + 1))).getD false = true
+      simp [Val.primEq?])
 
 /-- Builds the term-quantified step goal `natStepGoal 0 succName predicate` from a step
   function indexed by literal `Nat`s. -/
-theorem natStepGoal_of_literal_step {ctx : Ctx} {ctxTy : List Ty}
+theorem natStepGoal_of_literal_step {ctx : Ctx} [Peano.Model ctx] {ctxTy : List Ty}
     {predicate : Pr (Term ctx.primCtx)} {succName : String}
     (hspec : SuccSpec ctx succName)
     (hqf : quantifierFree predicate = true)
@@ -1006,7 +940,7 @@ theorem natStepGoal_of_literal_step {ctx : Ctx} {ctxTy : List Ty}
         ([] : List (Term ctx.primCtx)) x y predicate hqf
       exact hwkNext.mpr (by simpa using hyInterp)
 
-theorem natInductionChain {ctx : Ctx} {ctxTy : List Ty}
+theorem natInductionChain {ctx : Ctx} [Peano.Model ctx] {ctxTy : List Ty}
     {ctxTerm : List (Term ctx.primCtx)} {body : Pr (Term ctx.primCtx)} {succName : String}
     (hspec : SuccSpec ctx succName)
     (hqf : quantifierFree body = true)
@@ -1077,7 +1011,7 @@ theorem natInductionChain {ctx : Ctx} {ctxTy : List Ty}
               rwa [show Term.subst ctxTerm (Term.nat (k + 1)) = Term.nat (k + 1) by
                 simp [Term.nat]]
 
-def natInductionWithPredicate {ctx : Ctx}
+def natInductionWithPredicate {ctx : Ctx} [Peano.Model ctx]
     {ctxTy : List Ty} {ctxTerm : List (Term ctx.primCtx)}
     (succName : String) (hspec : SuccSpec ctx succName)
     (goal : Pr (Term ctx.primCtx)) (predicate : Pr (Term ctx.primCtx)) (target : Nat)
@@ -1095,7 +1029,7 @@ def natInductionWithPredicate {ctx : Ctx}
       rw [hinst]
       exact natInductionChain hspec hqf hbase hstep target }
 
-def simpleInduction {ctx : Ctx}
+def simpleInduction {ctx : Ctx} [Peano.Model ctx]
     {ctxTy : List Ty} {ctxTerm : List (Term ctx.primCtx)}
     (succName : String) (hspec : SuccSpec ctx succName) :
     Tactic? ctx ctxTy ctxTerm (Term ctx.primCtx)

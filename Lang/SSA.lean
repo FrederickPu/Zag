@@ -1,4 +1,5 @@
 import Zag.Meta.Language
+import Lib.Peano.Defs
 
 /-!
   llvm ir inspired `Single Static Assignment` style DSL for specifiying programs.
@@ -107,10 +108,10 @@ namespace SSAValue
 def prim {primCtx : PrimitiveCtx} (ty : Ty) (value : Ty.type primCtx ty) : SSAValue primCtx :=
   .raw (.prim ty value)
 
-def nat {primCtx : PrimitiveCtx} (value : Nat) : SSAValue primCtx :=
+def nat {primCtx : PrimitiveCtx} [Peano.Types primCtx] (value : Nat) : SSAValue primCtx :=
   .raw (Term.nat value)
 
-def bool {primCtx : PrimitiveCtx} (value : Bool) : SSAValue primCtx :=
+def bool {primCtx : PrimitiveCtx} [Peano.Types primCtx] (value : Bool) : SSAValue primCtx :=
   .raw (Term.bool value)
 
 def primFunc {primCtx : PrimitiveCtx} (name : String) : SSAValue primCtx :=
@@ -195,7 +196,7 @@ def toTerm? {primCtx : PrimitiveCtx} : SSAExpr primCtx -> LowerCtx primCtx -> Op
     let condTerm <- valueToTerm? cond ctx
     let thenTerm <- toTerm? thenExpr ctx
     let elseTerm <- toTerm? elseExpr ctx
-    some (.ite condTerm thenTerm elseTerm)
+    some (Term.ite condTerm thenTerm elseTerm)
 | .yield next, ctx =>
     match ctx.loop? with
     | none => none
@@ -323,7 +324,14 @@ macro_rules
 
 namespace Examples
 
-abbrev exampleCtx : PrimitiveCtx := [("Nat", Nat)]
+abbrev exampleCtx : PrimitiveCtx := .ofPrims [.of "Nat" Nat, .of "Bool" Bool]
+
+instance : Peano.Types exampleCtx where
+  natType := by rfl
+  boolType := by rfl
+
+instance : PrimitiveCtx.ReprName exampleCtx where
+  expr := "Zag.Lang.SSA.Examples.exampleCtx"
 
 def NatTy : Ty :=
   .prim "Nat"
