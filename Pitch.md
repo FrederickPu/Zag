@@ -99,70 +99,33 @@ source language          ┌─────────────────�
                           (no false theorems, ever)
 ```
 
+## Certified tactics (the point)
+
+Usual tactics can spit out subgoals that do not actually imply the goal. Zag packages every automation step as a **`Refinement`**: "here are the subgoals, plus a *checked* proof that they suffice."
+
 ```lean
-structure Refinement ctx ctxTy ctxTerm {E} [Language ctx.primCtx E] (goal : Pr E) where
-  goals : List (Pr E)
-  prove : (∀ subgoal, subgoal ∈ goals →
-    Language.Provable ... subgoal) → Language.Provable ... goal
-
-abbrev Tactic ctx ctxTy ctxTerm E [Language ctx.primCtx E] :=
-  (goal : Pr E) → Refinement ctx ctxTy ctxTerm goal
-
-abbrev Tactic? ctx ctxTy ctxTerm E [Language ctx.primCtx E] :=
-  (goal : Pr E) → Option (Refinement ctx ctxTy ctxTerm goal)
+structure Refinement ... (goal : Pr E) where
+  goals : List (Pr E)   -- what is left to prove
+  prove : (all goals provable) → goal provable   -- Lean checks this
 ```
 
-A `Refinement` for a `goal` produces a list of sub`goals` together with `prove`: a proof that provability of all the subgoals implies provability of the goal. `ctxTy` and `ctxTerm` are the ambient variable context, while `E` identifies the language in which the goal is written. Because `prove` is checked, a refinement whose subgoals do not imply its goal cannot be constructed. Lean's kernel already prevents false theorems; `Refinement` additionally makes each reduction valid by construction and each tactic an ordinary terminating Lean function.
+A **`Tactic`** is just a function `goal → Refinement goal`. It may close the goal (`goals = []`), split it, or get stuck. Because `prove` is typed, an unsound split does not compile.
 
-A `Tactic` is a total function from every goal in language `E` to a certified refinement of that same goal. It may close the goal, reduce it to new subgoals, or leave it unchanged with `Refinement.stuck`. A `Tactic?` can instead return `none` to say that it does not apply. `Tactic?.orElse` can then try another tactic without comparing goals for equality, while `Tactic?.toTactic` turns a final `none` into a stuck refinement containing the original goal.
-
-Refinements and tactics compose. Given a refinement that emits subgoals, `refine` ([`Zag/Meta.lean`](Zag/Meta.lean)) replaces each subgoal with another refinement; `Tactic.andThen` performs that operation with a tactic, and `Tactic.iterate` applies a tactic under bounded fuel. `Tactic.raise` and `Tactic?.raise` reuse core `Term` tactics for reflecting surface languages. This builds a tree whose leaves are closed by Lean proofs, with the certificate threaded through automatically. Concretely, `iterate n step goal` unfolds as:
+Tactics compose like a proof tree. One step turns a goal into subgoals; the next step works on each of those:
 
 ```
-iterate n step goal  =
-  if n = 0 then  step goal                          -- emit subgoals as-is
-  else           (step goal).refine                 -- replace each subgoal:
-                   fun g _ => iterate (n-1) step g  --   recurse with less fuel
+        G                         -- original goal
+     /  |  \
+   t₁  t₂  t₃                     -- after tactic step
+   |        |
+  t₁₁      t₃₁  t₃₂               -- after another step
+   ✓        ✓    ✓                -- leaves closed
 ```
 
-So for `n = 3`, expanding one branch:
-
-```
-                  iterate 3 step goal
-                          |
-                     step goal
-                   goals: [g₁, g₂, g₃]
-                          |
-              refine: replace each subgoal with iterate 2
-                 /                   |                   \
-        iterate 2 step g₁      (closed)           iterate 2 step g₃
-         goals: [g₁₁]          goals: []           goals: [g₃₁, g₃₂]
-              |                                       /              \
-        refine g₁₁                              refine g₃₁       refine g₃₂
-              |                                     |                |
-      iterate 1 step g₁₁                   iterate 1 step g₃₁  iterate 1 step g₃₂
-        goals: [g₁₁₁]                       goals: []           goals: []
-              |                                 |                  |
-           refine                            (leaf)             (leaf)
-              |
-      iterate 0 step g₁₁₁
-        goals: output of the final step application
-```
-
-After all branches close, the final program's `.goals` is `[] ++ [] ++ [] = []`. Then `toProvable program hempty` ([`Zag/Meta.lean`](Zag/Meta.lean)) (where `hempty : program.goals = []`) collapses the tree:
-
-```
-toProvable program hempty :
-  (∀ subgoal ∈ program.goals, Provable subgoal) → Provable goal
-     ↑                                ↑
-  trivially true               each leaf's prove
-  (no subgoals)                threads upward through
-                               refine's composition
-```
-
-Each `refine` composes the `prove` fields: the outer refinement's `prove` says "if my subgoals hold, I hold," and each inner refinement's `prove` says the same for its own subgoals. Fuel `n` permits `n` recursive refinements after the initial step, so a branch sees at most `n + 1` step applications. `toProvable` checks that the resulting goal list is empty and converts the tree into one proof.
+When every leaf is closed, the `prove` certificates compose upward into a single proof of `G` (`toProvable` in [`Zag/Meta.lean`](Zag/Meta.lean)). Bounded `iterate` is the usual "apply this tactic up to *n* times" driver — same idea as a tactic script, but every edge of the tree is certified.
 
 # embedding a language
+
 
 Zag is a *deep embedding*: programs and types are **data** — values of inductive `Term` and `Ty` types, syntax trees rather than Lean code ([`Zag/Data.lean`](Zag/Data.lean)):
 
@@ -261,158 +224,185 @@ The whole loop is one `recurse` over a struct-packed state `(i, acc)`; `.var 0` 
 
 # propositions, and what it means to prove one
 
-So far `Pr` has just been "the type of propositions." Its parameter records the expression type used at proposition leaves, which lets goals retain their source-language syntax.
+A goal in Zag is not a free-form Lean `Prop`. It is a small piece of **data** (`Pr`) that says something about programs — usually “these two programs are equal at this type.” That restriction is what lets tactics pattern-match on goals and rewrite them safely.
 
-`Pr` is an *inductive datatype* of propositions ([`Zag/Data.lean`](Zag/Data.lean)) — not an arbitrary Lean `Prop`, but a small fixed grammar:
+## Write programs with macros, state goals as equalities
 
-```lean
-inductive Pr (E : Type) where
-  | eq (ctx : List Ty) (ty : Ty) : E → E → Pr E
-  | hasType (ctx : List Ty) : E → Ty → Pr E
-  | and : Pr E → Pr E → Pr E
-  | forallTy   : Pr E → Pr E
-  | forallTerm : Pr E → Pr E
-```
-
-Core goals use `Pr (Term primCtx)`; an SSA-native goal uses `Pr (SSAExpr primCtx)`. Because a `Pr` is *data* with finitely many shapes, a tactic can pattern-match on it and take it apart — peel a `forallTerm`, split an `and`, or lower its leaves and invoke a core tactic. You cannot case-analyse an arbitrary Lean `Prop` like that. Restricting propositions to this grammar is the price that buys structural automation.
-
-A `Pr` is only syntax. Its *meaning* is a genuine Lean proposition, assigned by `Pr.interp` ([`Zag/Theory.lean`](Zag/Theory.lean)), which just reads each shape off as the corresponding logical connective:
+Programs are written with surface macros, not raw constructors ([`Test/Gauss/Rec.lean`](Test/Gauss/Rec.lean)):
 
 ```lean
-Pr.interp ... (.eq ctx ty x y)  =  «x and y are typed-equal at ty»
-Pr.interp ... (.and p q)        =  Pr.interp ... p ∧ Pr.interp ... q
-Pr.interp ... (.forallTerm p)   =  ∀ x, Pr.interp ... p
+-- recursive sum:  n + (n-1) + … + 1
+def lhsProgram (n : Nat) : Term natCtx :=
+  term% { recurse Nat from nat(n) { raw(bodyTerm) } }
+
+-- closed form:  n * (n + 1) / 2
+def rhsTerm (n : Nat) : Term natCtx :=
+  term% {
+    call func(div) [
+      call func(mul) [nat(n), call func(add) [nat(n), nat(1)]],
+      nat(2)
+    ]
+  }
 ```
 
-`Pr.Provable p` ([`Zag/Theory.lean`](Zag/Theory.lean)) is nothing more than *holding a Lean proof of `Pr.interp p`* for a core proposition:
+The claim we want is ordinary English:
 
-```lean
-inductive Pr.Provable ... (p : Pr (Term primCtx)) : Prop
-  | ofProof (proof : Pr.interp ... p)
-```
+> For every `n`, the loop and the closed form compute the same `Nat`.
 
-`Language.Provable` extends this to a surface proposition: it contains a successful `Pr.toTerm?` result and a `Pr.Provable` proof of that core proposition. Thus a surface goal has no separate semantics. A refinement never proves anything unavailable by hand; it only reduces one checked proposition to smaller checked propositions.
-
-**The Gauss example.** The theorem "the loop summing `1 + 2 + ... + n` returns `n * (n + 1) / 2`" is the `Pr` that equates two programs — the loop `lhsProgram n` and the closed form `rhsTerm n`, at type `Nat` ([`Test/Gauss/Rec.lean`](Test/Gauss/Rec.lean)):
+In Zag that is one equality goal:
 
 ```lean
 def gaussStatement (n : Nat) : Pr (Term natCtx) :=
   .eq [] NatTy (lhsProgram n) (rhsTerm n)
+  --   ^^ empty binder context
+  --      ^^^^^ both sides have type Nat
+  --            ^^^^^^^^^^^^^^^^^^^^^^^^^^ the two programs
 ```
 
-The same theorem can remain in SSA syntax ([`Test/Gauss/SSA.lean`](Test/Gauss/SSA.lean)):
+Read `.eq [] NatTy lhs rhs` as: **`lhs = rhs` at type `Nat`**.
+
+You can state the same goal over **SSA** surface syntax ([`Test/Gauss/SSA.lean`](Test/Gauss/SSA.lean)):
 
 ```lean
+def lhsSSA (n : Nat) : SSAExpr natCtx :=
+  ssa% {
+    zero := prim(0 : Nat);
+    one  := prim(1 : Nat);
+    start := prim(n : Nat);
+    acc0 := prim(0 : Nat);
+    loop (i : Nat := start, acc : Nat := acc0) : Nat {
+      cond := gt i zero;
+      if cond {
+        nextI   := call sub [i, one];
+        nextAcc := call add [acc, i];
+        yield nextI, nextAcc
+      } else {
+        acc
+      }
+    }
+  }
+
 def gaussGoalSSA (n : Nat) : Pr (SSAExpr natCtx) :=
   .eq [] NatTy (lhsSSA n) (.ret (.raw (rhsTerm n)))
+```
 
+Lowering the SSA goal recovers the core one:
+
+```lean
 theorem gaussGoalSSA_toTerm (n : Nat) :
     (gaussGoalSSA n).toTerm? = some (gaussStatement n) := rfl
 ```
 
-`Tactic.raise` applies a core tactic after successful lowering and quotes its generated subgoals
-back through `ofTerm`. Partial tactics use `Tactic?.raise`; if one does not apply, `toTactic`
-retains the original SSA goal instead of replacing it with raw quoted core syntax. The test suite
-runs raised structural decomposition and induction and checks this no-op behavior.
+So: **write in `ssa%` / `term%`, prove an equality, transport along lowering.**
 
-Its interpretation `Pr.interp ... (gaussStatement n)` unfolds to two familiar demands: that both programs are well-typed, and that they evaluate to the same `Nat`. The Gauss proof establishes the typing lemmas directly. Zag also provides `Pr.TypeUnification.unifyType` ([`Meta/UnifyType.lean`](Meta/UnifyType.lean)), a core tactic that decomposes `hasType` goals by term structure. For example, `hasType ctx (ite c t e) ty` reduces to typing obligations for the condition and both branches.
+## What “proved” means
+
+A `Pr` is only syntax. Its **meaning** is a real Lean proposition (`Pr.interp`):
+
+| goal shape | means |
+| --- | --- |
+| `.eq … ty lhs rhs` | both sides type at `ty` and evaluate to the same value |
+| `.hasType … e ty` | expression `e` has type `ty` |
+| `.and p q` | both `p` and `q` |
+| `.forallTerm p` | `p` holds for every term (bound as a variable) |
+
+`Pr.Provable p` means: we have a Lean proof of that meaning. Nothing more exotic — refinements only break a checked goal into smaller checked goals.
+
+For Gauss, `.eq [] NatTy (lhsProgram n) (rhsTerm n)` therefore asks for:
+
+1. both programs are well-typed at `Nat`, and  
+2. they evaluate to the same number.
+
+(1) is mostly structural; Zag’s `unifyType` tactic decomposes typing goals. (2) is the real math (induction on `n`).
+
+## Typing automation (sketch)
 
 ```lean
+-- “bodyTerm has type Nat” → subgoals for the if-condition and both branches
 let refinement := Tactic.iterate 20
-  (Pr.TypeUnification.unifyType (ctx := peanoCtx) (ctxTy := []) (ctxTerm := []))
+  (Pr.TypeUnification.unifyType (ctx := peanoCtx) …)
   (.hasType bodyCtx bodyTerm NatTy)
 ```
 
-Here is the goal tree that `iterate` builds for `bodyTerm` — the loop body, an `ite` on a comparison:
-
 ```
-            hasType bodyCtx bodyTerm NatTy
-                        |
-                   unifyType
-                        |
-          ┌─────────────┼─────────────┐
-          |             |             |
-  hasType cond    hasType yield   hasType acc
-   : Bool          : NatTy         : NatTy
-          |             |             |
-       unifyType     unifyType     unifyType
-          |             |             |
-    ┌─────┴─────┐  (app recurse)  (app structProj)
-    |           |       |             |
-  hasType    hasType   ...           ...
-  lhs :Nat  rhs :Nat
-    |           |
- (app proj)  (nat 0)
-    |           |
-  ┌─┴──┐       ok
-  |    |
-hasType hasType
-var 0  structProj
- :Σ    :Nat→Σ
-  |      |
-  ok      ok
+hasType body : Nat
+        │ unifyType
+   ┌────┼────┐
+cond:Bool  then:Nat  else:Nat
+   │         │         │
+  …        …         ok
 ```
 
-Each leaf marked ok can be resolved by `unifyType` matching against `primFuncMatch?`, `varMatch?`, or a known constructor type. Once a refinement has no goals, `Refinement.toProvable` collapses it into a single proof. The evaluation demand is the real mathematics: an ordinary Lean proof that the loop computes the closed form and, crucially, a proof about the loop's executable semantics rather than an unverified translation.
+When every leaf closes, `Refinement.toProvable` collapses the tree into one proof.
 
-Under the hood, `gaussStatement n` is obtained by instantiating a *predicate* ([`Test/Gauss/Rec.lean`](Test/Gauss/Rec.lean)) — a `Pr` with a hole for the input:
+## How the Gauss proof is structured
+
+We prove `gaussStatement n` by **induction on `n`**:
+
+```
+gaussStatement n          -- loop(n) = n*(n+1)/2
+        │
+   ┌────┴────┐
+ base      step
+   │         │
+ n = 0    assume k, prove k+1
+ both sides    one loop iteration
+ evaluate to 0   matches closed form
+```
+
+- **Base:** loop from `0` never enters the body; closed form is `0`.
+- **Step:** one unfold of the loop body turns the IH for `k` into the claim for `k+1`.
+
+Mechanically this is packaged as a `Refinement` tree ([`Meta/Induction.lean`](Meta/Induction.lean), [`Test/Gauss/Rec.lean`](Test/Gauss/Rec.lean)): each node carries a checked `prove` certificate; when the leaves close, the tree collapses to `Pr.Provable … (gaussStatement n)`.
+
+A reusable form is a *predicate* with a hole for the input (same equality, `n` as `var(0)`):
 
 ```lean
+-- P[n]  ≜  loop(n) = n*(n+1)/2
 def gaussPredicate : Pr (Term natCtx) :=
   .eq [] NatTy
-    (.recurse NatTy (.var 0) bodyTerm)           -- loop with input as var 0
-    (.app (.primFunc "div")                       -- closed form with var 0
-      [(.app (.primFunc "mul")
-        [(.var 0), (.app (.primFunc "add") [(.var 0), Term.nat 1])]),
-       Term.nat 2])
+    (term% { recurse Nat from var(0) { raw(bodyTerm) } })
+    (term% {
+      call func(div) [
+        call func(mul) [var(0), call func(add) [var(0), nat(1)]],
+        nat(2)]
+    })
 
--- gaussStatement n = substitute nat(n) for var 0:
-theorem gaussStatement_eq (n : Nat) :
-    gaussStatement n = Pr.Induction.instantiateTermAt 0 gaussPredicate (Term.nat n)
+-- gaussStatement n  =  P with var(0) := nat(n)
 ```
 
-So `gaussStatement n` is literally `gaussPredicate` with `Term.nat n` plugged in for `var 0`. The proof proceeds by *natural-number induction on the predicate itself*: first prove the predicate holds at `0`, then prove it lifts from any `k` to `k + 1`. The full proof tree:
+## Under the hood (optional)
 
-```
- gaussStatement n
- = .eq [] NatTy (lhsProgram n) (rhsTerm n)
-      which is:  instantiateTermAt 0 gaussPredicate (nat n)
-           |
- gaussInductionProgram n                    ← natInductionWithPredicate
-           |                                    instantiates at (nat n)
-      ┌────┴────────────────────────────────┐
-      |                                     |
- BASE: gaussStatement 0               STEP: natStepGoal 0 gaussPredicate
- = .eq [] NatTy                          = .forallNat 0 (.forallNat 1
-     (lhsProgram 0)                          (.implies (isSuccPr 0)
-     (rhsTerm 0))                              (.implies P[1] P[0])))
-      |                                     |
-      |  Pr.interp gives:                 Pr.interp gives:
-      |  1. hasType (lhsProgram 0) NatTy    ∀ x y : Nat,
-      |  2. hasType (rhsTerm 0) NatTy       isSuccPr(x,y) →
-      |  3. lhsProgram 0 ⟶ Val.nat 0        P[x] → P[y]
-      |     rhsTerm 0 ⟶ Val.nat 0           where P[k] = gaussPredicate[k]
-      |                                     |
-      |  (loop with init=0 never enters     natStepGoal_of_literal_step
-      |   the body; closed form 0*1/2=0)         |
-      |                                     ┌────┴────────────┐
-      ok                                    |                 |
-                                    for each literal k:   gaussPredicate_congr
-                                    gaussStatement k →    (swap well-typed term
-                                    gaussStatement(k+1)   for the literal it
-                                         |                evaluates to)
-                                    gaussLiteralStep            |
-                                      [unfold loop body   term.eval = k → P[k]
-                                       one iteration,     term.eval = k+1 → P[k+1]
-                                       show it matches         |
-                                        the closed form]       ok  ok
-                                         |
-                                          ok
-```
-([`Meta/Induction.lean`](Meta/Induction.lean))
-
-At the base, both sides of `.eq` evaluate to `Val.nat 0` — the loop with `init=0` never enters the body (the condition `0 > 0` is false), and the closed form `0 * 1 / 2 = 0`. At each induction step, `gaussLiteralStep` ([`Test/Gauss/Rec.lean`](Test/Gauss/Rec.lean)) unfolds exactly one loop iteration: given that `lhsProgram k` evaluates to `k*(k+1)/2` (extracted from the inductive hypothesis via `rhsTerm_eval_rhs`), it shows that `lhsProgram (k+1)` evaluates to `(k+1)*(k+2)/2` by chaining `cond_eval_succ` (the condition is true when `i = k+1`) and `step_eval_succ` (the body adds `k+1` to the accumulator). `gaussPredicate_congr` handles the bookkeeping of swapping a well-typed term `t` for the concrete `nat k` it evaluates to, so the step proved at the literal level lifts back to the term-quantified `natStepGoal`. Every edge carries a `prove` certificate; the whole tree collapses into a single `Pr.Provable natCtx natFuncCtx [] [] (gaussStatement n)`.
+`Pr` is a fixed inductive type ([`Zag/Data.lean`](Zag/Data.lean)): equality, typing, connectives, quantifiers. Core goals use `Pr (Term …)`; surface languages use `Pr (SSAExpr …)`. Finite grammar ⇒ tactics can case-split; arbitrary Lean `Prop` cannot. `Language.Provable` = successful lowering + `Pr.Provable` on the core goal.
 
 # what you trust
 
-That closes the loop on the opening promise. The trust base is the language specification: `PrimitiveCtx`, `PrimFuncCtx`, and the partial lowering that connects surface syntax to core `Term`. The `Refinement` layer above it, including `unifyType` and induction, is *total and self-certifying*: each `prove` field is a reduction Lean checks, so a broken reduction is a compile-time type error. Soundness is guaranteed by Lean's kernel; refinements additionally make automation compositional and valid by construction. What remains for a human is the genuine mathematical content, with the surrounding framework ensuring it concerns the actual program semantics.
+The trust base is the language specification: types, primitive ops, and lowering into core `Term`. The `Refinement` layer (including `unifyType` and induction) is total and self-certifying — a broken reduction is a type error. Lean’s kernel rules out false theorems; what remains for humans is the mathematical content about the real program semantics.
+
+# example: AutoCorres-style pipeline
+
+Zag can host a full **lift-then-abstract** chain in the spirit of [AutoCorres](https://trustworthy.systems/projects/OLD/autocorres/): embed a small imperative language, lower control flow to SSA, then rewrite leaves (words, heaps) while composing correspondence proofs.
+
+```
+imperative source          SSA (locals)           abstract SSA
+┌────────────────┐        ┌──────────────┐       ┌──────────────┐
+│  x = x + y;    │ ─lift─▶│  named x, y  │ ─WA──▶│  Nat arithmetic│
+│  if (x < y) …  │        │  word ops    │       │  (+ guards)   │
+└────────────────┘        └──────┬───────┘       └──────────────┘
+                                 │
+                                 ▼ eval
+                            concrete check
+                         e.g. (3,4) ↦ (7,4)
+```
+
+Passes in the chain (each is a plain translation plus a separate correctness theorem):
+
+| stage | role |
+| --- | --- |
+| L1 | exceptions → flagged control flow |
+| L2 | packed state → named locals |
+| HL | byte heap → typed heaps + validity |
+| WA | machine words → `Nat` / `Int` |
+| TS | drop residual failure where impossible |
+
+End-to-end sketches live under [`Lang/Simple/`](Lang/Simple/) and [`Test/AutoCorres.lean`](Test/AutoCorres.lean). The pitch point is the same as everywhere else: one shared evaluator, surface goals as data, and every automation step a checked `Refinement` — including the composed pipeline proof.
