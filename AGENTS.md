@@ -20,4 +20,8 @@
 - Prefer the smallest sound change.
 - Preserve unrelated user changes.
 - Follow the existing concise comment style.
-- Do not add `sorry`, `admit`, or axioms to make proofs pass.
+- Do not add `sorry`, `admit`, or axioms to make existing proofs or refactored
+  downstream targets pass. For genuinely new work outside the existing `Zag`
+  target, user-requested scaffolding may use `sorry` temporarily, but it must
+  not replace an existing substantive proof or test and should be clearly
+  marked as an unfinished obligation.
