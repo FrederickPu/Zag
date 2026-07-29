@@ -89,84 +89,14 @@ theorem lhsProgram_shape (n : Nat) :
   rfl
 
 theorem bodyTerm_hasType : Term.hasType peanoCtx bodyCtx bodyTerm NatTy := by
-  have hstate : Term.hasType peanoCtx bodyCtx (.var 0) stateTy :=
-    Term.hasType.var (idx := ⟨0, by decide⟩) rfl
-  have hmotive : Term.hasType peanoCtx bodyCtx (.var 1) (.func [stateTy] NatTy) :=
-    Term.hasType.var (idx := ⟨1, by decide⟩) rfl
-  have hi : Term.hasType peanoCtx bodyCtx iTerm NatTy := by
-    unfold iTerm iIdx stateTys
-    refine Term.hasType.app (Term.hasType.structProj ⟨0, by decide⟩) rfl ?_
-    intro idx
-    cases idx using Fin.cases with
-    | zero => exact hstate
-    | succ idx => exact Fin.elim0 idx
-  have hacc : Term.hasType peanoCtx bodyCtx accTerm NatTy := by
-    unfold accTerm accIdx stateTys
-    refine Term.hasType.app (Term.hasType.structProj ⟨1, by decide⟩) rfl ?_
-    intro idx
-    cases idx using Fin.cases with
-    | zero => exact hstate
-    | succ idx => exact Fin.elim0 idx
-  have hsub : Term.hasType peanoCtx bodyCtx (.primFunc "sub")
-      (.func [NatTy, NatTy] NatTy) :=
-    Term.hasType.primFunc (idx := ⟨1, by decide⟩)
-  have hadd : Term.hasType peanoCtx bodyCtx (.primFunc "add")
-      (.func [NatTy, NatTy] NatTy) := addFunc_hasType
-  have hnextI : Term.hasType peanoCtx bodyCtx nextITerm NatTy := by
-    unfold nextITerm
-    exact natBinaryApp_hasType hsub hi (natType 1)
-  have hnextAcc : Term.hasType peanoCtx bodyCtx nextAccTerm NatTy := by
-    unfold nextAccTerm
-    exact natBinaryApp_hasType hadd hacc hi
-  have hnextState : Term.hasType peanoCtx bodyCtx nextStateTerm stateTy := by
-    unfold nextStateTerm stateTy
-    refine Term.hasType.app Term.hasType.mkStruct rfl ?_
-    intro idx
-    cases idx using Fin.cases with
-    | zero => exact hnextI
-    | succ idx =>
-        cases idx using Fin.cases with
-        | zero => exact hnextAcc
-        | succ idx => exact Fin.elim0 idx
-  have hyield : Term.hasType peanoCtx bodyCtx yieldTerm NatTy := by
-    unfold yieldTerm
-    refine Term.hasType.app hmotive rfl ?_
-    intro idx
-    cases idx using Fin.cases with
-    | zero => exact hnextState
-    | succ idx => exact Fin.elim0 idx
-  have hcond : Term.hasType peanoCtx bodyCtx condTerm (.prim "Bool") := by
-    unfold condTerm
-    have hout : peanoCtx.opCtx.outTy? "gt" [NatTy, NatTy] = some (.prim "Bool") := by
-      unfold OpCtx.outTy?
-      rw [Peano.Model.gtOp]
-      simp [Op.compare]
-    refine Term.hasType.op rfl ?_ hout
-    intro idx
-    cases idx using Fin.cases with
-    | zero => exact hi
-    | succ idx =>
-        cases idx using Fin.cases with
-        | zero => exact natType 0
-        | succ idx => exact Fin.elim0 idx
-  unfold bodyTerm
-  exact Term.hasType.ite hcond hyield hacc
+  unfold bodyTerm yieldTerm nextStateTerm nextAccTerm nextITerm condTerm accTerm iTerm
+    accIdx iIdx Term.ite Term.nat
+  has_type
 
 theorem loopTerm_hasType (i acc : Nat) : Term.hasType peanoCtx [] (loopTerm i acc) NatTy := by
-  unfold loopTerm
-  refine Term.hasType.recurse ?_ bodyTerm_hasType
-  refine Term.hasType.app Term.hasType.mkStruct rfl ?_
-  intro idx
-  cases idx with
-  | mk val isLt =>
-      cases val with
-      | zero => exact natType i
-      | succ val =>
-          cases val with
-          | zero => exact natType acc
-          | succ _ =>
-              simp at isLt
-              omega
+  unfold loopTerm bodyTerm yieldTerm nextStateTerm nextAccTerm nextITerm condTerm accTerm
+    iTerm accIdx iIdx Term.ite Term.nat
+  has_type
 
 theorem lhsProgram_hasType (n : Nat) :
     Term.hasType peanoCtx [] (lhsProgram n) NatTy := by

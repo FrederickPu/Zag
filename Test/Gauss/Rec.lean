@@ -41,79 +41,18 @@ def loopRecCtx (env : List (Val natCtx)) : Term.MotiveCtx natCtx :=
 noncomputable def loopBodyEval (i : Nat) (env : List (Val natCtx)) : Option (Val natCtx) :=
   Term.evalGo peanoCtx [loopRecCtx env] (loopEnv i env) bodyTerm
 
-private theorem var0_nat {varCtx : VarCtx} (h : varCtx = bodyCtx) :
-    Term.hasType peanoCtx varCtx (.var 0) NatTy := by
-  subst h
-  exact Term.hasType.var (idx := ⟨0, by decide⟩) rfl
-
-private theorem var1_motive {varCtx : VarCtx} (h : varCtx = bodyCtx) :
-    Term.hasType peanoCtx varCtx (.var 1) (.func [NatTy] NatTy) := by
-  subst h
-  exact Term.hasType.var (idx := ⟨1, by decide⟩) rfl
-
-private theorem subFunc_hasType {varCtx : VarCtx} :
-    Term.hasType peanoCtx varCtx (.primFunc "sub") (.func [NatTy, NatTy] NatTy) := by
-  exact Term.hasType.primFunc (idx := ⟨1, by decide⟩)
-
 private theorem addFunc_hasType_aux {varCtx : VarCtx} :
     Term.hasType peanoCtx varCtx (.primFunc "add") (.func [NatTy, NatTy] NatTy) := by
   exact Term.hasType.primFunc (idx := ⟨0, by decide⟩)
 
-private theorem two_args {varCtx : VarCtx} {fn a b : Term natCtx} {ty : Ty}
-    (hfn : Term.hasType peanoCtx varCtx fn (.func [ty, ty] ty))
-    (ha : Term.hasType peanoCtx varCtx a ty)
-    (hb : Term.hasType peanoCtx varCtx b ty) :
-    Term.hasType peanoCtx varCtx (.app fn [a, b]) ty := by
-  refine Term.hasType.app hfn rfl ?_
-  intro idx
-  cases idx using Fin.cases with
-  | zero => exact ha
-  | succ idx =>
-      cases idx using Fin.cases with
-      | zero => exact hb
-      | succ idx => exact Fin.elim0 idx
-
-private theorem one_arg {varCtx : VarCtx} {fn a : Term natCtx} {ty rty : Ty}
-    (hfn : Term.hasType peanoCtx varCtx fn (.func [ty] rty))
-    (ha : Term.hasType peanoCtx varCtx a ty) :
-    Term.hasType peanoCtx varCtx (.app fn [a]) rty := by
-  refine Term.hasType.app hfn rfl ?_
-  intro idx
-  cases idx using Fin.cases with
-  | zero => exact ha
-  | succ idx => exact Fin.elim0 idx
-
-private theorem gt_hasType {varCtx : VarCtx} {a b : Term natCtx}
-    (ha : Term.hasType peanoCtx varCtx a NatTy)
-    (hb : Term.hasType peanoCtx varCtx b NatTy) :
-    Term.hasType peanoCtx varCtx (.op "gt" [a, b]) (.prim "Bool") := by
-  have hout : peanoCtx.opCtx.outTy? "gt" [NatTy, NatTy] = some (.prim "Bool") := by
-    unfold OpCtx.outTy?
-    rw [Peano.Model.gtOp]
-    simp [Op.compare]
-  refine Term.hasType.op rfl ?_ hout
-  intro idx
-  cases idx using Fin.cases with
-  | zero => exact ha
-  | succ idx =>
-      cases idx using Fin.cases with
-      | zero => exact hb
-      | succ idx => exact Fin.elim0 idx
-
 theorem bodyTerm_hasType : Term.hasType peanoCtx bodyCtx bodyTerm NatTy := by
-  unfold bodyTerm stepTerm recurseTerm prevTerm condTerm iTerm
-  refine Term.hasType.ite ?hcond ?hthen ?helse
-  · exact gt_hasType (var0_nat rfl) (natType 0)
-  · exact two_args addFunc_hasType_aux
-      (one_arg (var1_motive rfl)
-        (two_args subFunc_hasType (var0_nat rfl) (natType 1)))
-      (var0_nat rfl)
-  · exact natType 0
+  unfold bodyTerm stepTerm recurseTerm prevTerm condTerm iTerm Term.ite Term.nat
+  has_type
 
 theorem lhsProgram_hasType (n : Nat) :
     Term.hasType peanoCtx [] (lhsProgram n) NatTy := by
-  unfold lhsProgram
-  exact Term.hasType.recurse (natType n) bodyTerm_hasType
+  unfold lhsProgram bodyTerm stepTerm recurseTerm prevTerm condTerm iTerm Term.ite Term.nat
+  has_type
 
 theorem addFunc_hasType {varCtx : VarCtx} :
     Term.hasType peanoCtx varCtx (.primFunc "add") (.func [NatTy, NatTy] NatTy) :=
@@ -143,11 +82,8 @@ theorem natBinaryApp_hasType {varCtx : VarCtx} {fn lhs rhs : Term natCtx}
 
 theorem rhsTerm_hasType (n : Nat) :
     Term.hasType peanoCtx [] (rhsTerm n) NatTy := by
-  unfold rhsTerm
-  exact natBinaryApp_hasType divFunc_hasType
-    (natBinaryApp_hasType mulFunc_hasType (natType n)
-      (natBinaryApp_hasType addFunc_hasType (natType n) (natType 1)))
-    (natType 2)
+  unfold rhsTerm Term.nat
+  has_type
 
 theorem lhsProgram_subst_nil (n : Nat) :
     Term.subst [] (lhsProgram n) = lhsProgram n := by
@@ -417,15 +353,11 @@ def gaussInductionProgram (n : Nat) :
 
 theorem gaussProvable (n : Nat) :
     Pr.Provable peanoCtx [] [] (gaussStatement n) := by
-  simp only [← Language.Provable_term]
-  apply (gaussInductionProgram n).prove
-  intro _subgoal hsubgoal
-  cases hsubgoal with
-  | head => exact ⟨_, Pr.toTerm?_term _, gaussBaseProvable⟩
-  | tail _ htail =>
-      cases htail with
-      | head => exact ⟨_, Pr.toTerm?_term _, gaussInductionStepProvable⟩
-      | tail _ hrest => cases hrest
+  applyRefinement (gaussInductionProgram n)
+  · cases gaussBaseProvable with
+    | ofProof proof => exact proof
+  · cases gaussInductionStepProvable with
+    | ofProof proof => exact proof
 
 example : Pr.Provable peanoCtx [] [] (gaussStatement 100) :=
   gaussProvable 100

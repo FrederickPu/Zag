@@ -615,7 +615,6 @@ def unifyType {ctx : Ctx} [Peano.Model ctx]
     simp only [Language.Provable_term] at proveSubgoals ⊢
     exact unifyType_sound proveSubgoals
 
-
 /-! ### Completeness
 
 `Tactic.CompleteOn unifyType (hasType ·)`: every provable `hasType` goal is closed
@@ -639,6 +638,31 @@ end
 private theorem list_map_subst_nil (varCtx : List Ty) :
     varCtx.map (Ty.subst []) = varCtx :=
   Ty.subst_nil_list varCtx
+
+theorem hasType_of_provable {ctx : Ctx} {varCtx : VarCtx}
+    {term : Term ctx.primCtx} {ty : Ty}
+    (h : Pr.Provable ctx [] [] (.hasType varCtx term ty)) :
+    Term.hasType ctx varCtx term ty := by
+  cases h with
+  | ofProof proof =>
+      simpa [Pr.interp, Term.subst, Ty.subst_nil, list_map_subst_nil] using proof
+
+syntax (name := hasTypeTactic) "has_type" : tactic
+syntax (name := reduceUnifyType) "reduce_unify_type" : tactic
+
+macro_rules
+| `(tactic| reduce_unify_type) =>
+    `(tactic|
+      simp [unifyType, unifyTypeGoals, unifyTypeHasTypeGoals, unifyTypeArgGoals,
+        inferType?, inferTypes?, inferFuncArgs?, primFuncMatch?, varMatch?,
+        PrimFuncCtx.get?, PrimFunc.ty, PrimFunc.outTy, OpCtx.get?, OpCtx.outTy?,
+        Ty.subst, Lib.Peano.peanoCtx, Lib.Peano.natOpCtx, Lib.Peano.natFuncCtx,
+        Lib.Peano.natBinaryFunc, Lib.Peano.succFunc, Peano.opCtx, Term.nat,
+        Term.bool, Term.ite, Op.ite, Op.eq, Op.compare])
+| `(tactic| has_type) =>
+    `(tactic|
+      apply Pr.TypeUnification.hasType_of_provable <;>
+      applyTactic Pr.TypeUnification.unifyType reducing_by reduce_unify_type)
 
 private theorem list_find?_eq_of_getElem_nodup {α : Type _} {β : Type _}
     (l : List (α × β)) [DecidableEq α]

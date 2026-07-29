@@ -1,3 +1,4 @@
+import Lean.Elab.Tactic
 import Zag.Meta.Language
 
 namespace Zag
@@ -36,6 +37,35 @@ theorem toProvable {goal : Pr E} (refinement : Refinement ctx ctxTy ctxTerm goal
   intro subgoal hsubgoal
   rw [closed] at hsubgoal
   cases hsubgoal
+
+inductive InterpretsGoals (ctx : Ctx) (ctxTy : List Ty) (ctxTerm : List (Term ctx.primCtx)) :
+    List (Pr (Term ctx.primCtx)) → Prop where
+  | nil : InterpretsGoals ctx ctxTy ctxTerm []
+  | cons {goal : Pr (Term ctx.primCtx)} {rest : List (Pr (Term ctx.primCtx))} :
+      Pr.interp ctx ctxTy ctxTerm goal → InterpretsGoals ctx ctxTy ctxTerm rest →
+      InterpretsGoals ctx ctxTy ctxTerm (goal :: rest)
+
+theorem InterpretsGoals.get {goals : List (Pr (Term ctx.primCtx))}
+    (interps : InterpretsGoals ctx ctxTy ctxTerm goals) {goal : Pr (Term ctx.primCtx)}
+    (hgoal : goal ∈ goals) : Pr.interp ctx ctxTy ctxTerm goal := by
+  induction interps with
+  | nil => simp at hgoal
+  | cons head _ ih =>
+      simp only [List.mem_cons] at hgoal
+      cases hgoal with
+      | inl h => exact h ▸ head
+      | inr h => exact ih h
+
+theorem sound {goal : Pr (Term ctx.primCtx)}
+    (refinement : Refinement ctx ctxTy ctxTerm goal)
+    (subgoals : InterpretsGoals ctx ctxTy ctxTerm refinement.goals) :
+    Pr.interp ctx ctxTy ctxTerm goal := by
+  have proof := refinement.prove fun subgoal hsubgoal => by
+    simp only [Language.Provable_term]
+    exact .ofProof (subgoals.get hsubgoal)
+  simp only [Language.Provable_term] at proof
+  cases proof with
+  | ofProof result => exact result
 
 def refine {goal : Pr E} (refinement : Refinement ctx ctxTy ctxTerm goal)
     (next : ∀ subgoal, subgoal ∈ refinement.goals → Refinement ctx ctxTy ctxTerm subgoal) :
@@ -89,6 +119,103 @@ theorem refine_invertible {goal : Pr E} (refinement : Refinement ctx ctxTy ctxTe
   exact hnext subgoal hsubgoal (hrefinement hgoal subgoal hsubgoal) generated hgeneratedNext
 
 end Refinement
+
+open Lean Elab Tactic Meta
+
+structure RefinementNormalizeAttribute where
+  attr : AttributeImpl
+  ext : PersistentEnvExtension Name Name (Array Name)
+deriving Inhabited
+
+initialize refinementNormalizeAttr : RefinementNormalizeAttribute ← do
+  let ext ← registerPersistentEnvExtension {
+    name := `refinementNormalizeExtension
+    mkInitial := pure #[]
+    addImportedFn := fun _ => pure #[]
+    addEntryFn := fun entries name => entries.push name
+    exportEntriesFn := fun entries => entries
+  }
+  let attr : AttributeImpl := {
+    name := `refinement_normalize
+    descr := "register a semantic rewrite used to normalize reflected refinement subgoals"
+    add := fun decl stx kind => do
+      Attribute.Builtin.ensureNoArgs stx
+      unless kind == AttributeKind.global do throwAttrMustBeGlobal `refinement_normalize kind
+      modifyEnv fun env => ext.addEntry env decl
+  }
+  registerBuiltinAttribute attr
+  pure { attr, ext }
+
+def RefinementNormalizeAttribute.getEntries (attr : RefinementNormalizeAttribute)
+    (env : Environment) : Array Name :=
+  let state := attr.ext.toEnvExtension.getState env
+  state.importedEntries.flatMap id ++ state.state
+
+private partial def expandRefinementGoals (goal : MVarId) : TacticM (List MVarId) := do
+  let target ← instantiateMVars (← goal.getType)
+  let args := target.getAppArgs
+  let goals ← withTransparency .all do whnf args.back!
+  let target := mkAppN target.getAppFn (args.pop.push goals)
+  let goal ← withTransparency .all do goal.change target
+  try
+    let generated ← goal.apply (mkConst ``Refinement.InterpretsGoals.cons)
+    match generated with
+    | [head, tail] => return head :: (← expandRefinementGoals tail)
+      | _ => throwError "unexpected Refinement.InterpretsGoals.cons goals"
+  catch _ =>
+    let generated ← goal.apply (mkConst ``Refinement.InterpretsGoals.nil)
+    unless generated.isEmpty do
+      throwError "unexpected Refinement.InterpretsGoals.nil goals"
+    return []
+
+elab "refinement_goals" : tactic => do
+  let goals ← expandRefinementGoals (← getMainGoal)
+  replaceMainGoal goals
+
+elab "normalize_refinement_goal" : tactic => do
+  let original ← (← getMainGoal).withContext do
+    pure (← getLCtx).getFVarIds
+  evalTactic (← `(tactic| try simp_all; intros))
+  let rewrites ← refinementNormalizeAttr.getEntries (← getEnv) |>.mapM fun name =>
+    let ident := mkIdent name
+    `(Lean.Parser.Tactic.rwRule| $ident:ident)
+  for rewrite in rewrites do
+    evalTactic (← `(tactic| try rw [$rewrite] at *))
+  evalTactic (← `(tactic| try simp_all))
+  let goal ← getMainGoal
+  let introduced ← goal.withContext do
+    pure <| (← getLCtx).getFVarIds.filter fun fvar => !original.contains fvar
+  let (_, goal) ← goal.revert introduced
+  replaceMainGoal [goal]
+  evalTactic (← `(tactic| try simp_all))
+
+syntax (name := applyRefinement) "applyRefinement " term : tactic
+
+macro_rules
+| `(tactic| applyRefinement $refinement) =>
+    `(tactic|
+      refine Pr.Provable.ofProof ?_ <;>
+      apply Refinement.sound ($refinement) <;>
+      refinement_goals <;>
+      simp_all)
+
+syntax (name := applyTactic) "applyTactic " term : tactic
+syntax (name := applyTacticReducing) "applyTactic " term " reducing_by " tactic : tactic
+
+macro_rules
+| `(tactic| applyTactic $tactic) =>
+    `(tactic|
+      refine Pr.Provable.ofProof ?_ <;>
+      apply Refinement.sound (($tactic) _) <;>
+      refinement_goals <;>
+      normalize_refinement_goal)
+| `(tactic| applyTactic $tactic reducing_by $reducer:tactic) =>
+    `(tactic|
+      refine Pr.Provable.ofProof ?_ <;>
+      apply Refinement.sound (($tactic) _) <;>
+      $reducer:tactic <;>
+      refinement_goals <;>
+      normalize_refinement_goal)
 
 def Refinement.raise {ctx : Ctx} {ctxTy : List Ty} {ctxTerm : List (Term ctx.primCtx)}
     {E : Type} [Language.Reflects ctx.primCtx E] {goal : Pr E} {termGoal : Pr (Term ctx.primCtx)}
@@ -199,7 +326,7 @@ namespace Refinement
 private def structuralGoals {ctx : Ctx} : Pr (Term ctx.primCtx) → List (Pr (Term ctx.primCtx))
 | .and p q => structuralGoals p ++ structuralGoals q
 | .forallTy p => (structuralGoals p).map Pr.forallTy
-| .forallTerm p => (structuralGoals p).map Pr.forallTerm
+| p@(.forallTerm _) => [p]
 | p => [p]
 
 private theorem structuralInterprets {ctx : Ctx}
@@ -243,16 +370,10 @@ private theorem structuralInterprets {ctx : Ctx}
           exact List.mem_map.mpr ⟨subgoal, hsubgoal, rfl⟩)
       cases hforall with
       | ofProof proof => exact Pr.Provable.ofProof (proof α)
-  | forallTerm p ih =>
-      intro proveSubgoals x
-      apply ih
-      intro subgoal hsubgoal
-      have hforall : Pr.Provable ctx ctxTy ctxTerm (.forallTerm subgoal) :=
-        proveSubgoals (.forallTerm subgoal) (by
-          change .forallTerm subgoal ∈ (structuralGoals p).map Pr.forallTerm
-          exact List.mem_map.mpr ⟨subgoal, hsubgoal, rfl⟩)
-      cases hforall with
-      | ofProof proof => exact Pr.Provable.ofProof (proof x)
+  | forallTerm p _ =>
+      intro proveSubgoals
+      cases proveSubgoals (.forallTerm p) (by simp [structuralGoals]) with
+      | ofProof proof => exact proof
 def structural {ctx : Ctx}
     {ctxTy : List Ty} {ctxTerm : List (Term ctx.primCtx)} (goal : Pr (Term ctx.primCtx)) :
     Refinement ctx ctxTy ctxTerm goal where

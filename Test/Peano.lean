@@ -6,19 +6,20 @@ namespace Zag
 open Lib.Peano
 open Pr.TypeUnification
 
-/- Recursive `unifyType` closes well-typed operator applications outright. -/
-private def ltGoal : Pr (Term natCtx) :=
-  Pr.hasType [] (.op "lt" [Term.nat 1, Term.nat 2]) Peano.BoolTy
+/- Recursive `unifyType` closes raw typing goals with symbolic literal payloads. -/
+example (m n : Nat) :
+    Term.hasType peanoCtx [] (.op "lt" [Term.nat m, Term.nat n]) Peano.BoolTy := by
+  has_type
 
-example : (unifyType (ctx := peanoCtx) (ctxTy := []) (ctxTerm := []) ltGoal).goals.length = 0 := by
-  native_decide
+example (condition : Bool) (m n : Nat) :
+    Term.hasType peanoCtx [] (Term.ite (Term.bool condition) (Term.nat m) (Term.nat n))
+      Peano.NatTy := by
+  has_type
 
-private def iteGoal : Pr (Term natCtx) :=
-  Pr.hasType [] (.op "ite" [Term.bool true, Term.nat 1, Term.nat 2]) Peano.NatTy
-
-example :
-    (unifyType (ctx := peanoCtx) (ctxTy := []) (ctxTerm := []) iteGoal).goals.length = 0 := by
-  native_decide
+example (m n : Nat) :
+    Term.hasType peanoCtx [] (.app (.primFunc "add") [Term.nat m, Term.nat n])
+      Peano.NatTy := by
+  has_type
 
 private abbrev comparisonCtx : PrimitiveCtx :=
   .ofPrims [
