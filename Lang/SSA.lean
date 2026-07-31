@@ -216,6 +216,53 @@ instance instLanguageSSAExpr (primCtx : PrimitiveCtx) : Language.Reflects primCt
   ofTerm term := .ret (.raw term)
   toTerm?_ofTerm _ := rfl
 
+def SSAExpr.eval (ctx : Ctx) (env : List (Val ctx.primCtx))
+    (expr : SSAExpr ctx.primCtx) : Option (Val ctx.primCtx) := do
+  let term ← SSAExpr.toTerm? expr {}
+  Term.eval ctx env term
+
+def SSAExpr.EvaluatesTo (ctx : Ctx) (env : List (Val ctx.primCtx))
+    (expr : SSAExpr ctx.primCtx) (value : Val ctx.primCtx) : Prop :=
+  expr.eval ctx env = some value
+
+/--
+Evaluate an SSA expression as a suspended computation in the context's monad.
+The extra `Option` is Zag's existing stuck-computation observation for `Ty.m`;
+state, exceptions, and nondeterminism remain choices of `ctx.primCtx.M`.
+-/
+def SSAExpr.evalM? (ctx : Ctx) (env : List (Val ctx.primCtx))
+    (resultTy : Ty) (expr : SSAExpr ctx.primCtx) :
+    Option (ctx.M (Option (resultTy.type ctx.primCtx))) := do
+  let value <- expr.eval ctx env
+  let computation <- value.as? (.m resultTy)
+  some (Ty.toM ctx.primCtx resultTy computation)
+
+/-- A typed monadic SSA evaluation, independent of the chosen context monad. -/
+def SSAExpr.EvaluatesMTo (ctx : Ctx) (env : List (Val ctx.primCtx))
+    (resultTy : Ty) (expr : SSAExpr ctx.primCtx)
+    (computation : ctx.M (Option (resultTy.type ctx.primCtx))) : Prop :=
+  expr.evalM? ctx env resultTy = some computation
+
+/--
+  A valid SSA refinement converts source syntax to target syntax while reflecting
+  every successful target evaluation back to the source dialect.
+-/
+structure Refinement (source target : Ctx) where
+  convert : SSAExpr source.primCtx → Option (SSAExpr target.primCtx)
+  mapValue : Val target.primCtx → Val source.primCtx
+  valid : ∀ sourceExpr targetExpr targetEnv targetValue,
+    convert sourceExpr = some targetExpr →
+    targetExpr.EvaluatesTo target targetEnv targetValue →
+    sourceExpr.EvaluatesTo source (targetEnv.map mapValue) (mapValue targetValue)
+
+def Refinement.refl (ctx : Ctx) : Refinement ctx ctx where
+  convert := some
+  mapValue := id
+  valid := by
+    intro sourceExpr targetExpr targetEnv targetValue hconvert heval
+    cases hconvert
+    simpa using heval
+
 def LoopScope.phi {primCtx : PrimitiveCtx} {state : List SSAVar} (scope : LoopScope state)
     (idx : Fin state.length) : SSAValue primCtx :=
   .phi scope idx

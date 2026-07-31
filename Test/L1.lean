@@ -54,7 +54,7 @@ theorem catch_throw_skip :
 theorem seq_throw_skip :
     run (.Seq .Throw .Skip) 3 4 = some (false, true, 3, 4) := by native_decide
 theorem guard_false_fault :
-    run (.Guard boolFalse .Skip) 3 4 = some (true, false, 3, 4) := by native_decide
+    run (.Guard boolFalse .Skip) 3 4 = none := by native_decide
 theorem guard_true_skip :
     run (.Guard boolTrue .Skip) 3 4 = some (false, false, 3, 4) := by native_decide
 theorem seq_skip_skip :
@@ -69,15 +69,8 @@ theorem exception_ladder :
     run .Throw 0 0 = some (false, true, 0, 0) ∧
     run (.Catch .Throw .Skip) 0 0 = some (false, false, 0, 0) ∧
     run (.Seq .Throw .Skip) 0 0 = some (false, true, 0, 0) ∧
-    run (.Guard boolFalse .Skip) 0 0 = some (true, false, 0, 0) := by
+    run (.Guard boolFalse .Skip) 0 0 = none := by
   native_decide
-
-theorem shapes :
-    toSSA_skip (ctx := ctx) (proc := Proc) (fault := Fault) =
-      toSSA_skip (ctx := ctx) (proc := Proc) (fault := Fault) ∧
-    toSSA_throw (ctx := ctx) (proc := Proc) (fault := Fault) =
-      toSSA_throw (ctx := ctx) (proc := Proc) (fault := Fault) :=
-  ⟨rfl, rfl⟩
 
 /--
   L1corres-style execution pins (AC L1Defs.thy:54–65):
@@ -96,7 +89,7 @@ theorem l1corres_catch_exec :
   catch_throw_skip
 
 theorem l1corres_guard_fault_exec :
-    run (.Guard boolFalse .Skip) 3 4 = some (true, false, 3, 4) :=
+    run (.Guard boolFalse .Skip) 3 4 = none :=
   guard_false_fault
 
 /-- FullState is the L1 ambient carrier (not bare list). -/
@@ -139,7 +132,7 @@ theorem while_true_throw_abrupt :
 theorem l1_matches_bigstep_classes :
     run .Skip 0 0 = some (false, false, 0, 0) ∧
     run .Throw 0 0 = some (false, true, 0, 0) ∧
-    run (.Guard boolFalse .Skip) 0 0 = some (true, false, 0, 0) ∧
+    run (.Guard boolFalse .Skip) 0 0 = none ∧
     run (.While boolFalse .Skip) 0 0 = some (false, false, 0, 0) ∧
     run (.While boolTrue .Throw) 0 0 = some (false, true, 0, 0) := by
   native_decide
@@ -182,11 +175,30 @@ theorem l1corres_throw_word2 :
 theorem l1corres_guard_false_word2 :
     BigStep (ctx := ctx) (proc := Empty) (fault := Unit) Γ uf
       (.Guard boolFalse .Skip)
-      (.normal (stVal (w 3) (w 4))) (.fault uf (stVal (w 3) (w 4))) ∧
-    run (.Guard boolFalse .Skip) 3 4 = some (true, false, 3, 4) := by
+       (.normal (stVal (w 3) (w 4))) (.fault uf (stVal (w 3) (w 4))) ∧
+    run (.Guard boolFalse .Skip) 3 4 = none := by
   refine ⟨BigStep.guardFalse (ctx := ctx) (proc := Empty) (fault := Unit) ?_,
     guard_false_fault⟩
   native_decide
+
+theorem fault_retains_state :
+    Outcome.state? (.fault uf (stVal (w 3) (w 4))) = some (stVal (w 3) (w 4)) := rfl
+
+theorem fault_seq_retains_state :
+    BigStep (ctx := ctx) (proc := Empty) (fault := Unit) Γ uf
+      (.Seq (.Guard boolFalse .Skip) .Skip)
+      (.normal (stVal (w 3) (w 4)))
+      (.fault uf (stVal (w 3) (w 4))) := by
+  apply BigStep.seqFault
+  exact BigStep.guardFalse (by native_decide)
+
+theorem fault_catch_retains_state :
+    BigStep (ctx := ctx) (proc := Empty) (fault := Unit) Γ uf
+      (.Catch (.Guard boolFalse .Skip) .Skip)
+      (.normal (stVal (w 3) (w 4)))
+      (.fault uf (stVal (w 3) (w 4))) := by
+  apply BigStep.catchFault
+  exact BigStep.guardFalse (by native_decide)
 
 /-- L1 is exception rewrite only — still uses packed FullState (not local lift). -/
 theorem l1_skip_still_packed_state :

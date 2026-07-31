@@ -1,0 +1,25 @@
+{
+  "challenge_module": "Comparator.AutoCorres.Challenge",
+  "solution_module": "Comparator.AutoCorres.Solution",
+  "theorem_names": [
+    "Comparator.AutoCorres.simplConv_correct",
+    "Comparator.AutoCorres.localVarExtract_correct",
+    "Comparator.AutoCorres.heapLift_correct",
+    "Comparator.AutoCorres.wordAbstract_correct",
+    "Comparator.AutoCorres.typeStrengthen_correct",
+    "Comparator.AutoCorres.finalChainCorrect"
+  ],
+  "definition_names": [
+    "Comparator.AutoCorres.simplConv",
+    "Comparator.AutoCorres.localVarExtract",
+    "Comparator.AutoCorres.heapLift",
+    "Comparator.AutoCorres.wordAbstract",
+    "Comparator.AutoCorres.typeStrengthen"
+  ],
+  "permitted_axioms": [
+    "propext",
+    "Quot.sound",
+    "Classical.choice"
+  ],
+  "enable_nanoda": false
+}

@@ -14,8 +14,8 @@ import Lib.Peano
   }
   ```
 
-  Source is `C0.W2.gaussStmt` → `elab` → `Com` → L2 → eval.
-  WA is exercised separately (`gauss_WA`); no Corres proof claimed.
+  Source is `C0.W2.gaussStmt` → `elab` → the experimental fused local rewrite.
+  `gauss_WA'` is syntax transport only, not a live WordAbstract result.
 -/
 
 namespace Zag.Test.Gauss.Simple
@@ -24,28 +24,28 @@ open Lang.Simple.C0.W2
 open Lang.Simple.ABI
 
 def gaussProgram := gauss
-def gauss_L2' := gauss_L2
+def gauss_fused := gauss_fusedL2
 def gauss_WA' := gauss_WA
 
 theorem gauss_from_c0 : (toCom gaussStmt).isSome = true := gauss_elab
 
-theorem gauss_lifts : gauss_L2'.isSome = true := by native_decide
+theorem gauss_fused_rewrite_succeeds : gauss_fused.isSome = true := by native_decide
 
 def closedForm (n : Nat) : Nat := n * (n + 1) / 2
 
 theorem gauss_eval_5 :
-    (do let s ← gauss_L2'; eval_L2_nats s 5 0) = some (0, closedForm 5) := by
+    (do let s ← gauss_fused; eval_L2_nats s 5 0) = some (0, closedForm 5) := by
   native_decide
 
 theorem gauss_eval_0 :
-    (do let s ← gauss_L2'; eval_L2_nats s 0 0) = some (0, closedForm 0) := by
+    (do let s ← gauss_fused; eval_L2_nats s 0 0) = some (0, closedForm 0) := by
   native_decide
 
 theorem gauss_eval_10 :
-    (do let s ← gauss_L2'; eval_L2_nats s 10 0) = some (0, closedForm 10) := by
+    (do let s ← gauss_fused; eval_L2_nats s 10 0) = some (0, closedForm 10) := by
   native_decide
 
-theorem gauss_wa_runs : gauss_WA'.isSome = true := by native_decide
+theorem gauss_unsigned_syntax_rewrites : gauss_WA'.isSome = true := by native_decide
 
 theorem closedForm_examples :
     closedForm 0 = 0 ∧ closedForm 5 = 15 ∧ closedForm 10 = 55 := by

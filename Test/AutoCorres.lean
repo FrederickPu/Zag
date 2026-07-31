@@ -3,7 +3,9 @@ import Lib.Peano
 import Test.L1
 
 /-!
-  Full AutoCorres pipeline demos: L1 → L2 → HL → WA → TS.
+  AutoCorres-shaped executable pipeline and correspondence scaffolding.
+  The quantified per-phase proofs and end-to-end chain are intentionally not
+  claimed until their obligations are implemented.
 -/
 
 namespace Zag.Test.AutoCorres
@@ -20,29 +22,72 @@ open Zag.Test.L1 (run boolFalse)
 theorem add_from_c0 : (toCom addStmt).isSome = true := add_elab
 theorem max_from_c0 : (toCom maxStmt).isSome = true := max_elab
 
-theorem add_lifts : add_L2.isSome = true := by native_decide
-theorem max_lifts : max_L2.isSome = true := by native_decide
+theorem add_fused_rewrite : add_fusedL2.isSome = true := by native_decide
+theorem max_fused_rewrite : max_fusedL2.isSome = true := by native_decide
 
 def w (n : Nat) : Word := Word.ofNat n
 
 theorem add_eval_3_4 :
-    (do let s ← add_L2; eval_L2 s (w 3) (w 4)) = some (w 7, w 4) := by
+    (do let s ← add_fusedL2; eval_L2 s (w 3) (w 4)) = some (w 7, w 4) := by
   native_decide
 
 theorem max_eval_3_5 :
-    (do let s ← max_L2; eval_L2 s (w 3) (w 5)) = some (w 5, w 5) := by
+    (do let s ← max_fusedL2; eval_L2 s (w 3) (w 5)) = some (w 5, w 5) := by
   native_decide
 
 theorem max_eval_7_2 :
-    (do let s ← max_L2; eval_L2 s (w 7) (w 2)) = some (w 7, w 2) := by
+    (do let s ← max_fusedL2; eval_L2 s (w 7) (w 2)) = some (w 7, w 2) := by
   native_decide
 
-theorem add_wa : add_WA.isSome = true := by native_decide
-theorem add_pipeline : add_full.isSome = true := by native_decide
-theorem throw_catch_l1 : throwCatch_L1.isSome = true := by native_decide
+theorem throw_catch_l1_syntax : throwCatch_L1Syntax.isSome = true := by native_decide
 
--- L1 suite: Test/L1.lean (exception ladder)
-example : True := trivial
+/-! The proved phase rules use AC's result-set plus failure-bit semantics. -/
+
+theorem l1_skip_corres :
+    L1corres false Zag.Test.L1.Γ Zag.Test.L1.uf skipResult
+      (.Skip : Com ctx Proc Fault) :=
+  l1corres_skip false Zag.Test.L1.Γ Zag.Test.L1.uf
+
+theorem l1_throw_corres :
+    L1corres false Zag.Test.L1.Γ Zag.Test.L1.uf throwResult
+      (.Throw : Com ctx Proc Fault) :=
+  l1corres_throw false Zag.Test.L1.Γ Zag.Test.L1.uf
+
+def exactSimplEnv : Lang.Simple.SIMPL.Body Nat Proc Fault := fun _ => none
+
+def exactSimplL1Pass :=
+  Lang.Simple.Lift.SIMPL.L1.basePass false exactSimplEnv
+
+theorem exact_simpl_l1_is_nontrivial :
+    exists source target, exactSimplL1Pass.translate source = some target :=
+  exactSimplL1Pass.nontrivial
+
+theorem exact_simpl_basic_is_certified :
+    Lang.Simple.Lift.SIMPL.L1.Certificate false exactSimplEnv
+      (.basic Nat.succ) (.modify Nat.succ) :=
+  exactSimplL1Pass.sound _ _ rfl
+
+def exactLocalModel :
+    Lang.Simple.Lift.SIMPL.L2.LocalModel (Nat × Nat) Unit (Nat × Nat) where
+  projectState := fun _ => ()
+  inputArgs := id
+
+def exactSimplL2Pass := Lang.Simple.Lift.L2.certifiedBasePass exactLocalModel
+
+theorem exact_simpl_l2_is_nontrivial :
+    exists source target, exactSimplL2Pass.translate source = some target :=
+  exactSimplL2Pass.nontrivial
+
+theorem exact_simpl_l2_skip_is_certified :
+    Lang.Simple.Lift.L2.Refinement exactLocalModel (.skip)
+      (fun _ => Lang.Simple.Lift.SIMPL.L2.skip) :=
+  exactSimplL2Pass.sound _ _ rfl
+
+theorem l2_skip_corres :
+    L2.L2corres projectGlobals (fun _ => ()) (fun _ => ()) (fun _ => True)
+      (L2.l2Skip : Globals → Lang.Simple.Corres.XFResult Unit Unit Globals)
+      (L2.l1Skip : FullState → Lang.Simple.Corres.XFResult Unit Unit FullState) :=
+  L2.l2corres_skip projectGlobals (fun _ => ()) (fun _ => True)
 
 /-- WA leaf: bitvector add = nat add when no overflow. -/
 theorem wa_add_leaf (x y : Word)
@@ -67,18 +112,20 @@ theorem skip_pack_eval : Lang.Simple.Word2.evalPackNats 1 2 = some (1, 2) :=
 
 example : Word = BitVec 32 := rfl
 
--- HL (AC HeapLift)
-open Lang.Simple.Lift (heapConcreteCtx chainHL? l1l2Chain? fullExnChain?)
+-- Experimental dense-heap syntax helper (not AC HeapLift).
+open Lang.Simple.Lift (heapConcreteCtx)
 def heapLoad : Zag.Lang.SSA.SSAExpr heapConcreteCtx.primCtx :=
   .ret (.call (.primFunc "heap.load") [.var "h", .var "p"])
-theorem hl_demo : (chainHL? heapLoad).isSome = true := by native_decide
 
 def heapStore : Zag.Lang.SSA.SSAExpr heapConcreteCtx.primCtx :=
   .ret (.call (.primFunc "heap.store") [.var "h", .var "p", .var "w"])
-theorem hl_store : (chainHL? heapStore).isSome = true := by native_decide
 
--- L1→L2 LocalVarExtract (AC LocalVarExtract): shape + eval
-open Lang.Simple.Lift.L2 (evalFromL1? fromL1?)
+theorem dense_heap_load_helper :
+    (Lang.Simple.Lift.HL.rewriteDenseWordHeap? heapLoad).isSome = true := by
+  native_decide
+
+-- Experimental run-then-unpack helper; not LocalVarExtract.
+open Lang.Simple.Lift.L2 (evalFromL1?)
 
 def runL1L2 (cmd : Com ctx Proc Fault) (x y : Nat) : Option (Nat × Nat) := do
   let l1 ← toSSA? (ctx := ctx) (proc := Proc) (fault := Fault) cmd
@@ -89,17 +136,12 @@ def runL1L2 (cmd : Com ctx Proc Fault) (x y : Nat) : Option (Nat × Nat) := do
   some (Word.toNat (State.toWord (fields ⟨0, by decide⟩)),
         Word.toNat (State.toWord (fields ⟨1, by decide⟩)))
 
-theorem skip_l1l2 :
-    (l1l2Chain? (ctx := ctx) (proc := Proc) (fault := Fault) locals
-      (Com.Skip : Com ctx Proc Fault)).isSome = true := by
-  native_decide
-
 theorem skip_l1l2_eval :
     runL1L2 .Skip 3 4 = some (3, 4) := by
   native_decide
 
-theorem throw_l1l2_eval_still_unpacks :
-    runL1L2 .Throw 3 4 = some (3, 4) := by
+theorem throw_l1l2_eval_rejected_by_normal_extract :
+    runL1L2 .Throw 3 4 = none := by
   native_decide
 
 /-- C0 add through L1 exception path (Normal outcome). -/
@@ -124,26 +166,16 @@ theorem max_l1_eval_ge :
 /-- Pure L2 Skip pack matches env (AC L2 skip). -/
 theorem l2_skip_pack :
     (do
-      let e ← L2.fromCom? (sc := ctx) (proc := Proc) (fault := Fault) locals .Skip
+      let e ← L2.fusedFromCom? (sc := ctx) (proc := Proc) (fault := Fault) locals .Skip
       eval_L2 e (w 3) (w 4)) = some (w 3, w 4) := by
   native_decide
 
 /-- Pure L2 add agrees with L1 Normal outcome locals. -/
 theorem l2_add_agrees_l1 :
-    (do let s ← add_L2; eval_L2 s (w 3) (w 4)) = some (w 7, w 4) ∧
+    (do let s ← add_fusedL2; eval_L2 s (w 3) (w 4)) = some (w 7, w 4) ∧
     run add 3 4 = some (false, false, 7, 4) := by
   native_decide
 
-
-theorem throw_catch_l1l2 :
-    (l1l2Chain? (ctx := ctx) (proc := Proc) (fault := Fault) locals
-      throwCatch).isSome = true := by
-  native_decide
-
-theorem skip_full_exn :
-    (fullExnChain? (proc := Proc) (fault := Fault) 2 locals
-      (Com.Skip : Com ctx Proc Fault)).isSome = true := by
-  native_decide
 
 -- Dialect pins (AC state/monad shape)
 theorem dialect_l1_full : (l1Dialect 2).State = FullState := rfl
@@ -152,37 +184,44 @@ theorem dialect_live_Id : (l1Dialect 2).ctx.primCtx.M = Id := rfl
 theorem dialect_l2_keeps_heap :
     (l2Dialect 2).primFns.contains "heap.load" = true := by native_decide
 theorem dialect_hl_w :
-    hlDialect.primFns.contains "heap.w.get" = true := by native_decide
+    (hlDialect 2).primFns.contains "heap.w.get" = true := by native_decide
 theorem dialect_wa_add :
     (waDialect 2).primFns.contains "add" = true := by native_decide
 
 theorem project_globals_heap :
     (projectGlobals ⟨[w 1, w 2], ⟨[w 9]⟩⟩).heap = [w 9] := rfl
 
--- TS identity
-theorem ts_id : (chainTS? abstractNatCtx
-    (Zag.Lang.SSA.SSAExpr.ret (Zag.Lang.SSA.SSAValue.var "x"))).isSome = true := by
-  native_decide
+-- Missing phases are explicit data, not constant-none translators.
+theorem l2_is_unavailable :
+    Lang.Simple.Lift.l2Availability.reason =
+      "Deep-SSA LocalVarExtract has no structural proof-producing translator" := rfl
+
+theorem hl_is_unavailable :
+    Lang.Simple.Lift.hlAvailability.reason =
+      "HeapLift lacks generated lifted globals and typed-heap proofs" := rfl
+
+theorem wa_is_unavailable :
+    Lang.Simple.Lift.waAvailability.reason =
+      "WordAbstract syntax rewrites lack evaluator-backed corresTA proofs" := rfl
+
+theorem ts_is_unavailable :
+    Lang.Simple.Lift.tsAvailability.reason =
+      "TypeStrengthen has no retyped generated definition" := rfl
 
 /-!
   ## AC `ac_corres_chain` — AutoCorres.thy:78–85
 
   There is deliberately **no chain instance here yet.**
 
-  `Corres.AcCorresChain` now forces adjacency in its field types: `cL1` is the
-  abstract side of the L2 link and the concrete side of the HL link, and so on.
-  The previous instance in this file was rejected by the type checker once that
-  landed — it populated the five slots with *four unrelated programs* across two
-  incompatible routes (`Skip`/`Throw` for L1, the **pure** `fromCom?` route for
+  The previous chain instance in this file was rejected by the type checker — it populated the five slots with *four unrelated programs* across two
+  incompatible routes (`Skip`/`Throw` for L1, the fused `fusedFromCom?` helper for
   L2, a hand-written `heapLoad` for HL, and a WA result whose input never went
   through HL), and four of its five slots were `.isSome` facts or `True` rather
   than correspondences.
 
-  What is proved instead, in `Lang/Simple/Corres.lean`:
-
-  * `Corres.CorresXF.merge` — CorresXF.thy:703–706, correspondence composes;
-  * `Corres.AcCorresChain.resolve` — resolves L2∘HL∘WA into one `CorresXF`
-    with AC's composed `st_HL ∘ st_L2` and `rx_WA ∘ rx_L2`.
+  `Corres.lean` now contains the upstream-shaped result-set/failure-bit
+  `CorresXF` relation and its merge theorem. There is no synthetic chain
+  schema: the real `ac_corres_chain` must use actual L1/L2/HL/WA/TS premises.
 
   An instance needs the per-phase corres theorems for the *actual* translators,
   which do not exist yet (see AC_NOTES). The individual execution facts the old
@@ -209,48 +248,20 @@ theorem every_phase_has_a_dialect (p : Phase) : (dialectOf 2 p).phase = p :=
 /-- CP is the C-parser/SIMPL tier; its dialect is the Simpl one. -/
 theorem cp_is_simpl : dialectOf 2 .CP = simplDialect 2 := rfl
 
+/-- Dialect checks inspect primitive functions nested inside raw terms. -/
+theorem l2_rejects_nested_local_abi :
+    Dialect.mentionsOk (l2Dialect 2)
+      (.raw (.app (.primFunc "state.pack.2") [.var 0, .var 1])) = false := by
+  native_decide
+
 /-! ## AC pipeline options — autocorres.ML:35,44 -/
 
-open Lang.Simple.Lift (Options fullChain? chainHLOrSkip? chainWAOrSkip?)
+open Lang.Simple.Lift (Options)
 
 /-- Default options run every phase (AC default: both skips off). -/
 theorem default_options_run_everything :
     ({} : Options).skipHeapAbs = false ∧ ({} : Options).skipWordAbs = false := by
   decide
-
-/-- `skip_word_abs`: the chain completes, staying on concrete words (`Sum.inl`). -/
-theorem add_chain_skip_word_abs_is_concrete :
-    ((fullChain? (proc := Proc) (fault := Fault)
-      { skipWordAbs := true } 2 locals add).map Sum.isLeft) = some true := by
-  native_decide
-
-/--
-  **Known gap** (AC_NOTES "real extract"): with `skip_word_abs` off, the
-  `l1l2Chain?` route cannot reach WA for a body containing `Basic`.
-  `fromL1?` runs the L1 body and *then* reads locals, so the L1 body's raw
-  Simpl terms (`state.set.i`) survive into the WA input — and `waPrimCtx` has
-  no `State` prim at all. AC's LocalVarExtract removes the state instead.
-  Recorded here so the gap cannot silently close or silently widen.
--/
-theorem add_chain_word_abs_blocked_by_run_then_gets :
-    fullChain? (proc := Proc) (fault := Fault) {} 2 locals add = none := by
-  native_decide
-
-/-- The *pure* extract (`fromCom?`) is a real extract, so it does reach WA. -/
-theorem add_pure_chain_reaches_wa :
-    (fullPureChain? (proc := Proc) (fault := Fault) 2 locals add).isSome = true := by
-  native_decide
-
-/-- A `Basic`-free body survives the whole L1→L2→HL→WA→TS chain. -/
-theorem skip_chain_word_abs_is_abstract :
-    ((fullChain? (proc := Proc) (fault := Fault)
-      {} 2 locals (Com.Skip : Com ctx Proc Fault)).map Sum.isRight) = some true := by
-  native_decide
-
-/-- Live HL accepts a heap-free body (so `skip_heap_abs` changes nothing here). -/
-theorem heap_free_hl_succeeds :
-    (do let l2 ← add_L2; chainHLOrSkip? {} l2).isSome = true := by
-  native_decide
 
 /-! ## WA leaves in AC's `abstract_binop` form — WordAbstract.thy:113–170 -/
 
@@ -286,12 +297,14 @@ example : ¬ ((Word.toNat (w 4294967295) + Word.toNat (w 1)) ≤ uwordMax) := by
 /-! ## WA emits AC's overflow guard — WordAbstract.thy:166,168 -/
 
 private def waAdd : Option (Zag.Lang.SSA.SSAExpr abstractNatCtx.primCtx) := do
-  let l2 ← add_L2; chainWA? 2 l2
+  let l2 ← add_fusedL2
+  Lang.Simple.Lift.WA.rewriteUnsigned? abstractNatCtx waFuncMap l2
 
 private def evalWA (x y : Nat) : Option (Zag.Val abstractNatCtx.primCtx) := do
   let e ← waAdd
   let t ← Zag.Lang.SSA.SSAExpr.toTerm? e { vars := [("x", .var 0), ("y", .var 1)] }
-  Zag.Term.eval abstractNatCtx [Zag.Val.nat x, Zag.Val.nat y] t
+  let value? ← Zag.Term.eval abstractNatCtx [Zag.Val.nat x, Zag.Val.nat y] t
+  value?
 
 /-- Below `UWORD_MAX` the abstracted add computes. -/
 theorem wa_add_in_range : (evalWA 3 4).isSome = true := by native_decide

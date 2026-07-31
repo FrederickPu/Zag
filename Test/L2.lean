@@ -6,7 +6,7 @@ import Lib.Peano
 
   **Not L1.** L1 keeps packed `FullState` + exception flags.
   L2 turns `state.get.i` / `state.set.i` into SSA locals `x`,`y`,…
-  (see `Lift/L2.fromCom?` + `stateTermFields?`).
+  (see experimental `Lift/L2.fusedFromCom?` + `stateTermFields?`).
 -/
 
 namespace Zag.Test.L2
@@ -26,17 +26,17 @@ theorem locals_named_xy :
     locals.vars.map (·.name) = ["x", "y"] := by
   native_decide
 
-/-! ## fromCom? lifts Skip → pack of SSA locals -/
+/-! ## The fused helper rewrites Skip to the pack of SSA locals -/
 
 theorem fromCom_skip_shape :
-    fromCom? (sc := ctx) (proc := Proc) (fault := Fault) locals .Skip =
+    fusedFromCom? (sc := ctx) (proc := Proc) (fault := Fault) locals .Skip =
       some (.ret locals.packCurrent) :=
   fromCom_skip locals
 
 /-- Eval under **local env** `[Word, Word]`, not packed `State`. -/
 theorem skip_eval_from_local_env :
     (do
-      let e ← fromCom? (sc := ctx) (proc := Proc) (fault := Fault) locals .Skip
+      let e ← fusedFromCom? (sc := ctx) (proc := Proc) (fault := Fault) locals .Skip
       eval_L2 e (w 1) (w 2)) = some (w 1, w 2) := by
   native_decide
 
@@ -44,14 +44,14 @@ theorem skip_eval_from_local_env :
 
 /-- C0 `x = x + y` lifts and evals on local env. -/
 theorem add_l2_eval :
-    (do let s ← add_L2; eval_L2 s (w 10) (w 20)) = some (w 30, w 20) := by
+    (do let s ← add_fusedL2; eval_L2 s (w 10) (w 20)) = some (w 30, w 20) := by
   native_decide
 
 theorem max_l2_eval :
-    (do let s ← max_L2; eval_L2 s (w 1) (w 9)) = some (w 9, w 9) := by
+    (do let s ← max_fusedL2; eval_L2 s (w 1) (w 9)) = some (w 9, w 9) := by
   native_decide
 
-theorem add_l2_isSome : add_L2.isSome = true := by native_decide
+theorem add_fused_l2_isSome : add_fusedL2.isSome = true := by native_decide
 
 /--
   L2 add does not take a single packed State as the only input —
@@ -59,7 +59,7 @@ theorem add_l2_isSome : add_L2.isSome = true := by native_decide
 -/
 theorem add_l2_two_word_env :
     (do
-      let ssa ← add_L2
+      let ssa ← add_fusedL2
       evalSSAWithLocals? (sc := ctx) locals
         [State.wordVal (w 3), State.wordVal (w 4)] ssa).isSome = true := by
   native_decide
