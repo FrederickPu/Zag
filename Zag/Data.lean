@@ -21,6 +21,8 @@ inductive Ty where
 | struct : List Ty → Ty
 | func : List Ty → Ty → Ty
 | m : Ty → Ty
+/- application of a transparent, named type abbreviation -/
+| «abbrev» : String → List Ty → Ty
 deriving Repr
 
 mutual
@@ -53,6 +55,11 @@ def Ty.decEq : (a b : Ty) → Decidable (a = b)
     match Ty.decEq a b with
     | isTrue h => isTrue (by rw [h])
     | isFalse h => isFalse (fun hc => h (by injection hc))
+| .«abbrev» a as, .«abbrev» b bs =>
+    match String.decEq a b, Ty.decEqList as bs with
+    | isTrue hn, isTrue hs => isTrue (by rw [hn, hs])
+    | isFalse hn, _ => isFalse (fun hc => hn (by injection hc))
+    | _, isFalse hs => isFalse (fun hc => hs (by injection hc))
 | .var _, .prim _ => isFalse nofun
 | .var _, .option _ => isFalse nofun
 | .var _, .union _ => isFalse nofun
@@ -95,6 +102,20 @@ def Ty.decEq : (a b : Ty) → Decidable (a = b)
 | .m _, .union _ => isFalse nofun
 | .m _, .struct _ => isFalse nofun
 | .m _, .func _ _ => isFalse nofun
+| .var _, .«abbrev» _ _ => isFalse nofun
+| .prim _, .«abbrev» _ _ => isFalse nofun
+| .option _, .«abbrev» _ _ => isFalse nofun
+| .union _, .«abbrev» _ _ => isFalse nofun
+| .struct _, .«abbrev» _ _ => isFalse nofun
+| .func _ _, .«abbrev» _ _ => isFalse nofun
+| .m _, .«abbrev» _ _ => isFalse nofun
+| .«abbrev» _ _, .var _ => isFalse nofun
+| .«abbrev» _ _, .prim _ => isFalse nofun
+| .«abbrev» _ _, .option _ => isFalse nofun
+| .«abbrev» _ _, .union _ => isFalse nofun
+| .«abbrev» _ _, .struct _ => isFalse nofun
+| .«abbrev» _ _, .func _ _ => isFalse nofun
+| .«abbrev» _ _, .m _ => isFalse nofun
 
 def Ty.decEqList : (as bs : List Ty) → Decidable (as = bs)
 | [], [] => isTrue rfl
@@ -109,6 +130,86 @@ def Ty.decEqList : (as bs : List Ty) → Decidable (as = bs)
 end
 
 instance : DecidableEq Ty := Ty.decEq
+
+/- A type abbreviation body may refer to generic arguments with `Ty.var`. -/
+structure TypeAbbrev where
+  /- number of generic type arguments accepted by the abbreviation -/
+  typeArity : Nat
+  body : Ty
+deriving Repr, DecidableEq
+
+namespace TypeAbbrevCtx
+
+abbrev Raw := List (String × TypeAbbrev)
+
+def Raw.get? (ctx : Raw) (name : String) : Option TypeAbbrev :=
+  (ctx.find? (·.1 = name)).map (·.2)
+
+end TypeAbbrevCtx
+
+def Ty.subst (ctxTy : List Ty) : Ty → Ty
+| .var idx =>
+    if idx < ctxTy.length then
+      (ctxTy[idx]?).getD (.var idx)
+    else
+      .var (idx - ctxTy.length)
+| .prim b => .prim b
+| .option ty => .option (Ty.subst ctxTy ty)
+| .union tys => .union (tys.map (Ty.subst ctxTy))
+| .struct tys => .struct (tys.map (Ty.subst ctxTy))
+| .func args ret => .func (args.map (Ty.subst ctxTy)) (Ty.subst ctxTy ret)
+| .m ty => .m (Ty.subst ctxTy ty)
+| .«abbrev» name args => .«abbrev» name (args.map (Ty.subst ctxTy))
+
+mutual
+
+def Ty.validIn (ctx : TypeAbbrevCtx.Raw) (typeArity : Nat) : Ty → Bool
+| .var idx => decide (idx < typeArity)
+| .prim _ => true
+| .option ty => validIn ctx typeArity ty
+| .union tys => validListIn ctx typeArity tys
+| .struct tys => validListIn ctx typeArity tys
+| .func args out => validListIn ctx typeArity args && validIn ctx typeArity out
+| .m ty => validIn ctx typeArity ty
+| .«abbrev» name args =>
+    match ctx.get? name with
+    | some definition =>
+        decide (args.length = definition.typeArity) && validListIn ctx typeArity args
+    | none => false
+
+def Ty.validListIn (ctx : TypeAbbrevCtx.Raw) (typeArity : Nat) : List Ty → Bool
+| [] => true
+| ty :: tys => validIn ctx typeArity ty && validListIn ctx typeArity tys
+
+end
+
+def TypeAbbrevCtx.validFrom (previous : TypeAbbrevCtx.Raw) : TypeAbbrevCtx.Raw → Bool
+| [] => true
+| entry :: rest =>
+    Ty.validIn previous entry.2.typeArity entry.2.body &&
+      validFrom (previous ++ [entry]) rest
+
+/- Every definition references only earlier definitions and uses its generic arguments in range. -/
+def TypeAbbrevCtx.Valid (ctx : TypeAbbrevCtx.Raw) : Prop :=
+  (ctx.map Prod.fst).Nodup ∧ TypeAbbrevCtx.validFrom [] ctx = true
+
+instance (ctx : TypeAbbrevCtx.Raw) : Decidable (TypeAbbrevCtx.Valid ctx) := by
+  unfold TypeAbbrevCtx.Valid
+  infer_instance
+
+structure TypeAbbrevCtx where
+  val : TypeAbbrevCtx.Raw
+  isValid : TypeAbbrevCtx.Valid val
+
+namespace TypeAbbrevCtx
+
+instance : Coe TypeAbbrevCtx TypeAbbrevCtx.Raw := ⟨TypeAbbrevCtx.val⟩
+
+def empty : TypeAbbrevCtx := ⟨[], by decide⟩
+
+def get? (ctx : TypeAbbrevCtx) (name : String) : Option TypeAbbrev := ctx.val.get? name
+
+end TypeAbbrevCtx
 
 structure Primitive where
   name : String
@@ -166,6 +267,7 @@ def Ty.type (primCtx : PrimitiveCtx) : Ty → Type
     ((idx : Fin argsTy.length) → (argsTy[idx].type primCtx)) → Option (outTy.type primCtx)
 /- suspended computation which may get stuck after performing effects -/
 | m t => primCtx.M (Option (t.type primCtx))
+| «abbrev» _ _ => Empty
 termination_by ty => ty
 decreasing_by
   all_goals
@@ -401,6 +503,8 @@ inductive Term (primCtx : PrimitiveCtx) where
 | app : Term primCtx → List (Term primCtx) → Term primCtx
 /- application of a named n-ary operator -/
 | op : String → List (Term primCtx) → Term primCtx
+/- saturated application of a transparent, named term abbreviation -/
+| «abbrev» : String → List Ty → List (Term primCtx) → Term primCtx
 /- struct constructor function for a concrete list of field types -/
 | mkStruct : List Ty → Term primCtx
 /- field projection function for a concrete struct type -/
@@ -433,6 +537,8 @@ private def reprString {primCtx : PrimitiveCtx} [PrimitiveCtx.ReprName primCtx] 
 | .var idx => "Zag.Term.var " ++ reprStr idx
 | .app fn args => "Zag.Term.app (" ++ reprString fn ++ ") " ++ reprListString args
 | .op name args => "Zag.Term.op " ++ reprStr name ++ " " ++ reprListString args
+| .«abbrev» name typeArgs args =>
+    "Zag.Term.abbrev " ++ reprStr name ++ " " ++ reprStr typeArgs ++ " " ++ reprListString args
 | .mkStruct tys => "Zag.Term.mkStruct " ++ reprStr tys
 | .structProj tys idx => "Zag.Term.structProj " ++ reprStr tys ++ " " ++ reprStr idx.val
 | .recurse resultTy init body =>
@@ -463,70 +569,6 @@ def bind {primCtx : PrimitiveCtx} (computation continuation : Term primCtx) : Te
   .op "bind" [computation, continuation]
 
 end Term
-
-declare_syntax_cat zagTy
-declare_syntax_cat zagTerm
-
-syntax "ty%" "{" zagTy "}" : term
-syntax "term%" "{" zagTerm "}" : term
-syntax "zagTerm%" zagTerm : term
-syntax "zagName%" ident : term
-
-syntax ident : zagTy
-syntax str : zagTy
-syntax "var(" term ")" : zagTy
-syntax "option(" zagTy ")" : zagTy
-syntax "m(" zagTy ")" : zagTy
-syntax "union[" zagTy,* "]" : zagTy
-syntax "struct[" zagTy,* "]" : zagTy
-syntax "func[" zagTy,* "]" "=>" zagTy : zagTy
-syntax "(" zagTy ")" : zagTy
-
-syntax "raw(" term ")" : zagTerm
-syntax "term(" term ")" : zagTerm
-syntax "prim(" term ":" zagTy ")" : zagTerm
-syntax "func(" ident ")" : zagTerm
-syntax "func(" str ")" : zagTerm
-syntax "var(" term ")" : zagTerm
-syntax "call" zagTerm "[" zagTerm,* "]" : zagTerm
-syntax "op" str "[" zagTerm,* "]" : zagTerm
-syntax "recurse" zagTy "from" zagTerm "{" zagTerm "}" : zagTerm
-syntax "mkStruct[" zagTy,* "]" : zagTerm
-syntax "struct[" zagTy,* "]" "[" zagTerm,* "]" : zagTerm
-syntax "(" zagTerm ")" : zagTerm
-
-macro_rules
-  | `(zagName% $name:ident) =>
-      pure (Lean.Syntax.mkStrLit name.getId.toString)
-  | `(ty% { $name:ident }) => `((Zag.Ty.prim (zagName% $name) : Zag.Ty))
-  | `(ty% { $name:str }) => `((Zag.Ty.prim $name : Zag.Ty))
-  | `(ty% { var($idx:term) }) => `((Zag.Ty.var (($idx : Nat)) : Zag.Ty))
-  | `(ty% { option($ty:zagTy) }) => `((Zag.Ty.option (ty% { $ty }) : Zag.Ty))
-  | `(ty% { m($ty:zagTy) }) => `((Zag.Ty.m (ty% { $ty }) : Zag.Ty))
-  | `(ty% { union[$tys:zagTy,*] }) => `((Zag.Ty.union [ $[(ty% { $tys })],* ] : Zag.Ty))
-  | `(ty% { struct[$tys:zagTy,*] }) => `((Zag.Ty.struct [ $[(ty% { $tys })],* ] : Zag.Ty))
-  | `(ty% { func[$args:zagTy,*] => $ret:zagTy }) =>
-      `((Zag.Ty.func [ $[(ty% { $args })],* ] (ty% { $ret }) : Zag.Ty))
-  | `(ty% { ($ty:zagTy) }) => `(ty% { $ty })
-  | `(term% { $body:zagTerm }) => `(zagTerm% $body)
-  | `(zagTerm% raw($term:term)) => `(($term : Zag.Term _))
-  | `(zagTerm% term($term:term)) => `(($term : Zag.Term _))
-  | `(zagTerm% prim($value:term : $ty:zagTy)) =>
-      `(Zag.Term.prim (ty% { $ty }) (($value : Zag.Ty.type _ (ty% { $ty }))))
-  | `(zagTerm% func($name:ident)) => `(Zag.Term.primFunc (zagName% $name))
-  | `(zagTerm% func($name:str)) => `(Zag.Term.primFunc $name)
-  | `(zagTerm% var($idx:term)) => `(Zag.Term.var (($idx : Nat)))
-  | `(zagTerm% call $fn:zagTerm [ $args:zagTerm,* ]) =>
-      `(Zag.Term.app (zagTerm% $fn) [ $[(zagTerm% $args)],* ])
-  | `(zagTerm% op $name:str [ $args:zagTerm,* ]) =>
-      `(Zag.Term.op $name [ $[(zagTerm% $args)],* ])
-  | `(zagTerm% recurse $resultTy:zagTy from $init:zagTerm { $body:zagTerm }) =>
-      `(Zag.Term.recurse (ty% { $resultTy }) (zagTerm% $init) (zagTerm% $body))
-  | `(zagTerm% mkStruct[$tys:zagTy,*]) =>
-      `(Zag.Term.mkStruct [ $[(ty% { $tys })],* ])
-  | `(zagTerm% struct[$tys:zagTy,*] [ $fields:zagTerm,* ]) =>
-      `(Zag.Term.app (Zag.Term.mkStruct [ $[(ty% { $tys })],* ]) [ $[(zagTerm% $fields)],* ])
-  | `(zagTerm% ($term:zagTerm)) => `(zagTerm% $term)
 
 /- Zag propositions (first order statements about expressions and types)
   note that the debrujin indexes for varTy and varTerm are tracked seperately -/
@@ -621,47 +663,111 @@ abbrev PrimFuncCtx (primCtx : PrimitiveCtx) := List (String × PrimFunc primCtx)
 def PrimFuncCtx.get? {primCtx : PrimitiveCtx} (primFuncCtx : PrimFuncCtx primCtx) (name : String) : Option (PrimFunc primCtx) :=
   (primFuncCtx.find? (·.1 = name)).map (·.2)
 
-/- Everything a `Term` is interpreted against, packed together so it can be threaded as one value
-  rather than three: the primitive types, the primitive functions over them, and the operators.
-  The later fields depend on the earlier `primCtx`. -/
+/- A transparent Zag function. Its body binds one nameless term variable per `varCtx` entry. -/
+structure TermAbbrev (primCtx : PrimitiveCtx) where
+  /- number of generic type arguments accepted by the abbreviation -/
+  typeArity : Nat
+  varCtx : VarCtx
+  outTy : Ty
+  body : Term primCtx
+
+namespace TermAbbrevCtx
+
+abbrev Raw (primCtx : PrimitiveCtx) := List (String × TermAbbrev primCtx)
+
+def Raw.get? {primCtx : PrimitiveCtx} (ctx : Raw primCtx)
+    (name : String) : Option (TermAbbrev primCtx) :=
+  (ctx.find? (·.1 = name)).map (·.2)
+
+end TermAbbrevCtx
+
+private def Term.abbrevNames {primCtx : PrimitiveCtx} : Term primCtx → List String
+| .prim _ _ | .primFunc _ | .var _ | .mkStruct _ | .structProj _ _ => []
+| .app fn args => fn.abbrevNames ++ args.flatMap Term.abbrevNames
+| .op _ args => args.flatMap Term.abbrevNames
+| .«abbrev» name _ args => name :: args.flatMap Term.abbrevNames
+| .recurse _ init body => init.abbrevNames ++ body.abbrevNames
+
+private def TermAbbrevCtx.validFrom {primCtx : PrimitiveCtx}
+    (previous : TermAbbrevCtx.Raw primCtx) : TermAbbrevCtx.Raw primCtx → Bool
+| [] => true
+| entry :: rest =>
+    entry.2.body.abbrevNames.all (fun name => previous.any (·.1 = name)) &&
+      validFrom (previous ++ [entry]) rest
+
+/- Names are unique and bodies refer only to earlier term abbreviations. -/
+def TermAbbrevCtx.Valid {primCtx : PrimitiveCtx} (ctx : TermAbbrevCtx.Raw primCtx) : Prop :=
+  (ctx.map Prod.fst).Nodup ∧
+    TermAbbrevCtx.validFrom [] ctx = true
+
+instance {primCtx : PrimitiveCtx} (ctx : TermAbbrevCtx.Raw primCtx) :
+    Decidable (TermAbbrevCtx.Valid ctx) := by
+  unfold TermAbbrevCtx.Valid
+  infer_instance
+
+structure TermAbbrevCtx (primCtx : PrimitiveCtx) where
+  val : TermAbbrevCtx.Raw primCtx
+  isValid : TermAbbrevCtx.Valid val
+
+namespace TermAbbrevCtx
+
+instance {primCtx : PrimitiveCtx} :
+    Coe (TermAbbrevCtx primCtx) (TermAbbrevCtx.Raw primCtx) := ⟨TermAbbrevCtx.val⟩
+
+def empty {primCtx : PrimitiveCtx} : TermAbbrevCtx primCtx := ⟨[], ⟨by simp, rfl⟩⟩
+
+def get? {primCtx : PrimitiveCtx} (ctx : TermAbbrevCtx primCtx)
+    (name : String) : Option (TermAbbrev primCtx) := ctx.val.get? name
+
+end TermAbbrevCtx
+
+/- Everything a `Term` is interpreted against: primitives, operators, and transparent
+  abbreviation declarations. Later fields may depend on the earlier contexts. -/
 structure Ctx where
   primCtx : PrimitiveCtx
   primFuncCtx : PrimFuncCtx primCtx
   opCtx : OpCtx primCtx
+  tyAbbrevCtx : TypeAbbrevCtx := .empty
+  termAbbrevCtx : TermAbbrevCtx primCtx := .empty
 
 /- monad used to interpret `Ty.m` in this context -/
 abbrev Ctx.M (ctx : Ctx) : Type → Type := ctx.primCtx.M
 
-/- `hasType Δ Γ t T` means `Γ ⊢ t : T` under the primitive context `Δ` and primitive function context `δ`
-  which we denote as `Δ, δ ⊨ (Γ ⊢ t : T)` or `Δ, δ ⊨ Γ ⊢ t : T`
-
-  `hasType` will never be true if the `ty : Ty` contains vars.
-  `Ty` with vars are only used for Zag propositions.
--/
+/- `hasType Δ Γ t T` means `Γ ⊢ t : T`. Generic term parameters remain nameless in `VarCtx`. -/
 inductive Term.hasType (ctx : Ctx) : VarCtx → Term ctx.primCtx → Ty → Prop where
 | prim {varCtx} {ty : Ty} (val : Ty.type ctx.primCtx ty) :
     hasType ctx varCtx (.prim ty val) ty
-| primFunc {varCtx} {idx : Fin ctx.primFuncCtx.length} : hasType ctx varCtx (.primFunc ctx.primFuncCtx[idx].1) ctx.primFuncCtx[idx].2.ty
-| var {varCtx} {idx : Fin varCtx.length} {ty : Ty} (h : varCtx.get idx = ty) : hasType ctx varCtx (.var idx) ty
-| op {varCtx} {name : String} {args : List (Term ctx.primCtx)} {tys : List Ty} {r : Ty}
+| primFunc {varCtx} {idx : Fin ctx.primFuncCtx.length} :
+    hasType ctx varCtx (.primFunc ctx.primFuncCtx[idx].1) ctx.primFuncCtx[idx].2.ty
+| var {varCtx} {idx : Fin varCtx.length} {ty : Ty} (h : varCtx.get idx = ty) :
+    hasType ctx varCtx (.var idx) ty
+| op {varCtx} {name : String} {args : List (Term ctx.primCtx)}
+    {tys : List Ty} {r : Ty}
     (hargs₁ : args.length = tys.length)
     (hargs₂ : ∀ idx : Fin args.length, hasType ctx varCtx args[idx] tys[idx])
     (hout : ctx.opCtx.outTy? name tys = some r) :
     hasType ctx varCtx (.op name args) r
-| app {varCtx} {f : Term ctx.primCtx} {fTy : Ty} {args : List (Term ctx.primCtx)} {argsTy : List Ty}
-  (hf : hasType ctx varCtx f (.func argsTy fTy))
-  (hargs₁ : args.length = argsTy.length)
-  (hargs₂ : ∀ idx : Fin args.length, hasType ctx varCtx args[idx] argsTy[idx]) : hasType ctx varCtx (.app f args) fTy
+| «abbrev» {varCtx} {name : String} {typeArgs : List Ty}
+    {args : List (Term ctx.primCtx)} {definition : TermAbbrev ctx.primCtx}
+    (hget : ctx.termAbbrevCtx.get? name = some definition)
+    (htypes : typeArgs.length = definition.typeArity)
+    (hargs₁ : args.length = definition.varCtx.length)
+    (hargs₂ : ∀ idx : Fin args.length,
+      hasType ctx varCtx args[idx] (Ty.subst typeArgs definition.varCtx[idx])) :
+    hasType ctx varCtx (.«abbrev» name typeArgs args) (Ty.subst typeArgs definition.outTy)
+| app {varCtx} {f : Term ctx.primCtx} {fTy : Ty}
+    {args : List (Term ctx.primCtx)} {argsTy : List Ty}
+    (hf : hasType ctx varCtx f (.func argsTy fTy))
+    (hargs₁ : args.length = argsTy.length)
+    (hargs₂ : ∀ idx : Fin args.length, hasType ctx varCtx args[idx] argsTy[idx]) :
+    hasType ctx varCtx (.app f args) fTy
 | mkStruct {varCtx} {tys : List Ty} :
     hasType ctx varCtx (.mkStruct tys) (.func tys (.struct tys))
 | structProj {varCtx} {tys : List Ty} (idx : Fin tys.length) :
     hasType ctx varCtx (.structProj tys idx) (.func [.struct tys] tys[idx])
-| recurse {varCtx}
-    {stateTy resultTy : Ty}
-    {init body : Term ctx.primCtx}
+| recurse {varCtx} {stateTy resultTy : Ty} {init body : Term ctx.primCtx}
     (hinit : hasType ctx varCtx init stateTy)
-    (hbody : hasType ctx
-              (varCtx ++ [stateTy, .func [stateTy] resultTy]) body resultTy) :
+    (hbody : hasType ctx (varCtx ++ [stateTy, .func [stateTy] resultTy]) body resultTy) :
     hasType ctx varCtx (.recurse resultTy init body) resultTy
 
 /- a `Term` of a particular `ty : Ty` under some context and variable context -/

@@ -99,6 +99,22 @@ structure Term.MotiveCtx (primCtx : PrimitiveCtx) where
   stateTy : Ty
   resultTy : Ty
 
+/- Instantiate generic types embedded in a term abbreviation body. Intrinsic values stay unchanged. -/
+def Term.substTy {primCtx : PrimitiveCtx} (typeArgs : List Ty) : Term primCtx → Term primCtx
+| .prim ty value => .prim ty value
+| .primFunc name => .primFunc name
+| .var idx => .var idx
+| .app fn args => .app (substTy typeArgs fn) (args.map (substTy typeArgs))
+| .op name args => .op name (args.map (substTy typeArgs))
+| .«abbrev» name nestedTypeArgs args =>
+    .«abbrev» name (nestedTypeArgs.map (Ty.subst typeArgs)) (args.map (substTy typeArgs))
+| .mkStruct tys => .mkStruct (tys.map (Ty.subst typeArgs))
+| .structProj tys idx =>
+    have hlen : (tys.map (Ty.subst typeArgs)).length = tys.length := by simp
+    .structProj (tys.map (Ty.subst typeArgs)) (idx.cast hlen.symm)
+| .recurse resultTy init body =>
+    .recurse (Ty.subst typeArgs resultTy) (substTy typeArgs init) (substTy typeArgs body)
+
 /- Find the motive named by the de Bruijn variable `idx`, searching all enclosing motives. Returns it with the stack prefix up to and including it
   (re-invoking a motive restarts that level, so inner motives are dropped). -/
 def Term.MotiveCtx.findMotive {primCtx : PrimitiveCtx} (idx : Nat)
@@ -121,6 +137,12 @@ def Term.evalGo (ctx : Ctx)
     let oper ← ctx.opCtx.get? name
     if args.length = oper.arity then
       Term.evalBody ctx motives env args oper.body
+    else none
+| .«abbrev» name typeArgs args => do
+    let definition ← ctx.termAbbrevCtx.get? name
+    if typeArgs.length = definition.typeArity && args.length = definition.varCtx.length then
+      let vargs ← Term.evalList ctx motives env args
+      Term.evalGo ctx [] vargs (definition.body.substTy typeArgs)
     else none
 | .mkStruct tys =>
     some <| Val.mk (.func tys (.struct tys))
@@ -305,19 +327,6 @@ structure Term.eq (ctx : Ctx) (varCtx : VarCtx) (ty : Ty) (t₁ t₂ : Term ctx.
   eq : ∀ env : List (Val ctx.primCtx), env.length = varCtx.length →
     t₁.eval ctx env = t₂.eval ctx env
 
-def Ty.subst (ctxTy : List Ty) : Ty → Ty
-| .var idx =>
-    if idx < ctxTy.length then
-      (ctxTy[idx]?).getD (.var idx)
-    else
-      .var (idx - ctxTy.length)
-| .prim b => .prim b
-| .option ty => .option (Ty.subst ctxTy ty)
-| .union tys => .union (tys.map (Ty.subst ctxTy))
-| .struct tys => .struct (tys.map (Ty.subst ctxTy))
-| .func args ret => .func (args.map (Ty.subst ctxTy)) (Ty.subst ctxTy ret)
-| .m ty => .m (Ty.subst ctxTy ty)
-
 def Term.subst {primCtx : PrimitiveCtx} (ctxTerm : List (Term primCtx)) (term : Term primCtx) : Term primCtx :=
   match ctxTerm with
   | [] => term
@@ -331,6 +340,8 @@ def Term.subst {primCtx : PrimitiveCtx} (ctxTerm : List (Term primCtx)) (term : 
           else
             .var (idx - ctxTerm.length)
       | .op name args => .op name (args.map (Term.subst ctxTerm))
+      | .«abbrev» name typeArgs args =>
+          .«abbrev» name typeArgs (args.map (Term.subst ctxTerm))
       | .app f args => .app (Term.subst ctxTerm f) (args.map (Term.subst ctxTerm))
       | .mkStruct tys => .mkStruct tys
       | .structProj tys idx => .structProj tys idx
@@ -340,6 +351,12 @@ def Term.subst {primCtx : PrimitiveCtx} (ctxTerm : List (Term primCtx)) (term : 
 @[simp] theorem Term.subst_nil {primCtx : PrimitiveCtx} (term : Term primCtx) :
     Term.subst [] term = term := by
   simp [Term.subst]
+
+private theorem Term.map_subst_nil {primCtx : PrimitiveCtx} (terms : List (Term primCtx)) :
+    terms.map (Term.subst []) = terms := by
+  induction terms with
+  | nil => rfl
+  | cons term terms ih => simp [ih]
 
 @[simp] theorem Term.subst_prim {primCtx : PrimitiveCtx} (ctxTerm : List (Term primCtx))
     (ty : Ty) (val : Ty.type primCtx ty) :
@@ -360,26 +377,18 @@ def Term.subst {primCtx : PrimitiveCtx} (ctxTerm : List (Term primCtx)) (term : 
 @[simp] theorem Term.subst_op {primCtx : PrimitiveCtx} (ctxTerm : List (Term primCtx))
     (name : String) (args : List (Term primCtx)) :
     Term.subst ctxTerm (.op name args) = .op name (args.map (Term.subst ctxTerm)) := by
-  cases ctxTerm with
-  | nil =>
-      have hmap : args.map (Term.subst ([] : List (Term primCtx))) = args := by
-        induction args with
-        | nil => simp
-        | cons arg args ih => simp [ih]
-      simp [hmap]
-  | cons head tail => simp [Term.subst]
+  cases ctxTerm <;> simp [Term.subst, Term.map_subst_nil]
+
+@[simp] theorem Term.subst_abbrev {primCtx : PrimitiveCtx} (ctxTerm : List (Term primCtx))
+    (name : String) (typeArgs : List Ty) (args : List (Term primCtx)) :
+    Term.subst ctxTerm (.«abbrev» name typeArgs args) =
+      .«abbrev» name typeArgs (args.map (Term.subst ctxTerm)) := by
+  cases ctxTerm <;> simp [Term.subst, Term.map_subst_nil]
 
 @[simp] theorem Term.subst_app {primCtx : PrimitiveCtx} (ctxTerm : List (Term primCtx))
     (f : Term primCtx) (args : List (Term primCtx)) :
     Term.subst ctxTerm (.app f args) = .app (Term.subst ctxTerm f) (args.map (Term.subst ctxTerm)) := by
-  cases ctxTerm with
-  | nil =>
-      have hmap : args.map (Term.subst ([] : List (Term primCtx))) = args := by
-        induction args with
-        | nil => simp
-        | cons arg args ih => simp [ih]
-      simp [hmap]
-  | cons head tail => simp [Term.subst]
+  cases ctxTerm <;> simp [Term.subst, Term.map_subst_nil]
 
 @[simp] theorem Term.subst_mkStruct {primCtx : PrimitiveCtx} (ctxTerm : List (Term primCtx))
     (tys : List Ty) :
