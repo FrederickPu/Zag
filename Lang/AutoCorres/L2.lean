@@ -90,6 +90,61 @@ noncomputable def recguard (measure : Nat) (body : L2Program State Exception Val
 def skip : L2Program State Exception Unit :=
   gets (fun _ => ()) []
 
+/-! ## Canonical reified L2 syntax -/
+
+/--
+The shared typed L2 syntax produced by local-variable extraction and consumed by
+heap lifting. Its result index makes dependent sequencing and exception
+handlers explicit without changing the existing L2 denotation.
+-/
+inductive Syntax (State : Type u) (Exception : Type v) :
+    Type -> Type (max (u + 1) (v + 1)) where
+  | gets {Result : Type} (read : State -> Result) (names : List String) :
+      Syntax State Exception Result
+  | modify (update : State -> State) : Syntax State Exception Unit
+  | guard (predicate : State -> Prop) : Syntax State Exception Unit
+  | condition {Result : Type} (test : State -> Prop)
+      (thenBranch elseBranch : Syntax State Exception Result) :
+      Syntax State Exception Result
+  | seq {First Result : Type} (first : Syntax State Exception First)
+      (next : First -> Syntax State Exception Result) :
+      Syntax State Exception Result
+  | «catch» {Result : Type} (body : Syntax State Exception Result)
+      (handler : Exception -> Syntax State Exception Result) :
+      Syntax State Exception Result
+  | spec {Result : Type} (relation : Set (State × State)) :
+      Syntax State Exception Result
+  | unknown {Result : Type} (names : List String) :
+      Syntax State Exception Result
+  | throw {Result : Type} (exception : Exception) (names : List String) :
+      Syntax State Exception Result
+  | fail {Result : Type} : Syntax State Exception Result
+  | «while» {Result : Type} (test : Result -> State -> Prop)
+      (body : Result -> Syntax State Exception Result) (initial : Result)
+      (names : List String) : Syntax State Exception Result
+  /-- A statically resolved procedure body. Exception behavior is preserved. -/
+  | «call» {Result : Type} (body : Syntax State Exception Result) :
+      Syntax State Exception Result
+
+/-- Interpret canonical syntax with the existing L2 combinator semantics. -/
+@[simp] noncomputable def Syntax.denote {Result : Type} :
+    Syntax State Exception Result -> L2Program State Exception Result
+  | .gets read names => L2.gets read names
+  | .modify update => L2.modify update
+  | .guard predicate => L2.guard predicate
+  | .condition test thenBranch elseBranch =>
+      L2.condition test thenBranch.denote elseBranch.denote
+  | .seq first next => L2.seq first.denote fun value => (next value).denote
+  | .catch body handler => L2.catch body.denote fun exception =>
+      (handler exception).denote
+  | .spec relation => L2.spec relation
+  | .unknown names => L2.unknown names
+  | .throw exception names => L2.throw exception names
+  | .fail => L2.fail
+  | .while test body initial names =>
+      L2.while test (fun value => (body value).denote) initial names
+  | .call body => body.denote
+
 @[simp] theorem mem_liftE_iff {program : Nondet State Value}
     {state post : State} {result : Except Exception Value} :
     (result, post) ∈ (liftE program state).results ↔

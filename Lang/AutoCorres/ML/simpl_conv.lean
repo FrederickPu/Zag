@@ -81,6 +81,56 @@ def simplConv (checkTermination : Bool)
       { target := .spec relation
         corres := L1.L1Corres_spec checkTermination env relation }
 
+@[simp] theorem simplConv_transport_target
+    (checkTermination : Bool) (env : Simpl.Body State Proc Fault)
+    {left right : Simpl.Com State Proc Fault} (equality : left = right)
+    (supported : Supported left) :
+    (simplConv checkTermination env (supported.transport equality)).target =
+      (simplConv checkTermination env supported).target := by
+  cases equality
+  rfl
+
+/-- Convert environment-indexed syntax, consuming exact certificates at calls. -/
+def simplConvProgram {checkTermination : Bool}
+    {env : Simpl.Body State Proc Fault} {source : Simpl.Com State Proc Fault}
+    (supported : ProgramSupported checkTermination env source) :
+    Certificate checkTermination env source :=
+  match supported with
+  | .skip => { target := .skip, corres := L1.L1Corres_skip checkTermination env }
+  | .seq left right =>
+      let leftCertificate := simplConvProgram left
+      let rightCertificate := simplConvProgram right
+      { target := .seq leftCertificate.target rightCertificate.target
+        corres := L1.L1Corres_seq leftCertificate.corres rightCertificate.corres }
+  | .basic transform =>
+      { target := .modify transform
+        corres := L1.L1Corres_modify checkTermination env transform }
+  | .cond test thenSupported elseSupported =>
+      let thenCertificate := simplConvProgram thenSupported
+      let elseCertificate := simplConvProgram elseSupported
+      { target := .condition test thenCertificate.target elseCertificate.target
+        corres := L1.L1Corres_condition thenCertificate.corres elseCertificate.corres }
+  | .catch bodySupported handlerSupported =>
+      let bodyCertificate := simplConvProgram bodySupported
+      let handlerCertificate := simplConvProgram handlerSupported
+      { target := .catch bodyCertificate.target handlerCertificate.target
+        corres := L1.L1Corres_catch bodyCertificate.corres handlerCertificate.corres }
+  | .while test bodySupported =>
+      let bodyCertificate := simplConvProgram bodySupported
+      { target := .while test bodyCertificate.target
+        corres := L1.L1Corres_while bodyCertificate.corres }
+  | .throw => { target := .throw, corres := L1.L1Corres_throw checkTermination env }
+  | .guard fault test bodySupported =>
+      let bodyCertificate := simplConvProgram bodySupported
+      { target := .seq (.guard test) bodyCertificate.target
+        corres := L1.L1Corres_guard bodyCertificate.corres fault }
+  | .spec relation =>
+      { target := .spec relation
+        corres := L1.L1Corres_spec checkTermination env relation }
+  | .call proc sourceBody targetBody defined corres =>
+      { target := .call targetBody
+        corres := L1.L1Corres_call defined corres }
+
 /-- Recognize the supported input shape, retaining the first unsupported child. -/
 def recognizeSupported :
     (source : Simpl.Com State Proc Fault) -> Except Unsupported (Supported source)

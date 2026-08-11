@@ -1,6 +1,7 @@
 name = "Zag"
 version = "0.1.0"
 defaultTargets = ["zag"]
+testDriver = "tests"
 
 [[lean_lib]]
 name = "Zag"
@@ -9,7 +10,33 @@ name = "Zag"
 name = "Lang"
 roots = [
   "Lang.SSA",
-  "Lang.AutoCorres.AutoCorres",
+    "Lang.AutoCorres.AutoCorres",
+    "Lang.AutoCorres.CParser.Lexer",
+    "Lang.AutoCorres.CParser.Ast",
+    "Lang.AutoCorres.CParser.CallGraph",
+    "Lang.AutoCorres.CParser.MemoryLayout",
+    "Lang.AutoCorres.CParser.MemoryModel",
+    "Lang.AutoCorres.CParser.MemorySimpl",
+    "Lang.AutoCorres.CParser.PhasePipeline",
+    "Lang.AutoCorres.CParser.CType",
+    "Lang.AutoCorres.CParser.Frontend",
+    "Lang.AutoCorres.CParser.Parser",
+    "Lang.AutoCorres.CParser.Parser.AstActions",
+    "Lang.AutoCorres.CParser.Parser.Core",
+    "Lang.AutoCorres.CParser.Parser.DeclarationActions",
+    "Lang.AutoCorres.CParser.Parser.Declarator",
+    "Lang.AutoCorres.CParser.Parser.Expression",
+    "Lang.AutoCorres.CParser.Parser.Grammar",
+    "Lang.AutoCorres.CParser.Parser.Intermediate",
+    "Lang.AutoCorres.CParser.Parser.Name",
+    "Lang.AutoCorres.CParser.Parser.TypeActions",
+    "Lang.AutoCorres.CParser.Preprocessor",
+    "Lang.AutoCorres.CParser.ProgramAnalysis",
+    "Lang.AutoCorres.CParser.ScalarSimpl",
+    "Lang.AutoCorres.CParser.Source",
+    "Lang.AutoCorres.CParser.SyntaxTransforms",
+    "Lang.AutoCorres.CParser.Target",
+    "Lang.AutoCorres.CParser.Token",
   "Lang.AutoCorres.CorresXF",
   "Lang.AutoCorres.ExecConcrete",
   "Lang.AutoCorres.HeapLift",
@@ -17,13 +44,15 @@ roots = [
   "Lang.AutoCorres.L1Peephole",
   "Lang.AutoCorres.L2",
   "Lang.AutoCorres.LocalVarExtract",
+  "Lang.AutoCorres.Pipeline",
   "Lang.AutoCorres.NonDetMonadEx",
   "Lang.AutoCorres.Nondet_Monad",
   "Lang.AutoCorres.Reader_Option_Monad",
   "Lang.AutoCorres.Simpl.Language",
   "Lang.AutoCorres.Simpl.Semantic",
   "Lang.AutoCorres.Simpl.Termination",
-  "Lang.AutoCorres.SimplConv",
+    "Lang.AutoCorres.SimplConv",
+    "Lang.AutoCorres.SimplConvRecursion",
   "Lang.AutoCorres.TypeStrengthen",
   "Lang.AutoCorres.TypHeapSimple",
   "Lang.AutoCorres.WordAbstract",
@@ -33,6 +62,7 @@ roots = [
   "Lang.AutoCorres.ML.local_var_extract",
   "Lang.AutoCorres.ML.monad_convert",
   "Lang.AutoCorres.ML.monad_types",
+  "Lang.AutoCorres.ML.pipeline",
   "Lang.AutoCorres.ML.prog",
   "Lang.AutoCorres.ML.simpl_conv",
   "Lang.AutoCorres.ML.type_strengthen",
@@ -41,7 +71,63 @@ roots = [
 
 [[lean_lib]]
 name = "Test"
-roots = ["Test.Gauss", "Test.Monad", "Test.Peano", "Test.AutoCorres", "Test.L1", "Test.L2"]
+roots = [
+  "Test.Gauss",
+  "Test.Monad",
+  "Test.Peano",
+  "Test.AutoCorres",
+  "Test.AutoCorresPhases",
+  "Test.L1",
+  "Test.L2",
+  "Test.Abbrev",
+]
+
+[[lean_lib]]
+name = "AutoCorresTests"
+roots = ["Test.AutoCorresPhases"]
+
+[[lean_lib]]
+name = "AutoCorresUpstreamCoverage"
+roots = ["Test.AutoCorres.Upstream.Manifest"]
+
+[[lean_lib]]
+name = "AutoCorresUpstreamFragments"
+roots = [
+  "Test.AutoCorres.Upstream.BinarySearch",
+  "Test.AutoCorres.Upstream.Chapter2_HoareHeap",
+  "Test.AutoCorres.Upstream.Plus",
+  "Test.AutoCorres.Upstream.Simple",
+  "Test.AutoCorres.Upstream.MultByAdd",
+  "Test.AutoCorres.Upstream.SkipHeapAbs",
+  "Test.AutoCorres.Upstream.Struct",
+]
+
+[[lean_lib]]
+name = "AutoCorresKernelTests"
+roots = [
+  "Test.AutoCorres.Kernel.HeapLift",
+  "Test.AutoCorres.Kernel.WordAbstract",
+  "Test.AutoCorres.Kernel.WordAbstractOperations",
+  "Test.AutoCorres.Kernel.SimplConvRecursion",
+  "Test.AutoCorres.UnsignedPipeline",
+  "Test.AutoCorres.CParser.ScalarSimpl",
+  "Test.AutoCorres.CParser.CallGraph",
+  "Test.AutoCorres.CParser.MemoryLayout",
+  "Test.AutoCorres.CParser.MemoryModel",
+  "Test.AutoCorres.CParser.MemorySimpl",
+]
+
+[[lean_exe]]
+name = "autocorres-fixture-smoke"
+root = "Test.AutoCorres.CParser.FixtureSmokeMain"
+
+[[lean_exe]]
+name = "autocorres-semantic-smoke"
+root = "Test.AutoCorres.CParser.SemanticSmokeMain"
+
+[[lean_exe]]
+name = "tests"
+root = "Test.Main"
 
 [[lean_lib]]
 name = "Lib"

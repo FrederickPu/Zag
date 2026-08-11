@@ -89,6 +89,8 @@ inductive Term : Type -> Type -> Type -> Type -> Type 1 where
       Term argument state exception Unit
   | guard {argument state exception : Type} (test : argument -> state -> Bool) :
       Term argument state exception Unit
+  | exactGuard {argument state exception : Type}
+      (test : argument -> state -> Prop) : Term argument state exception Unit
   | while {argument state exception result : Type}
       (test : argument -> result -> state -> Bool)
       (body : Term (argument × result) state exception result)
@@ -98,10 +100,10 @@ inductive Term : Type -> Type -> Type -> Type -> Type 1 where
       (body : Term argument state caught result)
       (handler : Term (argument × caught) state exception result) :
       Term argument state exception result
-  | catchHandlers {argument state caught result : Type}
+  | catchHandlers {argument state caught exception result : Type}
       (body : Term argument state caught result)
-      (handler : Term (argument × caught) state Unit result) :
-      Term argument state Unit result
+      (handler : Term (argument × caught) state exception result) :
+      Term argument state exception result
   | spec {argument state exception result : Type}
       (relation : argument -> Set (state × state)) :
       Term argument state exception result
@@ -115,8 +117,12 @@ inductive Term : Type -> Type -> Type -> Type -> Type 1 where
       (value : argument -> exception) (names : List String) :
       Term argument state exception result
 
-/-- Closed function body used by ordinary type-strengthening selection. -/
-abbrev Syntax (State Result : Type) := Term Unit State Unit Result
+/-- A closed function body with an explicit inner exception type. -/
+abbrev Closed (State InnerException Result : Type) :=
+  Term Unit State InnerException Result
+
+/-- Compatibility specialization for the original exception-free source API. -/
+abbrev Syntax (State Result : Type) := Closed State Unit Result
 
 /-- Interpret source syntax after the pure recognition and conversion phases. -/
 noncomputable def Term.denote {Argument State Exception Result : Type}
@@ -134,6 +140,7 @@ noncomputable def Term.denote {Argument State Exception Result : Type}
         (thenBranch.denote argument) (elseBranch.denote argument)
   | .modify update => L2.modify (update argument)
   | .guard test => L2.guard fun state => test argument state = true
+  | .exactGuard test => L2.guard (test argument)
   | .while test body initial names =>
       L2.while (fun value state => test argument value state = true)
         (fun value => body.denote (argument, value)) (initial argument) names
@@ -159,6 +166,7 @@ def Term.kind {Argument State Exception Result : Type} :
   | .condition _ _ _ => "condition"
   | .modify _ => "modify"
   | .guard _ => "guard"
+  | .exactGuard _ => "exactGuard"
   | .while _ _ _ _ => "while"
   | .catchBody _ _ => "catchBody"
   | .catchHandlers _ _ => "catchHandlers"
@@ -283,6 +291,7 @@ inductive Supported :
       Supported .nondet (.condition test thenBranch elseBranch)
   | nondetModify : Supported .nondet (.modify update)
   | nondetGuard : Supported .nondet (.guard test)
+  | nondetExactGuard : Supported .nondet (.exactGuard test)
   | nondetWhile : Supported .nondet body -> Supported .nondet (.while test body initial names)
   | nondetCatchBody : Supported .nondet body ->
       Supported .nondet (.catchBody body handler)
@@ -294,13 +303,17 @@ inductive Supported :
   | nondetRecguard {sourceMeasure : Argument -> Nat} : Supported .nondet body ->
       Supported .nondet (.recguard sourceMeasure body)
 
-/-- Exact, exception-polymorphic result required from the strengthening algorithm. -/
-structure Certificate {State Result : Type} (carrier : Carrier)
-    (source : Source.Syntax State Result) where
+/-- Exact, exception-polymorphic result for an arbitrary closed source. -/
+structure ClosedCertificate {State InnerException Result : Type} (carrier : Carrier)
+    (source : Source.Closed State InnerException Result) where
   target : Target.Syntax carrier State Result
   exact : forall (Exception : Type),
     L2.call (Exception := Exception) (source.denote ()) =
       embed (Exception := Exception) carrier target.denote
+
+/-- Compatibility specialization for the original `Unit` inner exception API. -/
+abbrev Certificate {State Result : Type} (carrier : Carrier)
+    (source : Source.Syntax State Result) := ClosedCertificate carrier source
 
 end Zag.Lang.AutoCorres.TypeStrengthen.Kernel
 
@@ -367,7 +380,7 @@ theorem exact_iff_eq : Exact left right ↔ left = right := by
 private theorem exact_of_eq (equality : left = right) : Exact left right :=
   exact_iff_eq.mpr equality
 
-@[simp] private theorem mem_bindE_error
+@[simp] theorem mem_bindE_error
     {program : L2.L2Program State Exception α}
     {next : α → L2.L2Program State Exception β} :
     (Except.error exception, post) ∈ (bindE program next state).results ↔
@@ -388,7 +401,7 @@ private theorem exact_of_eq (equality : left = right) : Exact left right :=
     · exact ⟨Except.error exception, post, member, rfl⟩
     · exact ⟨Except.ok value, middle, member, continuation⟩
 
-@[simp] private theorem failed_bindE
+@[simp] theorem failed_bindE
     {program : L2.L2Program State Exception α}
     {next : α → L2.L2Program State Exception β} :
     (bindE program next state).failed ↔
@@ -586,7 +599,7 @@ def embed {State Result : Type u} (carrier : Carrier)
     · exact Or.inr ⟨Except.error exception, post, member, True.intro⟩
 
 theorem L2_call_liftE (program : Nondet State Result) :
-    L2.call (Exception := Exception) (liftE (ε := Unit) program) =
+    L2.call (Exception := Exception) (liftE (ε := InnerException) program) =
       liftE (ε := Exception) program := by
   apply Exact.eq
   constructor
@@ -597,7 +610,7 @@ theorem L2_call_liftE (program : Nondet State Result) :
     simp
 
 theorem L2_call_liftE_exact (program : Nondet State Result) :
-    Exact (L2.call (Exception := Exception) (liftE (ε := Unit) program))
+    Exact (L2.call (Exception := Exception) (liftE (ε := InnerException) program))
       (liftE (ε := Exception) program) :=
   exact_of_eq (L2_call_liftE program)
 
@@ -605,7 +618,7 @@ theorem L2_call_embed_exact {State Result : Type u} (carrier : Carrier)
     (program : Kernel.Repr carrier State Result) :
     Exact
       (L2.call (Exception := Exception)
-        (embed (Exception := Unit) carrier program))
+        (embed (Exception := InnerException) carrier program))
       (embed (Exception := Exception) carrier program) :=
   L2_call_liftE_exact (denote carrier program)
 
@@ -1510,10 +1523,11 @@ def nondetCatch (program : L2.L2Program State Exception Result)
     (handler : Exception -> Nondet State Result) : Nondet State Result :=
   Kernel.nondetCatch program handler
 
-theorem liftE_L2_catch' (program : L2.L2Program State Exception Result)
+theorem liftE_L2_catch' {NewException : Type}
+    (program : L2.L2Program State Exception Result)
     (handler : Exception → Nondet State Result) :
-    L2.catch program (fun exception => liftE (ε := Unit) (handler exception)) =
-      liftE (ε := Unit) (nondetCatch program handler) := by
+    L2.catch program (fun exception => liftE (ε := NewException) (handler exception)) =
+      liftE (ε := NewException) (nondetCatch program handler) := by
   apply Exact.eq
   constructor
   · intro state result

@@ -967,44 +967,22 @@ theorem struct_rewrite_modifies_id (update : State → State) :
 
 namespace Kernel
 
-/-- The source L2 fragment accepted by the certified conversion. -/
-inductive Source (State : Type u) (Exception : Type v) :
-    Type -> Type (max (u + 1) (v + 1)) where
-  | gets {Result : Type} (read : State -> Result) (names : List String) :
-      Source State Exception Result
-  | modify (update : State -> State) : Source State Exception Unit
-  | guard (condition : State -> Prop) : Source State Exception Unit
-  | condition {Result : Type} (test : State -> Prop)
-      (thenBranch elseBranch : Source State Exception Result) :
-      Source State Exception Result
-  | seq {First Result : Type} (first : Source State Exception First)
-      (next : First -> Source State Exception Result) : Source State Exception Result
-  | «catch» {Result : Type} (body : Source State Exception Result)
-      (handler : Exception -> Source State Exception Result) :
-      Source State Exception Result
-  | spec {Result : Type} (relation : Set (State × State)) :
-      Source State Exception Result
-  | unknown {Result : Type} (names : List String) : Source State Exception Result
-  | throw {Result : Type} (exception : Exception) (names : List String) :
-      Source State Exception Result
-  | fail {Result : Type} : Source State Exception Result
+/-- Compatibility alias for the canonical L2 syntax consumed by heap lifting. -/
+abbrev Source (State : Type u) (Exception : Type v) (Result : Type) :=
+  L2.Syntax State Exception Result
 
-/-- Semantics of source syntax. Conditions are the only noncomputable case. -/
-noncomputable def Source.denote {State : Type u} {Exception : Type v}
+namespace Source
+
+export L2.Syntax
+  (gets modify guard condition seq «catch» spec unknown throw fail «while»)
+
+/-- Compatibility name for the canonical L2 denotation. -/
+noncomputable abbrev denote {State : Type u} {Exception : Type v}
     {Result : Type} :
-    Source State Exception Result -> L2.L2Program State Exception Result
-  | .gets read names => L2.gets read names
-  | .modify update => L2.modify update
-  | .guard predicate => L2.guard predicate
-  | .condition test thenBranch elseBranch =>
-      L2.condition test thenBranch.denote elseBranch.denote
-  | .seq first next => L2.seq first.denote fun value => (next value).denote
-  | .catch body handler => L2.catch body.denote fun exception =>
-      (handler exception).denote
-  | .spec relation => L2.spec relation
-  | .unknown names => L2.unknown names
-  | .throw exception names => L2.throw exception names
-  | .fail => L2.fail
+    Source State Exception Result -> L2.L2Program State Exception Result :=
+  L2.Syntax.denote
+
+end Source
 
 /--
 Target syntax records generated guards rather than hiding them in an arbitrary

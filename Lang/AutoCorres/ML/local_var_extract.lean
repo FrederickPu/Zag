@@ -14,9 +14,10 @@ extraction. Its correspondence uses upstream's failure-conditional `L2Corres`;
 it is not reverse simulation or denotational equality.
 
 The certified fragment is skip, local update, global update, guard, throw,
-sequence, condition, catch, and loop. Specs and source failure are recognized
-but rejected. Calls, local initialization, recursion guards, per-variable
-liveness, and upstream fallback behavior are not represented by this kernel.
+sequence, condition, catch, and loop. Specs and source failure remain in the
+canonical syntax but have no support evidence. Calls, local initialization,
+recursion guards, per-variable liveness, and upstream fallback behavior are not
+represented by this kernel.
 L2 exceptions carry the locals projected from the exceptional L1 post-state;
 this lets catch handlers receive updated locals despite L1's `Unit` exception
 marker. In particular, `L2.fail` is never used as an untranslatable fallback.
@@ -38,8 +39,9 @@ export Kernel.Source (Syntax localTransform globalTransform)
 
 namespace Syntax
 
-export Kernel.Source.Syntax
-  (skip localUpdate globalUpdate guard throw seq condition «catch» spec «loop» fail denote)
+export Zag.Lang.AutoCorres.L1.Syntax
+  (skip seq modify condition «catch» «while» throw spec guard fail «call»)
+export Kernel.Source.Syntax (denote)
 
 end Syntax
 
@@ -52,82 +54,39 @@ export Kernel.Target (Syntax)
 namespace Syntax
 
 export Kernel.Target.Syntax
-  (skip localUpdate globalUpdate guard throw seq condition «catch» «loop» denote)
+  (skip localUpdate globalUpdate guard throw seq condition «catch» «loop» «call» fail denote)
 
 end Syntax
 
 end Target
 
-export Kernel (Extracts Certificate Supported)
+namespace CanonicalTarget
+
+export Kernel.CanonicalTarget (Syntax)
+
+namespace Syntax
+
+export Kernel.CanonicalTarget.Syntax (ofGeneric denote)
+
+end Syntax
+
+end CanonicalTarget
+
+export Kernel (Extracts Certificate ClosedExtracts ClosedCertificate Supported)
 
 namespace Supported
 
 export Kernel.Supported
-  (skip localUpdate globalUpdate guard throw seq condition «catch» «loop»)
+  (skip localUpdate globalUpdate guard throw seq condition «catch» «loop» «call» fail)
 
 end Supported
 
-/-- Source constructors intentionally outside the current certified kernel. -/
-inductive UnsupportedConstructor where
-  | spec
-  | fail
-  deriving DecidableEq, Repr
-
-/-- Explicit recognition failure; unsupported input is never translated to failure. -/
-structure RecognitionError where
-  sourceConstructor : UnsupportedConstructor
-  reason : String
-  deriving DecidableEq, Repr
-
-def unsupportedSpec : RecognitionError :=
-  { sourceConstructor := .spec
-    reason := "specification extraction requires proving that its relation mentions only globals" }
-
-def unsupportedFail : RecognitionError :=
-  { sourceConstructor := .fail
-    reason := "source failure is not used as an untranslatable fallback in this kernel" }
-
-/-- Recognize the supported source shape, retaining the first unsupported child. -/
-def recognizeSupported :
-    (source : Source.Syntax Full Locals Globals) ->
-      Except RecognitionError (Supported source)
-  | .skip => .ok .skip
-  | .localUpdate update => .ok (.localUpdate update)
-  | .globalUpdate update => .ok (.globalUpdate update)
-  | .guard test => .ok (.guard test)
-  | .throw => .ok .throw
-  | .seq first second =>
-      match recognizeSupported first with
-      | .error error => .error error
-      | .ok firstSupported =>
-          match recognizeSupported second with
-          | .error error => .error error
-          | .ok secondSupported => .ok (.seq firstSupported secondSupported)
-  | .condition test thenBranch elseBranch =>
-      match recognizeSupported thenBranch with
-      | .error error => .error error
-      | .ok thenSupported =>
-          match recognizeSupported elseBranch with
-          | .error error => .error error
-          | .ok elseSupported => .ok (.condition test thenSupported elseSupported)
-  | .catch body handler =>
-      match recognizeSupported body with
-      | .error error => .error error
-      | .ok bodySupported =>
-          match recognizeSupported handler with
-          | .error error => .error error
-          | .ok handlerSupported => .ok (.catch bodySupported handlerSupported)
-  | .spec _ => .error unsupportedSpec
-  | .loop test body =>
-      match recognizeSupported body with
-      | .error error => .error error
-      | .ok bodySupported => .ok (.loop test bodySupported)
-  | .fail => .error unsupportedFail
-
 private theorem local_corres (model : StateModel Full Locals Globals)
     (update : Locals -> Globals -> Locals) :
-    Extracts model (.localUpdate update) (.localUpdate update) := by
+    Extracts model (Target.Syntax.localUpdate update)
+      (.modify (Source.localTransform model update)) := by
   intro locals
+  simp only [Target.Syntax.denote]
   apply L2.corres_gets_modify
   · intro state _
     exact (model.projectGlobals_assemble _ _).symm
@@ -136,8 +95,10 @@ private theorem local_corres (model : StateModel Full Locals Globals)
 
 private theorem global_corres (model : StateModel Full Locals Globals)
     (update : Locals -> Globals -> Globals) :
-    Extracts model (.globalUpdate update) (.globalUpdate update) := by
+    Extracts model (Target.Syntax.globalUpdate update)
+      (.modify (Source.globalTransform model update)) := by
   intro locals
+  simp only [Target.Syntax.denote]
   apply L2.L2corres_inject_return
     (injectedExtract := model.projectLocals) (inject := fun _ => locals)
     (required := fun state => model.projectLocals state = locals)
@@ -160,8 +121,10 @@ private theorem global_corres (model : StateModel Full Locals Globals)
 
 private theorem guard_corres (model : StateModel Full Locals Globals)
     (test : Locals -> Globals -> Prop) :
-    Extracts model (.guard test) (.guard test) := by
+    Extracts model (Target.Syntax.guard test) (.guard fun state =>
+      test (model.projectLocals state) (model.projectGlobals state)) := by
   intro locals
+  simp only [Target.Syntax.denote]
   apply L2.L2corres_inject_return
     (injectedExtract := model.projectLocals) (inject := fun _ => locals)
     (required := fun state => model.projectLocals state = locals)
@@ -186,27 +149,40 @@ The total pure local-conversion kernel corresponding to the structural core of
 upstream `do_conv`. Support evidence makes every recursive case certifiable.
 -/
 def extract (model : StateModel Full Locals Globals) {source}
-    (supported : Supported source) : Certificate model source :=
+    (supported : Supported model source) : Certificate model source :=
   match supported with
   | .skip =>
-      { target := .skip
-        corres := fun _locals => L2.corres_gets_skip (fun _ hypothesis => hypothesis) }
+      { target := Target.Syntax.skip
+        corres := fun _locals => by
+          simpa only [Target.Syntax.denote,
+            Source.Syntax.denote, L1.Syntax.denote, L1.skip]
+            using L2.corres_gets_skip
+              (stateProject := model.projectGlobals)
+              (returnExtract := model.projectLocals)
+              (exceptionExtract := model.projectLocals)
+              (precondition := fun state => model.projectLocals state = _locals)
+              (read := fun _ => _locals) (names := [])
+              (fun _ hypothesis => hypothesis) }
   | .localUpdate update =>
-      { target := .localUpdate update
+      { target := Target.Syntax.localUpdate update
         corres := local_corres model update }
   | .globalUpdate update =>
-      { target := .globalUpdate update
+      { target := Target.Syntax.globalUpdate update
         corres := global_corres model update }
   | .guard test =>
-      { target := .guard test
+      { target := Target.Syntax.guard test
         corres := guard_corres model test }
   | .throw =>
-      { target := .throw
-        corres := fun _ => L2.corres_throw (fun _ hypothesis => hypothesis) }
+      { target := Target.Syntax.throw
+        corres := fun _ => by
+          simpa only [Target.Syntax.denote,
+            Source.Syntax.denote, L1.Syntax.denote, L1.throw]
+            using L2.corres_throw (names := [])
+              (fun _ hypothesis => hypothesis) }
   | .seq firstSupported secondSupported =>
       let firstCertificate := extract model firstSupported
       let secondCertificate := extract model secondSupported
-      { target := .seq firstCertificate.target secondCertificate.target
+      { target := Target.Syntax.seq firstCertificate.target secondCertificate.target
         corres := fun locals => L2.L2corres_seq
           (firstCertificate.corres locals)
           (fun nextLocals => secondCertificate.corres nextLocals)
@@ -215,7 +191,8 @@ def extract (model : StateModel Full Locals Globals) {source}
   | .condition test thenSupported elseSupported =>
       let thenCertificate := extract model thenSupported
       let elseCertificate := extract model elseSupported
-      { target := .condition test thenCertificate.target elseCertificate.target
+      { target := Target.Syntax.condition test thenCertificate.target
+          elseCertificate.target
         corres := fun locals => L2.L2corres_cond
           (thenCertificate.corres locals)
           (elseCertificate.corres locals)
@@ -225,7 +202,7 @@ def extract (model : StateModel Full Locals Globals) {source}
   | .catch bodySupported handlerSupported =>
       let bodyCertificate := extract model bodySupported
       let handlerCertificate := extract model handlerSupported
-      { target := .catch bodyCertificate.target handlerCertificate.target
+      { target := Target.Syntax.catch bodyCertificate.target handlerCertificate.target
         corres := fun locals => L2.L2corres_catch
           (bodyCertificate.corres locals)
           (fun exceptionalLocals => handlerCertificate.corres exceptionalLocals)
@@ -233,7 +210,7 @@ def extract (model : StateModel Full Locals Globals) {source}
           (fun _ hypothesis => hypothesis) }
   | .loop test bodySupported =>
       let bodyCertificate := extract model bodySupported
-      { target := .loop test bodyCertificate.target
+      { target := Target.Syntax.loop test bodyCertificate.target
         corres := fun locals => L2.L2corres_while
           (invariant := fun value state => model.projectLocals state = value)
           (bodyPrecondition := fun value state => model.projectLocals state = value)
@@ -241,7 +218,7 @@ def extract (model : StateModel Full Locals Globals) {source}
           (abstractTest := test)
           (concreteTest := fun state =>
             test (model.projectLocals state) (model.projectGlobals state))
-          (abstractBody := bodyCertificate.target.denote)
+          (abstractBody := Target.Syntax.denote bodyCertificate.target)
           (initial := locals) (names := [])
           (bodyCertificate.corres)
           (fun _ _ _ _ => rfl)
@@ -249,12 +226,40 @@ def extract (model : StateModel Full Locals Globals) {source}
           (fun _ _ hypothesis => hypothesis)
           (fun _ _ hypothesis => hypothesis)
           (fun _ hypothesis => hypothesis) }
+  | .call bodySupported =>
+      let bodyCertificate := extract model bodySupported
+      { target := Target.Syntax.call bodyCertificate.target
+        corres := fun locals => by
+          simpa only [Target.Syntax.denote, Source.Syntax.denote,
+            L1.Syntax.denote] using bodyCertificate.corres locals }
+  | .fail =>
+      { target := Target.Syntax.fail
+        corres := fun _ => by
+          simpa only [Target.Syntax.denote, Source.Syntax.denote,
+            L1.Syntax.denote] using
+              (L2.corres_fail (stateProject := model.projectGlobals)
+                (returnExtract := model.projectLocals)
+                (exceptionExtract := model.projectLocals)) }
 
-/-- Recognize and run the proof-producing kernel without theorem search. -/
-def run (model : StateModel Full Locals Globals)
-    (source : Source.Syntax Full Locals Globals) :
-    Except RecognitionError (Certificate model source) :=
-  (recognizeSupported source).map (extract model)
+/--
+Extract the same certified target into the explicitly closed Type0 canonical
+syntax consumed by HeapLift. The correspondence is inherited from `extract`.
+-/
+def extractCanonical {Full : Type u} {Locals Globals : Type}
+    (model : StateModel Full Locals Globals) {source}
+    (supported : Supported model source) : ClosedCertificate model source :=
+  (extract model supported).close
+
+/-- Run the proof-producing kernel from narrow structural support evidence. -/
+def run (model : StateModel Full Locals Globals) {source}
+    (supported : Supported model source) : Certificate model source :=
+  extract model supported
+
+/-- Run the closed canonical extraction API used by the direct HeapLift path. -/
+def runCanonical {Full : Type u} {Locals Globals : Type}
+    (model : StateModel Full Locals Globals) {source}
+    (supported : Supported model source) : ClosedCertificate model source :=
+  extractCanonical model supported
 
 /-! ## Reduction and correctness pins -/
 
@@ -291,7 +296,8 @@ theorem extract_local_then_global_correct (model : StateModel Full Locals Global
     (localUpdate : Locals -> Globals -> Locals)
     (globalUpdate : Locals -> Globals -> Globals) :
     Extracts model (.seq (.localUpdate localUpdate) (.globalUpdate globalUpdate))
-      (.seq (.localUpdate localUpdate) (.globalUpdate globalUpdate)) :=
+      (.seq (.modify (Source.localTransform model localUpdate))
+        (.modify (Source.globalTransform model globalUpdate))) :=
   (extract model (Supported.seq (Supported.localUpdate localUpdate)
     (Supported.globalUpdate globalUpdate))).corres
 
@@ -303,7 +309,9 @@ theorem extract_guard_then_throw_target (model : StateModel Full Locals Globals)
 
 theorem extract_guard_then_throw_correct (model : StateModel Full Locals Globals)
     (test : Locals -> Globals -> Prop) :
-    Extracts model (.seq (.guard test) .throw) (.seq (.guard test) .throw) :=
+    Extracts model (.seq (.guard test) .throw)
+      (.seq (.guard fun state =>
+        test (model.projectLocals state) (model.projectGlobals state)) .throw) :=
   (extract model (Supported.seq (Supported.guard test) Supported.throw)).corres
 
 theorem extract_condition_target (model : StateModel Full Locals Globals)
@@ -321,7 +329,10 @@ theorem extract_condition_correct (model : StateModel Full Locals Globals)
     (globalUpdate : Locals -> Globals -> Globals) :
     Extracts model
       (.condition test (.localUpdate localUpdate) (.globalUpdate globalUpdate))
-      (.condition test (.localUpdate localUpdate) (.globalUpdate globalUpdate)) :=
+      (.condition
+        (fun state => test (model.projectLocals state) (model.projectGlobals state))
+        (.modify (Source.localTransform model localUpdate))
+        (.modify (Source.globalTransform model globalUpdate))) :=
   (extract model (Supported.condition test (Supported.localUpdate localUpdate)
     (Supported.globalUpdate globalUpdate))).corres
 
@@ -340,7 +351,9 @@ theorem extract_catch_correct (model : StateModel Full Locals Globals)
     (handlerUpdate : Locals -> Globals -> Globals) :
     Extracts model
       (.catch (.seq (.localUpdate localUpdate) .throw) (.globalUpdate handlerUpdate))
-      (.catch (.seq (.localUpdate localUpdate) .throw) (.globalUpdate handlerUpdate)) :=
+      (.catch
+        (.seq (.modify (Source.localTransform model localUpdate)) .throw)
+        (.modify (Source.globalTransform model handlerUpdate))) :=
   (extract model (Supported.catch
     (Supported.seq (Supported.localUpdate localUpdate) Supported.throw)
     (Supported.globalUpdate handlerUpdate))).corres
@@ -356,31 +369,15 @@ theorem extract_loop_correct (model : StateModel Full Locals Globals)
     (test : Locals -> Globals -> Prop)
     (update : Locals -> Globals -> Locals) :
     Extracts model (.loop test (.localUpdate update))
-      (.loop test (.localUpdate update)) :=
+      (.while
+        (fun state => test (model.projectLocals state) (model.projectGlobals state))
+        (.modify (Source.localTransform model update))) :=
   (extract model (Supported.loop test (Supported.localUpdate update))).corres
 
-theorem recognize_condition_supported (test : Locals -> Globals -> Prop) :
-    recognizeSupported
-      (Source.Syntax.condition test .skip .throw : Source.Syntax Full Locals Globals) =
-      .ok (Supported.condition test Supported.skip Supported.throw) := by
-  rfl
-
-theorem recognize_catch_supported :
-    recognizeSupported
-      (Source.Syntax.catch .throw .skip : Source.Syntax Full Locals Globals) =
-      .ok (Supported.catch Supported.throw Supported.skip) := by
-  rfl
-
-theorem recognize_loop_supported (test : Locals -> Globals -> Prop) :
-    recognizeSupported
-      (Source.Syntax.loop test .skip : Source.Syntax Full Locals Globals) =
-      .ok (Supported.loop test Supported.skip) := by
-  rfl
-
-theorem recognize_spec_error (relation : Set (Full × Full)) :
-    recognizeSupported
-      (Source.Syntax.spec relation : Source.Syntax Full Locals Globals) =
-      .error unsupportedSpec := by
+theorem run_condition_target (model : StateModel Full Locals Globals)
+    (test : Locals -> Globals -> Prop) :
+    (run model (Supported.condition test Supported.skip Supported.throw)).target =
+      .condition test .skip .throw := by
   rfl
 
 end Zag.Lang.AutoCorres.ML.LocalVarExtract

@@ -10,7 +10,7 @@ def sumTo : Nat → Nat
 | 0 => 0
 | n + 1 => sumTo n + (n + 1)
 
-def natType {varCtx : VarCtx} (n : Nat) :
+theorem natType {varCtx : VarCtx} (n : Nat) :
     Term.hasType peanoCtx varCtx (Term.nat n) NatTy :=
   Term.hasType.prim (Ty.ofNat peanoCtx.primCtx n)
 

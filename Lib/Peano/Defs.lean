@@ -1,4 +1,5 @@
 import Zag.Theory
+import Zag.Syntax
 
 namespace Zag
 
@@ -213,7 +214,7 @@ theorem Term.hasType.ite {ctx : Ctx} [Peano.Model ctx]
     (hthen : Term.hasType ctx varCtx thenTerm ty)
     (helse : Term.hasType ctx varCtx elseTerm ty) :
     Term.hasType ctx varCtx (Term.ite cond thenTerm elseTerm) ty := by
-  refine Term.hasType.op (tys := [Peano.BoolTy, ty, ty]) rfl ?_ ?_
+  apply Term.hasType.op (tys := [Peano.BoolTy, ty, ty]) (by rfl)
   · intro idx
     match idx with
     | ⟨0, _⟩ => simpa using hcond

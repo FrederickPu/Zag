@@ -1,4 +1,8 @@
-import Lean.Elab.Tactic
+import Lean.Elab.Tactic.Basic
+import Lean.Elab.Tactic.BuiltinTactic
+import Lean.Elab.Tactic.ElabTerm
+import Lean.Elab.Tactic.Rewrite
+import Lean.Elab.Tactic.Simp
 import Zag.Meta.Language
 
 namespace Zag

@@ -11,9 +11,8 @@ indexed support evidence, and total conversion over that evidence. Bind, loop,
 and handler bodies use an explicit environment, so there is no opaque program
 leaf and candidate construction checks every converted closure.
 
-The current kernel does not support a top-level throw, the second catch rule
-unless its result exception is `Unit`, polishing, external callee rewrites, or
-recursive function groups. In particular, it does not manufacture an SCC
+The current kernel does not support a top-level throw, polishing, external
+callee rewrites, or recursive function groups. In particular, it does not manufacture an SCC
 translation: transferring recursive definitions also needs the upstream
 monotonicity proof, which is not implied by a successful structural rewrite.
 -/
@@ -40,7 +39,7 @@ end TS
 
 namespace Source
 
-export Zag.Lang.AutoCorres.TypeStrengthen.Kernel.Source (Term Syntax)
+export Zag.Lang.AutoCorres.TypeStrengthen.Kernel.Source (Term Closed Syntax)
 
 namespace Term
 
@@ -71,7 +70,7 @@ structure RawCertificate {Argument State Exception Result : Type} (carrier : Car
   equality : source.denote argument =
     TS.embed (Exception := Exception) carrier target.denote
 
-export Zag.Lang.AutoCorres.TypeStrengthen.Kernel (Certificate)
+export Zag.Lang.AutoCorres.TypeStrengthen.Kernel (ClosedCertificate Certificate)
 
 /--
 Total ordinary conversion over support evidence. The target is computed from
@@ -285,6 +284,11 @@ def strengthenAt {Argument State Exception Result : Type} {carrier : Carrier}
           simpa [Source.Term.denote] using
             (TS.liftE_L2_guard (Exception := Exception)
               (fun state => test argument state = true)) }
+  | .exactGuard test, .nondetExactGuard =>
+      { target := .atom (AutoCorres.guard (test argument))
+        equality := by
+          simpa [Source.Term.denote] using
+            (TS.liftE_L2_guard (Exception := Exception) (test argument)) }
   | .while test body initial names, .nondetWhile bodySupported =>
       let bodyResult := fun value => strengthenAt bodySupported (argument, value)
       { target := .nondetWhile (test argument)
@@ -355,15 +359,38 @@ def strengthenAt {Argument State Exception Result : Type} {carrier : Carrier}
           exact TS.liftE_L2_recguard (sourceMeasure argument)
             bodyResult.target.denote }
 
-/-- Total strengthening of a supported closed source program. -/
-def strengthen {State Result : Type} {carrier : Carrier}
-    {source : Source.Syntax State Result}
-    (supported : Supported carrier source) : Certificate carrier source :=
+/-- Total strengthening of a supported closed source with any inner exception. -/
+def strengthenClosed {State InnerException Result : Type} {carrier : Carrier}
+    {source : Source.Closed State InnerException Result}
+    (supported : Supported carrier source) : ClosedCertificate carrier source :=
   let raw := strengthenAt supported ()
   { target := raw.target
     exact := fun Exception => by
       rw [raw.equality]
-      exact (TS.L2_call_embed_exact (Exception := Exception) carrier raw.target.denote).eq }
+      exact (TS.L2_call_embed_exact (InnerException := InnerException)
+        (Exception := Exception) carrier raw.target.denote).eq }
+
+/-- Compatibility specialization for the original `Unit` inner exception API. -/
+def strengthen {State Result : Type} {carrier : Carrier}
+    {source : Source.Syntax State Result}
+    (supported : Supported carrier source) : Certificate carrier source :=
+  strengthenClosed supported
+
+theorem strengthenClosed_target_pin
+    {State InnerException Result : Type} {carrier : Carrier}
+    {source : Source.Closed State InnerException Result}
+    (supported : Supported carrier source) :
+    (strengthenClosed supported).target = (strengthenAt supported ()).target := by
+  rfl
+
+theorem strengthenClosed_correctness_pin
+    {State InnerException Result : Type} {carrier : Carrier}
+    {source : Source.Closed State InnerException Result}
+    (supported : Supported carrier source) (OuterException : Type) :
+    L2.call (Exception := OuterException) (source.denote ()) =
+      TS.embed (Exception := OuterException) carrier
+        (strengthenClosed supported).target.denote :=
+  (strengthenClosed supported).exact OuterException
 
 /--
 Pointwise function certificate over the recursion measure and ordinary
@@ -474,6 +501,9 @@ def buildSupported (carrier : Carrier) {Argument State Exception Result : Type} 
       | .option => .ok .optionGuard
       | .nondet => .ok .nondetGuard
       | carrier => .error (unsupported carrier "guard")
+  | .exactGuard test => match carrier with
+      | .nondet => .ok .nondetExactGuard
+      | carrier => .error (unsupported carrier "exactGuard")
   | .while _test body initial names => match carrier with
       | .option =>
           match buildSupported .option body with

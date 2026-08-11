@@ -145,6 +145,33 @@ abbrev Raw := List (String × TypeAbbrev)
 def Raw.get? (ctx : Raw) (name : String) : Option TypeAbbrev :=
   (ctx.find? (·.1 = name)).map (·.2)
 
+def Raw.getWithPrefix? : Raw → String → Option (Raw × TypeAbbrev)
+| [], _ => none
+| entry :: rest, name =>
+    if entry.1 = name then
+      some ([], entry.2)
+    else
+      match Raw.getWithPrefix? rest name with
+      | some (prior, definition) => some (entry :: prior, definition)
+      | none => none
+
+theorem Raw.getWithPrefix?_prefix_lt
+    {ctx prior : Raw} {name : String} {definition : TypeAbbrev}
+    (h : ctx.getWithPrefix? name = some (prior, definition)) :
+    prior.length < ctx.length := by
+  induction ctx generalizing prior definition with
+  | nil => simp [Raw.getWithPrefix?] at h
+  | cons entry rest ih =>
+      simp only [Raw.getWithPrefix?] at h
+      split at h
+      · simp_all
+      · split at h
+        · next prefix' definition' heq =>
+            cases h
+            simp only [List.length_cons, Nat.add_lt_add_iff_right]
+            exact ih heq
+        · simp_all
+
 end TypeAbbrevCtx
 
 def Ty.subst (ctxTy : List Ty) : Ty → Ty
@@ -209,7 +236,53 @@ def empty : TypeAbbrevCtx := ⟨[], by decide⟩
 
 def get? (ctx : TypeAbbrevCtx) (name : String) : Option TypeAbbrev := ctx.val.get? name
 
+def ofRaw? (raw : Raw) : Option TypeAbbrevCtx :=
+  if h : Valid raw then some ⟨raw, h⟩ else none
+
 end TypeAbbrevCtx
+
+def Ty.normalizeWith (ctx : TypeAbbrevCtx.Raw) (env : List Ty) (ty : Ty) : Ty :=
+  match ty with
+  | .var idx =>
+      if idx < env.length then (env[idx]?).getD (.var idx) else .var (idx - env.length)
+  | .prim name => .prim name
+  | .option element => .option (normalizeWith ctx env element)
+  | .union alternatives => .union (alternatives.map (normalizeWith ctx env))
+  | .struct fields => .struct (fields.map (normalizeWith ctx env))
+  | .func args out =>
+      .func (args.map (normalizeWith ctx env)) (normalizeWith ctx env out)
+  | .m result => .m (normalizeWith ctx env result)
+  | .«abbrev» name args =>
+      let args := args.map (normalizeWith ctx env)
+      match _hget : TypeAbbrevCtx.Raw.getWithPrefix? ctx name with
+      | some (prior, definition) =>
+          if args.length = definition.typeArity then
+            normalizeWith prior args definition.body
+          else
+            .«abbrev» name args
+      | none => .«abbrev» name args
+termination_by (ctx.length, sizeOf ty)
+decreasing_by
+  all_goals
+    first
+    | apply Prod.Lex.left
+      exact TypeAbbrevCtx.Raw.getWithPrefix?_prefix_lt _hget
+    | apply Prod.Lex.right
+      simp only [Ty.option.sizeOf_spec, Ty.union.sizeOf_spec, Ty.struct.sizeOf_spec,
+        Ty.func.sizeOf_spec, Ty.m.sizeOf_spec, Ty.«abbrev».sizeOf_spec]
+      first
+      | omega
+      | (have := List.sizeOf_lt_of_mem (by assumption); omega)
+
+/- Fully expand type abbreviations using their ordered, nonrecursive declarations. -/
+def Ty.normalizeAbbrev (ctx : TypeAbbrevCtx) (ty : Ty) : Ty :=
+  Ty.normalizeWith ctx.val [] ty
+
+def Ty.deltaEq (ctx : TypeAbbrevCtx) (left right : Ty) : Bool :=
+  left.normalizeAbbrev ctx == right.normalizeAbbrev ctx
+
+def Ty.deltaEqList (ctx : TypeAbbrevCtx) (left right : List Ty) : Bool :=
+  left.map (Ty.normalizeAbbrev ctx) == right.map (Ty.normalizeAbbrev ctx)
 
 structure Primitive where
   name : String
@@ -679,6 +752,52 @@ def Raw.get? {primCtx : PrimitiveCtx} (ctx : Raw primCtx)
     (name : String) : Option (TermAbbrev primCtx) :=
   (ctx.find? (·.1 = name)).map (·.2)
 
+def Raw.getWithPrefix? {primCtx : PrimitiveCtx} : Raw primCtx → String →
+    Option (Raw primCtx × TermAbbrev primCtx)
+| [], _ => none
+| entry :: rest, name =>
+    if entry.1 = name then
+      some ([], entry.2)
+    else
+      match Raw.getWithPrefix? rest name with
+      | some (prior, definition) => some (entry :: prior, definition)
+      | none => none
+
+theorem Raw.exists_getWithPrefix?_of_get? {primCtx : PrimitiveCtx}
+    {ctx : Raw primCtx} {name : String} {definition : TermAbbrev primCtx}
+    (h : ctx.get? name = some definition) :
+    ∃ prior, ctx.getWithPrefix? name = some (prior, definition) := by
+  induction ctx with
+  | nil => simp [Raw.get?] at h
+  | cons entry rest ih =>
+      by_cases hname : entry.1 = name
+      · have hdefinition : entry.2 = definition := by
+          simpa [Raw.get?, List.find?, hname] using h
+        exact ⟨[], by simp [Raw.getWithPrefix?, hname, hdefinition]⟩
+      · have hrest : Raw.get? rest name = some definition := by
+          simpa [Raw.get?, List.find?, hname] using h
+        obtain ⟨prior, hprior⟩ := ih hrest
+        exact ⟨entry :: prior, by simp [Raw.getWithPrefix?, hname, hprior]⟩
+
+theorem Raw.get?_eq_some_of_getWithPrefix? {primCtx : PrimitiveCtx}
+    {ctx prior : Raw primCtx} {name : String} {definition : TermAbbrev primCtx}
+    (h : ctx.getWithPrefix? name = some (prior, definition)) :
+    ctx.get? name = some definition := by
+  induction ctx generalizing prior definition with
+  | nil => simp [Raw.getWithPrefix?] at h
+  | cons entry rest ih =>
+      by_cases hname : entry.1 = name
+      · have hdefinition : entry.2 = definition := by
+          simp only [Raw.getWithPrefix?, hname, ↓reduceIte, Option.some.injEq] at h
+          exact congrArg Prod.snd h
+        simp [Raw.get?, List.find?, hname, hdefinition]
+      · simp only [Raw.getWithPrefix?, hname, ↓reduceIte] at h
+        split at h
+        · next foundPrior foundDefinition hrest =>
+            cases h
+            simpa [Raw.get?, List.find?, hname] using ih hrest
+        · contradiction
+
 end TermAbbrevCtx
 
 private def Term.abbrevNames {primCtx : PrimitiveCtx} : Term primCtx → List String
@@ -705,30 +824,186 @@ instance {primCtx : PrimitiveCtx} (ctx : TermAbbrevCtx.Raw primCtx) :
   unfold TermAbbrevCtx.Valid
   infer_instance
 
-structure TermAbbrevCtx (primCtx : PrimitiveCtx) where
+structure StructuralTermAbbrevCtx (primCtx : PrimitiveCtx) where
   val : TermAbbrevCtx.Raw primCtx
   isValid : TermAbbrevCtx.Valid val
 
 namespace TermAbbrevCtx
 
 instance {primCtx : PrimitiveCtx} :
-    Coe (TermAbbrevCtx primCtx) (TermAbbrevCtx.Raw primCtx) := ⟨TermAbbrevCtx.val⟩
+    Coe (StructuralTermAbbrevCtx primCtx) (TermAbbrevCtx.Raw primCtx) :=
+  ⟨StructuralTermAbbrevCtx.val⟩
 
-def empty {primCtx : PrimitiveCtx} : TermAbbrevCtx primCtx := ⟨[], ⟨by simp, rfl⟩⟩
-
-def get? {primCtx : PrimitiveCtx} (ctx : TermAbbrevCtx primCtx)
-    (name : String) : Option (TermAbbrev primCtx) := ctx.val.get? name
+def structuralEmpty {primCtx : PrimitiveCtx} : StructuralTermAbbrevCtx primCtx :=
+  ⟨[], ⟨by simp, rfl⟩⟩
 
 end TermAbbrevCtx
 
-/- Everything a `Term` is interpreted against: primitives, operators, and transparent
-  abbreviation declarations. Later fields may depend on the earlier contexts. -/
-structure Ctx where
+/- The context needed to check declarations; it deliberately does not mention term abbreviations. -/
+structure BaseCtx where
   primCtx : PrimitiveCtx
   primFuncCtx : PrimFuncCtx primCtx
   opCtx : OpCtx primCtx
   tyAbbrevCtx : TypeAbbrevCtx := .empty
-  termAbbrevCtx : TermAbbrevCtx primCtx := .empty
+
+mutual
+
+def Ty.runtimeTagSafe : Ty → Bool
+| .var _ | .«abbrev» _ _ => false
+| .prim _ => true
+| .option ty | .m ty => ty.runtimeTagSafe
+| .union tys | .struct tys => Ty.runtimeTagsSafe tys
+| .func args out => Ty.runtimeTagsSafe args && out.runtimeTagSafe
+
+def Ty.runtimeTagsSafe : List Ty → Bool
+| [] => true
+| ty :: tys => ty.runtimeTagSafe && Ty.runtimeTagsSafe tys
+
+end
+
+mutual
+
+def Term.inferType? (base : BaseCtx) (terms : TermAbbrevCtx.Raw base.primCtx)
+    (typeArity : Nat) (varCtx : VarCtx) : Term base.primCtx → Option Ty
+| .prim ty _ =>
+    if Ty.validIn base.tyAbbrevCtx.val typeArity ty &&
+        ty.normalizeAbbrev base.tyAbbrevCtx = ty && Ty.runtimeTagSafe ty then
+      some ty
+    else none
+| .primFunc name =>
+    (base.primFuncCtx.get? name).map fun definition =>
+      definition.ty.normalizeAbbrev base.tyAbbrevCtx
+| .var idx => (varCtx[idx]?).map (Ty.normalizeAbbrev base.tyAbbrevCtx)
+| .app fn args => do
+    let (.func expected out) ← inferType? base terms typeArity varCtx fn | none
+    let actual ← inferTypes? base terms typeArity varCtx args
+    if actual = expected then some out else none
+| .op name args => do
+    let actual ← inferTypes? base terms typeArity varCtx args
+    (base.opCtx.outTy? name actual).map (Ty.normalizeAbbrev base.tyAbbrevCtx)
+| .«abbrev» name typeArgs args => do
+    let definition ← terms.get? name
+    if typeArgs.length != definition.typeArity ||
+        !Ty.validListIn base.tyAbbrevCtx.val typeArity typeArgs then none
+    let actual ← inferTypes? base terms typeArity varCtx args
+    let expected := definition.varCtx.map fun ty =>
+      (Ty.subst typeArgs ty).normalizeAbbrev base.tyAbbrevCtx
+    if actual = expected then
+      some ((Ty.subst typeArgs definition.outTy).normalizeAbbrev base.tyAbbrevCtx)
+    else none
+| .mkStruct tys =>
+    if Ty.validListIn base.tyAbbrevCtx.val typeArity tys then
+      let tys := tys.map (Ty.normalizeAbbrev base.tyAbbrevCtx)
+      some (.func tys (.struct tys))
+    else none
+| .structProj tys idx =>
+    if Ty.validListIn base.tyAbbrevCtx.val typeArity tys then
+      let normalized := tys.map (Ty.normalizeAbbrev base.tyAbbrevCtx)
+      have hlen : tys.length = normalized.length := by simp [normalized]
+      some (.func [.struct normalized] normalized[idx.cast hlen])
+    else none
+| .recurse resultTy init body => do
+    if !Ty.validIn base.tyAbbrevCtx.val typeArity resultTy then none
+    let resultTy := resultTy.normalizeAbbrev base.tyAbbrevCtx
+    let stateTy ← inferType? base terms typeArity varCtx init
+    let bodyTy ← inferType? base terms typeArity
+      (varCtx ++ [stateTy, .func [stateTy] resultTy]) body
+    if bodyTy = resultTy then some resultTy else none
+
+def Term.inferTypes? (base : BaseCtx) (terms : TermAbbrevCtx.Raw base.primCtx)
+    (typeArity : Nat) (varCtx : VarCtx) : List (Term base.primCtx) → Option (List Ty)
+| [] => some []
+| term :: rest => do
+    let ty ← Term.inferType? base terms typeArity varCtx term
+    let tys ← Term.inferTypes? base terms typeArity varCtx rest
+    some (ty :: tys)
+
+end
+
+
+def TermAbbrev.check (base : BaseCtx) (prior : TermAbbrevCtx.Raw base.primCtx)
+    (definition : TermAbbrev base.primCtx) : Bool :=
+  Ty.validListIn base.tyAbbrevCtx.val definition.typeArity definition.varCtx &&
+    Ty.validIn base.tyAbbrevCtx.val definition.typeArity definition.outTy &&
+    definition.body.inferType? base prior definition.typeArity definition.varCtx =
+      some (definition.outTy.normalizeAbbrev base.tyAbbrevCtx)
+
+def TermAbbrevCtx.checkFrom (base : BaseCtx) :
+    TermAbbrevCtx.Raw base.primCtx → TermAbbrevCtx.Raw base.primCtx → Bool
+| _, [] => true
+| prior, entry :: rest =>
+    !prior.any (·.1 = entry.1) && entry.2.check base prior &&
+      checkFrom base (prior ++ [entry]) rest
+
+def TermAbbrevCtx.check (base : BaseCtx) (ctx : TermAbbrevCtx.Raw base.primCtx) : Bool :=
+  TermAbbrevCtx.checkFrom base [] ctx
+
+private theorem TermAbbrevCtx.checkFrom_getWithPrefix? {base : BaseCtx}
+    {accumulated entries priorEntries : TermAbbrevCtx.Raw base.primCtx}
+    {name : String} {definition : TermAbbrev base.primCtx}
+    (hcheck : TermAbbrevCtx.checkFrom base accumulated entries = true)
+    (hget : entries.getWithPrefix? name = some (priorEntries, definition)) :
+    definition.check base (accumulated ++ priorEntries) = true := by
+  induction entries generalizing accumulated priorEntries definition with
+  | nil => simp [TermAbbrevCtx.Raw.getWithPrefix?] at hget
+  | cons entry rest ih =>
+      simp only [TermAbbrevCtx.checkFrom, Bool.and_eq_true] at hcheck
+      simp only [TermAbbrevCtx.Raw.getWithPrefix?] at hget
+      split at hget
+      · cases hget
+        simpa using hcheck.1.2
+      · split at hget
+        · next foundPrefix foundDefinition hrest =>
+            cases hget
+            simpa [List.append_assoc] using ih hcheck.2 hrest
+        · contradiction
+
+structure CheckedTermAbbrevCtx (base : BaseCtx) where
+  val : TermAbbrevCtx.Raw base.primCtx
+  isChecked : TermAbbrevCtx.check base val = true
+
+namespace CheckedTermAbbrevCtx
+
+abbrev empty (base : BaseCtx) : CheckedTermAbbrevCtx base := ⟨[], rfl⟩
+
+@[simp] theorem empty_val (base : BaseCtx) : (empty base).val = [] := rfl
+
+def get? {base : BaseCtx} (ctx : CheckedTermAbbrevCtx base)
+    (name : String) : Option (TermAbbrev base.primCtx) := ctx.val.get? name
+
+def getWithPrefix? {base : BaseCtx} (ctx : CheckedTermAbbrevCtx base)
+    (name : String) : Option (TermAbbrevCtx.Raw base.primCtx × TermAbbrev base.primCtx) :=
+  ctx.val.getWithPrefix? name
+
+theorem getWithPrefix?_check {base : BaseCtx} {ctx : CheckedTermAbbrevCtx base}
+    {name : String} {prior : TermAbbrevCtx.Raw base.primCtx}
+    {definition : TermAbbrev base.primCtx}
+    (hget : ctx.getWithPrefix? name = some (prior, definition)) :
+    definition.check base prior = true := by
+  apply TermAbbrevCtx.checkFrom_getWithPrefix? (accumulated := []) ctx.isChecked
+  simpa [getWithPrefix?] using hget
+
+/-- A declaration in a checked context has a body of its canonical declared result type. -/
+theorem getWithPrefix?_bodyInferType {base : BaseCtx} {ctx : CheckedTermAbbrevCtx base}
+    {name : String} {prior : TermAbbrevCtx.Raw base.primCtx}
+    {definition : TermAbbrev base.primCtx}
+    (hget : ctx.getWithPrefix? name = some (prior, definition)) :
+    definition.body.inferType? base prior definition.typeArity definition.varCtx =
+      some (definition.outTy.normalizeAbbrev base.tyAbbrevCtx) := by
+  have hcheck := getWithPrefix?_check hget
+  simp only [TermAbbrev.check, Bool.and_eq_true] at hcheck
+  exact of_decide_eq_true hcheck.2
+
+def ofRaw? (base : BaseCtx) (raw : TermAbbrevCtx.Raw base.primCtx) :
+    Option (CheckedTermAbbrevCtx base) :=
+  if h : TermAbbrevCtx.check base raw = true then some ⟨raw, h⟩ else none
+
+end CheckedTermAbbrevCtx
+
+/- Everything a `Term` is interpreted against: primitives, operators, and transparent
+  abbreviation declarations. Later fields may depend on the earlier contexts. -/
+structure Ctx extends BaseCtx where
+  termAbbrevCtx : CheckedTermAbbrevCtx toBaseCtx := .empty toBaseCtx
 
 /- monad used to interpret `Ty.m` in this context -/
 abbrev Ctx.M (ctx : Ctx) : Type → Type := ctx.primCtx.M
@@ -749,12 +1024,16 @@ inductive Term.hasType (ctx : Ctx) : VarCtx → Term ctx.primCtx → Ty → Prop
     hasType ctx varCtx (.op name args) r
 | «abbrev» {varCtx} {name : String} {typeArgs : List Ty}
     {args : List (Term ctx.primCtx)} {definition : TermAbbrev ctx.primCtx}
-    (hget : ctx.termAbbrevCtx.get? name = some definition)
+    {prior : TermAbbrevCtx.Raw ctx.primCtx}
+    (hget : ctx.termAbbrevCtx.getWithPrefix? name = some (prior, definition))
     (htypes : typeArgs.length = definition.typeArity)
+    (htypeArgs : Ty.validListIn ctx.tyAbbrevCtx.val 0 typeArgs = true)
     (hargs₁ : args.length = definition.varCtx.length)
     (hargs₂ : ∀ idx : Fin args.length,
-      hasType ctx varCtx args[idx] (Ty.subst typeArgs definition.varCtx[idx])) :
-    hasType ctx varCtx (.«abbrev» name typeArgs args) (Ty.subst typeArgs definition.outTy)
+      hasType ctx varCtx args[idx]
+        ((Ty.subst typeArgs definition.varCtx[idx]).normalizeAbbrev ctx.tyAbbrevCtx)) :
+    hasType ctx varCtx (.«abbrev» name typeArgs args)
+      ((Ty.subst typeArgs definition.outTy).normalizeAbbrev ctx.tyAbbrevCtx)
 | app {varCtx} {f : Term ctx.primCtx} {fTy : Ty}
     {args : List (Term ctx.primCtx)} {argsTy : List Ty}
     (hf : hasType ctx varCtx f (.func argsTy fTy))
@@ -769,6 +1048,22 @@ inductive Term.hasType (ctx : Ctx) : VarCtx → Term ctx.primCtx → Ty → Prop
     (hinit : hasType ctx varCtx init stateTy)
     (hbody : hasType ctx (varCtx ++ [stateTy, .func [stateTy] resultTy]) body resultTy) :
     hasType ctx varCtx (.recurse resultTy init body) resultTy
+
+theorem Term.hasType.abbrev_result {ctx : Ctx} {varCtx : VarCtx} {name : String}
+    {typeArgs : List Ty} {args : List (Term ctx.primCtx)} {ty : Ty}
+    (h : Term.hasType ctx varCtx (.«abbrev» name typeArgs args) ty) :
+    ∃ (definition : TermAbbrev ctx.primCtx) (prior : TermAbbrevCtx.Raw ctx.primCtx),
+      ctx.termAbbrevCtx.getWithPrefix? name = some (prior, definition) ∧
+      ty = (Ty.subst typeArgs definition.outTy).normalizeAbbrev ctx.tyAbbrevCtx := by
+  cases h with
+  | «abbrev» hget _ _ _ _ => exact ⟨_, _, hget, rfl⟩
+
+theorem Term.hasType.abbrev_typeArgs_valid {ctx : Ctx} {varCtx : VarCtx} {name : String}
+    {typeArgs : List Ty} {args : List (Term ctx.primCtx)} {ty : Ty}
+    (h : Term.hasType ctx varCtx (.«abbrev» name typeArgs args) ty) :
+    Ty.validListIn ctx.tyAbbrevCtx.val 0 typeArgs = true := by
+  cases h with
+  | «abbrev» _ _ htypeArgs _ _ => exact htypeArgs
 
 /- a `Term` of a particular `ty : Ty` under some context and variable context -/
 abbrev TermOf (ctx : Ctx) (varCtx : VarCtx) (ty : Ty) :=

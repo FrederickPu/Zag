@@ -4,17 +4,28 @@
   "theorem_names": [
     "Comparator.AutoCorres.simplConv_correct",
     "Comparator.AutoCorres.localVarExtract_correct",
+    "Comparator.AutoCorres.localVarExtractCanonical_correct",
     "Comparator.AutoCorres.heapLift_correct",
+    "Comparator.AutoCorres.heapToWord_exact",
     "Comparator.AutoCorres.wordAbstract_correct",
+    "Comparator.AutoCorres.wordToStrengthen_exact",
+    "Comparator.AutoCorres.typeStrengthenClosed_exact",
+    "Comparator.AutoCorres.typeStrengthen_exact",
     "Comparator.AutoCorres.typeStrengthen_correct",
-    "Comparator.AutoCorres.finalChainCorrect"
+    "Comparator.AutoCorres.translateUnsignedSupported_spec",
+    "Comparator.AutoCorres.translateUnsignedSupported_correct"
   ],
   "definition_names": [
     "Comparator.AutoCorres.simplConv",
     "Comparator.AutoCorres.localVarExtract",
+    "Comparator.AutoCorres.localVarExtractCanonical",
     "Comparator.AutoCorres.heapLift",
+    "Comparator.AutoCorres.heapToWord",
     "Comparator.AutoCorres.wordAbstract",
-    "Comparator.AutoCorres.typeStrengthen"
+    "Comparator.AutoCorres.wordToStrengthen",
+    "Comparator.AutoCorres.typeStrengthenClosed",
+    "Comparator.AutoCorres.typeStrengthen",
+    "Comparator.AutoCorres.translateUnsignedSupported"
   ],
   "permitted_axioms": [
     "propext",

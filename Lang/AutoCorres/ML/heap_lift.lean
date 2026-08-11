@@ -83,20 +83,20 @@ def transform : Challenge (Exception := Exception) stateMap
       { target := .guardedGets evidence.abstractRewriteGuard
           evidence.abstractExpressionGuard evidence.abstract names
         correctness := by
-          simpa only [Target.denote, Source.denote] using
+          simpa only [Target.denote, Source.denote, L2.Syntax.denote] using
             Zag.Lang.AutoCorres.HeapLift.L2Tcorres_gets evidence.rewrite
               evidence.rewriteGuardAbstracts evidence.expressionAbstracts }
   | _, _, .modify evidence =>
       { target := .guardedModify evidence.abstractRewriteGuard
           evidence.abstractUpdateGuard evidence.abstract
         correctness := by
-          simpa only [Target.denote, Source.denote] using
+          simpa only [Target.denote, Source.denote, L2.Syntax.denote] using
             Zag.Lang.AutoCorres.HeapLift.L2Tcorres_modify evidence.rewrite
               evidence.rewriteGuardAbstracts evidence.updateAbstracts }
   | _, _, .guard evidence =>
       { target := .guard evidence.abstract
         correctness := by
-          simpa only [Target.denote, Source.denote] using
+          simpa only [Target.denote, Source.denote, L2.Syntax.denote] using
             Zag.Lang.AutoCorres.HeapLift.L2Tcorres_guard evidence.rewrite
               evidence.guardAbstracts }
   | _, _, .condition testEvidence thenSupported elseSupported =>
@@ -106,7 +106,7 @@ def transform : Challenge (Exception := Exception) stateMap
           testEvidence.abstractExpressionGuard testEvidence.abstract
           thenCertificate.target elseCertificate.target
         correctness := by
-          simpa only [Target.denote, Source.denote] using
+          simpa only [Target.denote, Source.denote, L2.Syntax.denote] using
             Zag.Lang.AutoCorres.HeapLift.L2Tcorres_condition
               thenCertificate.correctness elseCertificate.correctness
               testEvidence.rewrite testEvidence.rewriteGuardAbstracts
@@ -116,7 +116,7 @@ def transform : Challenge (Exception := Exception) stateMap
       { target := .seq firstCertificate.target fun value =>
           (transform (nextSupported value)).target
         correctness := by
-          simpa only [Target.denote, Source.denote] using
+          simpa only [Target.denote, Source.denote, L2.Syntax.denote] using
             Zag.Lang.AutoCorres.HeapLift.L2Tcorres_seq
               firstCertificate.correctness fun value =>
                 (transform (nextSupported value)).correctness }
@@ -125,30 +125,30 @@ def transform : Challenge (Exception := Exception) stateMap
       { target := .catch bodyCertificate.target fun exception =>
           (transform (handlerSupported exception)).target
         correctness := by
-          simpa only [Target.denote, Source.denote] using
+          simpa only [Target.denote, Source.denote, L2.Syntax.denote] using
             Zag.Lang.AutoCorres.HeapLift.L2Tcorres_catch
               bodyCertificate.correctness fun exception =>
                 (transform (handlerSupported exception)).correctness }
   | _, _, .spec evidence =>
       { target := .guardedSpec evidence.precondition evidence.abstract
         correctness := by
-          simpa only [Target.denote, Source.denote] using
+          simpa only [Target.denote, Source.denote, L2.Syntax.denote] using
             Zag.Lang.AutoCorres.HeapLift.L2Tcorres_spec
               evidence.specificationAbstracts }
   | _, _, .unknown names =>
       { target := .unknown names
         correctness := by
-          simpa only [Target.denote, Source.denote] using
+          simpa only [Target.denote, Source.denote, L2.Syntax.denote] using
             L2Tcorres_unknown stateMap names }
   | _, _, .throw exception names =>
       { target := .throw exception names
         correctness := by
-          simpa only [Target.denote, Source.denote] using
+          simpa only [Target.denote, Source.denote, L2.Syntax.denote] using
             L2Tcorres_throw stateMap exception names }
   | _, _, .fail =>
       { target := .fail
         correctness := by
-          simpa only [Target.denote, Source.denote] using
+          simpa only [Target.denote, Source.denote, L2.Syntax.denote] using
             Zag.Lang.AutoCorres.HeapLift.L2Tcorres_fail stateMap L2.fail }
 
 /-! ## Computable structural recognition -/

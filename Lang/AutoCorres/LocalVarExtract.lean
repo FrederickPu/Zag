@@ -47,20 +47,9 @@ structure StateModel (Full : Type u) (Locals : Type v) (Globals : Type w) where
 
 namespace Source
 
-/-- Reified L1 syntax. No constructor contains an opaque `L1Program` leaf. -/
-inductive Syntax (Full : Type u) (Locals : Type v) (Globals : Type w) where
-  | skip
-  | localUpdate (update : Locals -> Globals -> Locals)
-  | globalUpdate (update : Locals -> Globals -> Globals)
-  | guard (test : Locals -> Globals -> Prop)
-  | throw
-  | seq (first second : Syntax Full Locals Globals)
-  | condition (test : Locals -> Globals -> Prop)
-      (thenBranch elseBranch : Syntax Full Locals Globals)
-  | «catch» (body handler : Syntax Full Locals Globals)
-  | spec (relation : Set (Full × Full))
-  | loop (test : Locals -> Globals -> Prop) (body : Syntax Full Locals Globals)
-  | fail
+/-- Compatibility alias: LocalVarExtract consumes canonical reified L1 syntax. -/
+abbrev Syntax (Full : Type u) (_Locals : Type v) (_Globals : Type w) :=
+  L1.Syntax Full
 
 /-- The concrete full-state transformation represented by a local update. -/
 def localTransform (model : StateModel Full Locals Globals)
@@ -74,33 +63,19 @@ def globalTransform (model : StateModel Full Locals Globals)
   model.assemble (model.projectLocals state)
     (update (model.projectLocals state) (model.projectGlobals state))
 
-/-- Interpret the reified source fragment in L1. -/
-noncomputable def Syntax.denote (model : StateModel Full Locals Globals) :
-    Syntax Full Locals Globals -> L1.L1Program Full
-  | .skip => L1.skip
-  | .localUpdate update => L1.modify (localTransform model update)
-  | .globalUpdate update => L1.modify (globalTransform model update)
-  | .guard test =>
-      L1.guard fun state => test (model.projectLocals state) (model.projectGlobals state)
-  | .throw => L1.throw
-  | .seq first second => L1.seq (first.denote model) (second.denote model)
-  | .condition test thenBranch elseBranch =>
-      L1.condition
-        (fun state => test (model.projectLocals state) (model.projectGlobals state))
-        (thenBranch.denote model) (elseBranch.denote model)
-  | .catch body handler => L1.catch (body.denote model) (handler.denote model)
-  | .spec relation => L1.spec relation
-  | .loop test body =>
-      L1.while
-        (fun state => test (model.projectLocals state) (model.projectGlobals state))
-        (body.denote model)
-  | .fail => L1.fail
+namespace Syntax
+
+/-- Compatibility name for the canonical L1 denotation. -/
+noncomputable abbrev denote : Syntax Full Locals Globals -> L1.L1Program Full :=
+  L1.Syntax.denote
+
+end Syntax
 
 end Source
 
 namespace Target
 
-/-- Reified L2 output for the certified all-locals fragment. -/
+/-- Reified L2 output for the universe-polymorphic all-locals fragment. -/
 inductive Syntax (Locals : Type v) (Globals : Type w) where
   | skip
   | localUpdate (update : Locals -> Globals -> Locals)
@@ -112,6 +87,10 @@ inductive Syntax (Locals : Type v) (Globals : Type w) where
       (thenBranch elseBranch : Syntax Locals Globals)
   | «catch» (body handler : Syntax Locals Globals)
   | loop (test : Locals -> Globals -> Prop) (body : Syntax Locals Globals)
+  | «call» (body : Syntax Locals Globals)
+  | fail
+
+namespace Syntax
 
 /--
 Interpret target syntax with explicit locals input. Returned and exceptional
@@ -119,7 +98,7 @@ locals are values; only globals inhabit the L2 monadic state. The certificate
 requires the input to equal the locals projected from the related concrete
 state. Catch receives exceptional locals extracted from the L1 post-state.
 -/
-noncomputable def Syntax.denote :
+noncomputable def denote :
     Syntax Locals Globals -> Locals -> L2.L2Program Globals Locals Locals
   | .skip, locals => L2.gets (fun _ => locals) []
   | .localUpdate update, locals => L2.gets (update locals) []
@@ -135,10 +114,95 @@ noncomputable def Syntax.denote :
   | .catch body handler, locals =>
       L2.catch (body.denote locals) fun exceptionalLocals =>
         handler.denote exceptionalLocals
-  | .loop test body, locals =>
-      L2.while test body.denote locals []
+  | .loop test body, locals => L2.while test body.denote locals []
+  | .call body, locals => body.denote locals
+  | .fail, _ => L2.fail
+
+end Syntax
 
 end Target
+
+/-! ## Closed canonical seam -/
+
+/-!
+The Type0 canonical L2 output consumed definitionally by HeapLift. This seam is
+separate from `Target.Syntax`, whose locals and globals remain universe-polymorphic.
+-/
+namespace CanonicalTarget
+
+abbrev Syntax (Locals Globals : Type) :=
+  Locals -> L2.Syntax Globals Locals Locals
+
+namespace Syntax
+
+/-- Structurally reify a closed generic extraction target in canonical L2 syntax. -/
+@[simp] def ofGeneric : Target.Syntax Locals Globals -> Syntax Locals Globals
+  | .skip, locals => .gets (fun _ => locals) []
+  | .localUpdate update, locals => .gets (update locals) []
+  | .globalUpdate update, locals =>
+      .seq (.modify (update locals)) fun _ => .gets (fun _ => locals) []
+  | .guard test, locals =>
+      .seq (.guard (test locals)) fun _ => .gets (fun _ => locals) []
+  | .throw, locals => .throw locals []
+  | .seq first second, locals =>
+      .seq (ofGeneric first locals) fun nextLocals => ofGeneric second nextLocals
+  | .condition test thenBranch elseBranch, locals =>
+      .condition (test locals) (ofGeneric thenBranch locals)
+        (ofGeneric elseBranch locals)
+  | .catch body handler, locals =>
+      .catch (ofGeneric body locals) fun exceptionalLocals =>
+        ofGeneric handler exceptionalLocals
+  | .loop test body, locals => .while test (ofGeneric body) locals []
+  | .call body, locals => .call (ofGeneric body locals)
+  | .fail, _ => .fail
+
+/-- Interpret the closed canonical target selected at an explicit locals value. -/
+noncomputable def denote :
+    Syntax Locals Globals -> Locals -> L2.L2Program Globals Locals Locals
+  | target, locals => (target locals).denote
+
+@[simp] theorem denote_ofGeneric (target : Target.Syntax Locals Globals)
+    (locals : Locals) :
+    denote (ofGeneric target) locals = target.denote locals := by
+  induction target generalizing locals with
+  | skip | localUpdate | globalUpdate | guard | throw | fail => rfl
+  | seq first second firstIH secondIH =>
+      simp only [ofGeneric, denote, L2.Syntax.denote, Target.Syntax.denote]
+      change L2.seq (denote (ofGeneric first) locals)
+          (fun value => denote (ofGeneric second) value) =
+        L2.seq (first.denote locals) fun nextLocals => second.denote nextLocals
+      rw [firstIH locals]
+      congr 1
+      funext nextLocals
+      rw [secondIH nextLocals]
+  | condition test thenBranch elseBranch thenIH elseIH =>
+      simp only [ofGeneric, denote, L2.Syntax.denote, Target.Syntax.denote]
+      change L2.condition (test locals)
+          (denote (ofGeneric thenBranch) locals)
+          (denote (ofGeneric elseBranch) locals) = _
+      rw [thenIH locals, elseIH locals]
+  | «catch» body handler bodyIH handlerIH =>
+      simp only [ofGeneric, denote, L2.Syntax.denote, Target.Syntax.denote]
+      change L2.catch (denote (ofGeneric body) locals)
+          (fun exception => denote (ofGeneric handler) exception) = _
+      rw [bodyIH locals]
+      congr 1
+      funext exceptionalLocals
+      rw [handlerIH exceptionalLocals]
+  | «loop» test body bodyIH =>
+      simp only [ofGeneric, denote, L2.Syntax.denote, Target.Syntax.denote]
+      change L2.while test (fun value => denote (ofGeneric body) value)
+          locals [] = _
+      congr 1
+      funext nextLocals
+      rw [bodyIH nextLocals]
+  | «call» body bodyIH =>
+      simp only [ofGeneric, denote, L2.Syntax.denote, Target.Syntax.denote]
+      exact bodyIH locals
+
+end Syntax
+
+end CanonicalTarget
 
 /-- Upstream-direction, failure-conditional L2/L1 correspondence. -/
 abbrev Extracts (model : StateModel Full Locals Globals)
@@ -147,7 +211,7 @@ abbrev Extracts (model : StateModel Full Locals Globals)
   forall locals,
     L2.L2Corres model.projectGlobals model.projectLocals model.projectLocals
       (fun state => model.projectLocals state = locals)
-      (target.denote locals) (source.denote model)
+      (Target.Syntax.denote target locals) source.denote
 
 /-- A generated target paired with its `L2Corres` certificate. -/
 structure Certificate (model : StateModel Full Locals Globals)
@@ -155,22 +219,60 @@ structure Certificate (model : StateModel Full Locals Globals)
   target : Target.Syntax Locals Globals
   corres : Extracts model target source
 
-/-- Indexed evidence that a source tree lies wholly in the certified fragment. -/
-inductive Supported {Full : Type u} {Locals : Type v} {Globals : Type w} :
+/-- Correspondence for the closed Type0 target passed directly to HeapLift. -/
+abbrev ClosedExtracts (model : StateModel Full Locals Globals)
+    (target : CanonicalTarget.Syntax Locals Globals)
+    (source : Source.Syntax Full Locals Globals) : Prop :=
+  forall locals,
+    L2.L2Corres model.projectGlobals model.projectLocals model.projectLocals
+      (fun state => model.projectLocals state = locals)
+      (CanonicalTarget.Syntax.denote target locals) source.denote
+
+/-- A closed canonical target and its inherited, equal-strength L2 certificate. -/
+structure ClosedCertificate (model : StateModel Full Locals Globals)
+    (source : Source.Syntax Full Locals Globals) where
+  target : CanonicalTarget.Syntax Locals Globals
+  corres : ClosedExtracts model target source
+
+/-- Close a Type0 generic certificate without changing its denotation or proof. -/
+def Certificate.close {Full : Type u} {Locals Globals : Type}
+    {model : StateModel Full Locals Globals}
+    {source : Source.Syntax Full Locals Globals}
+    (certificate : Certificate model source) : ClosedCertificate model source :=
+  { target := CanonicalTarget.Syntax.ofGeneric certificate.target
+    corres := fun locals => by
+      rw [CanonicalTarget.Syntax.denote_ofGeneric]
+      exact certificate.corres locals }
+
+/-- Evidence for the exact canonical L1 terms handled by local extraction. -/
+inductive Supported {Full : Type u} {Locals : Type v} {Globals : Type w}
+    (model : StateModel Full Locals Globals) :
     Source.Syntax Full Locals Globals -> Type (max u v w) where
-  | skip : Supported .skip
-  | localUpdate (update : Locals -> Globals -> Locals) : Supported (.localUpdate update)
-  | globalUpdate (update : Locals -> Globals -> Globals) : Supported (.globalUpdate update)
-  | guard (test : Locals -> Globals -> Prop) : Supported (.guard test)
-  | throw : Supported .throw
-  | seq {first second} : Supported first -> Supported second -> Supported (.seq first second)
+  | skip : Supported model .skip
+  | localUpdate (update : Locals -> Globals -> Locals) :
+      Supported model (.modify (Source.localTransform model update))
+  | globalUpdate (update : Locals -> Globals -> Globals) :
+      Supported model (.modify (Source.globalTransform model update))
+  | guard (test : Locals -> Globals -> Prop) :
+      Supported model (.guard fun state =>
+        test (model.projectLocals state) (model.projectGlobals state))
+  | throw : Supported model .throw
+  | seq {first second} : Supported model first -> Supported model second ->
+      Supported model (.seq first second)
   | condition (test : Locals -> Globals -> Prop) {thenBranch elseBranch} :
-      Supported thenBranch -> Supported elseBranch ->
-        Supported (.condition test thenBranch elseBranch)
+      Supported model thenBranch -> Supported model elseBranch ->
+        Supported model (.condition
+          (fun state => test (model.projectLocals state) (model.projectGlobals state))
+          thenBranch elseBranch)
   | «catch» {body handler} :
-      Supported body -> Supported handler -> Supported (.catch body handler)
+      Supported model body -> Supported model handler ->
+        Supported model (.catch body handler)
   | loop (test : Locals -> Globals -> Prop) {body} :
-      Supported body -> Supported (.loop test body)
+      Supported model body ->
+        Supported model (.while
+          (fun state => test (model.projectLocals state) (model.projectGlobals state)) body)
+  | «call» {body} : Supported model body -> Supported model (.call body)
+  | fail : Supported model .fail
 
 end Kernel
 

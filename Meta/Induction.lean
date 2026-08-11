@@ -20,6 +20,8 @@ def instantiateTermInTerm {primCtx : PrimitiveCtx} (idx : Nat) (replacement : Te
       .var varIdx
 | .app f args => .app (instantiateTermInTerm idx replacement f) (args.map (instantiateTermInTerm idx replacement))
 | .op name args => .op name (args.map (instantiateTermInTerm idx replacement))
+| .«abbrev» name typeArgs args =>
+    .«abbrev» name typeArgs (args.map (instantiateTermInTerm idx replacement))
 | .mkStruct tys => .mkStruct tys
 | .structProj tys fieldIdx => .structProj tys fieldIdx
 | .recurse resultTy init body =>
@@ -50,6 +52,7 @@ def weakenTermAt {primCtx : PrimitiveCtx} (idx : Nat) : Term primCtx → Term pr
 | .var varIdx => if idx ≤ varIdx then .var (varIdx + 1) else .var varIdx
 | .app f args => .app (weakenTermAt idx f) (args.map (weakenTermAt idx))
 | .op name args => .op name (args.map (weakenTermAt idx))
+| .«abbrev» name typeArgs args => .«abbrev» name typeArgs (args.map (weakenTermAt idx))
 | .mkStruct tys => .mkStruct tys
 | .structProj tys fieldIdx => .structProj tys fieldIdx
 | .recurse resultTy init body =>
@@ -89,6 +92,9 @@ theorem instantiateTermInTerm_weakenTermAt {primCtx : PrimitiveCtx}
         instantiateTermInTerm_weakenTermAt idx replacement f,
         instantiateTermInTerm_weakenTermAtList idx replacement args]
   | «op» name args =>
+      simp [weakenTermAt, instantiateTermInTerm,
+        instantiateTermInTerm_weakenTermAtList idx replacement args]
+  | «abbrev» name typeArgs args =>
       simp [weakenTermAt, instantiateTermInTerm,
         instantiateTermInTerm_weakenTermAtList idx replacement args]
   | mkStruct tys => simp [weakenTermAt, instantiateTermInTerm]
@@ -151,6 +157,12 @@ theorem subst_instantiateTermInTerm {primCtx : PrimitiveCtx}
           subst_instantiateTermInTermList ctxTerm t args
       simp [instantiateTermInTerm, subst_instantiateTermInTerm ctxTerm t f, hargs]
   | «op» name args =>
+      have hargs : List.map (Term.subst ctxTerm ∘ instantiateTermInTerm ctxTerm.length t) args =
+          List.map (Term.subst (ctxTerm ++ [Term.subst ctxTerm t])) args := by
+        simpa [List.map_map, Function.comp_def] using
+          subst_instantiateTermInTermList ctxTerm t args
+      simp [instantiateTermInTerm, hargs]
+  | «abbrev» name typeArgs args =>
       have hargs : List.map (Term.subst ctxTerm ∘ instantiateTermInTerm ctxTerm.length t) args =
           List.map (Term.subst (ctxTerm ++ [Term.subst ctxTerm t])) args := by
         simpa [List.map_map, Function.comp_def] using
@@ -229,6 +241,12 @@ theorem subst_weakenTermAt_concat {primCtx : PrimitiveCtx}
           subst_weakenTermAt_concatList ctxTerm y args
       simp [weakenTermAt, subst_weakenTermAt_concat ctxTerm y f, hargs]
   | «op» name args =>
+      have hargs : List.map (Term.subst (ctxTerm ++ [y]) ∘ weakenTermAt ctxTerm.length) args =
+          List.map (Term.subst ctxTerm) args := by
+        simpa [List.map_map, Function.comp_def] using
+          subst_weakenTermAt_concatList ctxTerm y args
+      simp [weakenTermAt, hargs]
+  | «abbrev» name typeArgs args =>
       have hargs : List.map (Term.subst (ctxTerm ++ [y]) ∘ weakenTermAt ctxTerm.length) args =
           List.map (Term.subst ctxTerm) args := by
         simpa [List.map_map, Function.comp_def] using
@@ -314,6 +332,12 @@ theorem subst_weakenTermAt_middle {primCtx : PrimitiveCtx}
           subst_weakenTermAt_middleList ctxTerm x y args
       simp [weakenTermAt, subst_weakenTermAt_middle ctxTerm x y f, hargs]
   | «op» name args =>
+      have hargs : List.map (Term.subst (ctxTerm ++ [x, y]) ∘ weakenTermAt ctxTerm.length)
+            args = List.map (Term.subst (ctxTerm ++ [y])) args := by
+        simpa [List.map_map, Function.comp_def] using
+          subst_weakenTermAt_middleList ctxTerm x y args
+      simp [weakenTermAt, hargs]
+  | «abbrev» name typeArgs args =>
       have hargs : List.map (Term.subst (ctxTerm ++ [x, y]) ∘ weakenTermAt ctxTerm.length)
             args = List.map (Term.subst (ctxTerm ++ [y])) args := by
         simpa [List.map_map, Function.comp_def] using
@@ -429,6 +453,14 @@ def findRecurseInTerm {primCtx : PrimitiveCtx} (idx : Nat) :
         some
           { init := found.init
             predicateTerm := .op name found.predicateTerms
+            property := by simp [instantiateTermInTerm, found.property] }
+    | none => none
+| .«abbrev» name typeArgs args =>
+    match findRecurseInTermList idx args with
+    | some found =>
+        some
+          { init := found.init
+            predicateTerm := .«abbrev» name typeArgs found.predicateTerms
             property := by simp [instantiateTermInTerm, found.property] }
     | none => none
 | .mkStruct _ => none
@@ -630,6 +662,15 @@ def abstractInitInTerm {primCtx : PrimitiveCtx} [Peano.Types primCtx]
     | none =>
         let abstractArgs := abstractInitInTermList idx init args
         { predicateTerm := .op name abstractArgs.predicateTerms
+          property := by simp [instantiateTermInTerm, abstractArgs.property] }
+| .«abbrev» name typeArgs args =>
+    match sameKnownTerm? (.«abbrev» name typeArgs args) init with
+    | some h =>
+        { predicateTerm := .var idx
+          property := by rw [h.property]; simp [instantiateTermInTerm] }
+    | none =>
+        let abstractArgs := abstractInitInTermList idx init args
+        { predicateTerm := .«abbrev» name typeArgs abstractArgs.predicateTerms
           property := by simp [instantiateTermInTerm, abstractArgs.property] }
 | .mkStruct tys =>
     match sameKnownTerm? (.mkStruct tys) init with
@@ -879,9 +920,7 @@ private theorem succEq_natLit {ctx : Ctx} [Peano.Model ctx]
       have hy : Term.evalGo ctx [] [] (Term.nat (k + 1)) = some (Val.nat (k + 1)) := by
         simp [Term.evalGo, Term.nat]
       simp only [Term.eval]
-      simp [Term.evalGo, Peano.Model.eqOp, hs', hy, Term.bool, Op.eq, Op.compare,
-        Op.Signature.eagerBody,
-        Op.Signature.apply]
+      simp [Term.evalGo, Peano.Model.eqOp, hs', hy, Term.bool, Op.eq, Op.compare]
       have hEq : Val.primEq? (Val.nat (primCtx := ctx.primCtx) (k + 1))
           (Val.nat (k + 1)) = some true := by
         simp [Val.primEq?]
@@ -970,7 +1009,7 @@ theorem natInductionChain {ctx : Ctx} [Peano.Model ctx] {ctxTy : List Ty}
                   rw [show ctxTerm.length + 1 = (ctxTerm ++ [Term.nat k]).length by simp]
                   exact List.getElem?_concat_length
                 have hc : ctxTerm.length + 1 < ctxTerm.length + 1 + 1 := by omega
-                simp [e, hc]
+                simp [hc]
               have hguardy : Pr.interp ctx ctxTy
                   (ctxTerm ++ [Term.nat k] ++ [Term.nat (k + 1)])
                   (.hasType [] (.var (ctxTerm.length + 1)) (.prim "Nat")) := by
@@ -984,7 +1023,7 @@ theorem natInductionChain {ctx : Ctx} [Peano.Model ctx] {ctxTy : List Ty}
                   rw [List.getElem?_append_left (by simp)]
                   exact List.getElem?_concat_length
                 have hc : ctxTerm.length < ctxTerm.length + 1 + 1 := by omega
-                simp [e, hc]
+                simp [hc]
               have hsuccGoal : Pr.interp ctx ctxTy
                   (ctxTerm ++ [Term.nat k] ++ [Term.nat (k + 1)])
                   (succEq ctxTerm.length succName) := by

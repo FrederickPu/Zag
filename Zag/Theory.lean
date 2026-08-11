@@ -90,8 +90,7 @@ def Term.evalApp {primCtx : PrimitiveCtx} (fn : Val primCtx) (args : List (Val p
 
 def Term.motiveVal {primCtx : PrimitiveCtx} (stateTy resultTy : Ty) : Val primCtx :=
   Val.mk (.func [stateTy] resultTy)
-    (cast (Ty.type.eq_6 primCtx [stateTy] resultTy).symm
-      (fun _ => none))
+    (cast (Ty.type.eq_6 primCtx [stateTy] resultTy).symm (fun _ => none))
 
 structure Term.MotiveCtx (primCtx : PrimitiveCtx) where
   body : Term primCtx
@@ -99,29 +98,156 @@ structure Term.MotiveCtx (primCtx : PrimitiveCtx) where
   stateTy : Ty
   resultTy : Ty
 
-/- Instantiate generic types embedded in a term abbreviation body. Intrinsic values stay unchanged. -/
-def Term.substTy {primCtx : PrimitiveCtx} (typeArgs : List Ty) : Term primCtx → Term primCtx
-| .prim ty value => .prim ty value
-| .primFunc name => .primFunc name
-| .var idx => .var idx
-| .app fn args => .app (substTy typeArgs fn) (args.map (substTy typeArgs))
-| .op name args => .op name (args.map (substTy typeArgs))
-| .«abbrev» name nestedTypeArgs args =>
-    .«abbrev» name (nestedTypeArgs.map (Ty.subst typeArgs)) (args.map (substTy typeArgs))
-| .mkStruct tys => .mkStruct (tys.map (Ty.subst typeArgs))
+/- Instantiate and canonicalize types embedded in an abbreviation body. An intrinsic payload
+   can only be retained when instantiation leaves its runtime tag unchanged. -/
+def Term.instantiateTy? {primCtx : PrimitiveCtx} (tyCtx : TypeAbbrevCtx)
+    (typeArgs : List Ty) : Term primCtx → Option (Term primCtx)
+| .prim ty value =>
+    let instantiated := (Ty.subst typeArgs ty).normalizeAbbrev tyCtx
+    if h : instantiated = ty then
+      some (.prim instantiated (cast (congrArg (Ty.type primCtx) h.symm) value))
+    else none
+| .primFunc name => some (.primFunc name)
+| .var idx => some (.var idx)
+| .app fn args => do
+    let fn ← instantiateTy? tyCtx typeArgs fn
+    let args ← args.mapM (instantiateTy? tyCtx typeArgs)
+    some (.app fn args)
+| .op name args => do
+    let args ← args.mapM (instantiateTy? tyCtx typeArgs)
+    some (.op name args)
+| .«abbrev» name nestedTypeArgs args => do
+    let nestedTypeArgs := nestedTypeArgs.map fun ty =>
+      (Ty.subst typeArgs ty).normalizeAbbrev tyCtx
+    let args ← args.mapM (instantiateTy? tyCtx typeArgs)
+    some (.«abbrev» name nestedTypeArgs args)
+| .mkStruct tys =>
+    some (.mkStruct (tys.map fun ty => (Ty.subst typeArgs ty).normalizeAbbrev tyCtx))
 | .structProj tys idx =>
-    have hlen : (tys.map (Ty.subst typeArgs)).length = tys.length := by simp
-    .structProj (tys.map (Ty.subst typeArgs)) (idx.cast hlen.symm)
-| .recurse resultTy init body =>
-    .recurse (Ty.subst typeArgs resultTy) (substTy typeArgs init) (substTy typeArgs body)
+    let instantiated := tys.map fun ty => (Ty.subst typeArgs ty).normalizeAbbrev tyCtx
+    have hlen : tys.length = instantiated.length := by simp [instantiated]
+    some (.structProj instantiated (idx.cast hlen))
+| .recurse resultTy init body => do
+    let init ← instantiateTy? tyCtx typeArgs init
+    let body ← instantiateTy? tyCtx typeArgs body
+    some (.recurse ((Ty.subst typeArgs resultTy).normalizeAbbrev tyCtx) init body)
 
 /- Find the motive named by the de Bruijn variable `idx`, searching all enclosing motives. Returns it with the stack prefix up to and including it
   (re-invoking a motive restarts that level, so inner motives are dropped). -/
 def Term.MotiveCtx.findMotive {primCtx : PrimitiveCtx} (idx : Nat)
-    (motives : List (Term.MotiveCtx primCtx)) : Option (Term.MotiveCtx primCtx × List (Term.MotiveCtx primCtx)) := do
+    (motives : List (Term.MotiveCtx primCtx)) :
+    Option (Term.MotiveCtx primCtx × List (Term.MotiveCtx primCtx)) := do
   let i ← motives.findIdx? (·.env.length + 1 = idx)
   let motive ← motives[i]?
   some (motive, motives.take (i + 1))
+
+inductive Term.RuntimeValue (primCtx : PrimitiveCtx) where
+| concrete : Val primCtx → RuntimeValue primCtx
+| motive (body : Term primCtx) (captured : List (RuntimeValue primCtx))
+    (terms : TermAbbrevCtx.Raw primCtx) (stateTy resultTy : Ty) : RuntimeValue primCtx
+
+def Term.RuntimeValue.ty {primCtx : PrimitiveCtx} : RuntimeValue primCtx → Ty
+| .concrete value => value.ty
+| .motive _ _ _ stateTy resultTy => .func [stateTy] resultTy
+
+/- Legacy evaluation exposes a motive as a typed function that always fails. Keep the
+  richer representation only until a host-backed boundary requires a `Val`. -/
+def Term.RuntimeValue.asConcrete? {primCtx : PrimitiveCtx} :
+    RuntimeValue primCtx → Option (Val primCtx)
+| .concrete value => some value
+| .motive _ _ _ stateTy resultTy => some (Term.motiveVal stateTy resultTy)
+
+mutual
+
+private def Term.evalRuntimeGo (ctx : Ctx) (terms : TermAbbrevCtx.Raw ctx.primCtx)
+    (env : List (Term.RuntimeValue ctx.primCtx)) :
+    Term ctx.primCtx → Option (Term.RuntimeValue ctx.primCtx)
+| .prim ty val => some (.concrete (Val.mk ty val))
+| .primFunc name => do
+    let pfunc ← ctx.primFuncCtx.get? name
+    some (.concrete pfunc.toVal)
+| .var idx => env[idx]?
+| .op name args => do
+    let oper ← ctx.opCtx.get? name
+    if args.length = oper.arity then
+      Term.evalRuntimeBody ctx terms env args oper.body
+    else none
+| .«abbrev» name typeArgs args => do
+    let (prior, definition) ← TermAbbrevCtx.Raw.getWithPrefix? terms name
+    if typeArgs.length != definition.typeArity || args.length != definition.varCtx.length ||
+        !Ty.validListIn ctx.tyAbbrevCtx.val 0 typeArgs then none
+    let vargs ← Term.evalRuntimeList ctx terms env args
+    let expected := definition.varCtx.map fun ty =>
+      (Ty.subst typeArgs ty).normalizeAbbrev ctx.tyAbbrevCtx
+    if vargs.map RuntimeValue.ty != expected then none
+    let body ← definition.body.instantiateTy? ctx.tyAbbrevCtx typeArgs
+    let result ← Term.evalRuntimeGo ctx prior vargs body
+    let output := (Ty.subst typeArgs definition.outTy).normalizeAbbrev ctx.tyAbbrevCtx
+    if result.ty = output then some result else none
+| .mkStruct tys =>
+    some (.concrete <| Val.mk (.func tys (.struct tys))
+      (cast (Ty.type.eq_6 ctx.primCtx tys (.struct tys)).symm
+        (fun args => some (cast (Ty.type.eq_5 ctx.primCtx tys).symm args))))
+| .structProj tys idx =>
+    some (.concrete <| Val.mk (.func [.struct tys] tys[idx])
+      (cast (Ty.type.eq_6 ctx.primCtx [.struct tys] tys[idx]).symm
+        (fun args => some ((cast (Ty.type.eq_5 ctx.primCtx tys) (args 0)) idx))))
+| .app fn args => do
+    let fn ← Term.evalRuntimeGo ctx terms env fn
+    let args ← Term.evalRuntimeList ctx terms env args
+    Term.applyRuntime ctx fn args
+| .recurse resultTy init body => do
+    let state ← (← Term.evalRuntimeGo ctx terms env init).asConcrete?
+    let motive : Term.RuntimeValue ctx.primCtx :=
+      .motive body env terms state.ty resultTy
+    Term.evalRuntimeGo ctx terms (env ++ [.concrete state, motive]) body
+partial_fixpoint
+
+private def Term.evalRuntimeList (ctx : Ctx) (abbrevs : TermAbbrevCtx.Raw ctx.primCtx)
+    (env : List (Term.RuntimeValue ctx.primCtx)) : List (Term ctx.primCtx) →
+    Option (List (Term.RuntimeValue ctx.primCtx))
+| [] => some []
+| term :: terms => do
+    let value ← Term.evalRuntimeGo ctx abbrevs env term
+    let values ← Term.evalRuntimeList ctx abbrevs env terms
+    some (value :: values)
+partial_fixpoint
+
+private def Term.evalRuntimeBody (ctx : Ctx) (abbrevs : TermAbbrevCtx.Raw ctx.primCtx)
+    (env : List (Term.RuntimeValue ctx.primCtx)) : List (Term ctx.primCtx) →
+    Op.Body ctx.primCtx → Option (Term.RuntimeValue ctx.primCtx)
+| _, .fail => none
+| _, .done value => some (.concrete value)
+| [], .next _ _ => none
+| term :: terms, .next evaluate resume =>
+    if evaluate then do
+      let value ← (← Term.evalRuntimeGo ctx abbrevs env term).asConcrete?
+      Term.evalRuntimeBody ctx abbrevs env terms (resume (some value))
+    else
+      Term.evalRuntimeBody ctx abbrevs env terms (resume none)
+partial_fixpoint
+
+private def Term.applyRuntime (ctx : Ctx) (fn : Term.RuntimeValue ctx.primCtx)
+    (args : List (Term.RuntimeValue ctx.primCtx)) : Option (Term.RuntimeValue ctx.primCtx) := do
+  match fn with
+  | .concrete value =>
+      let args ← args.mapM RuntimeValue.asConcrete?
+      return .concrete (← Term.evalApp value args)
+  | .motive body captured abbrevs stateTy resultTy =>
+      let [arg] := args | none
+      let state ← arg.asConcrete?
+      let stateRaw ← state.as? stateTy
+      let state := Val.mk stateTy stateRaw
+      let motive : Term.RuntimeValue ctx.primCtx :=
+        .motive body captured abbrevs stateTy resultTy
+      let result ← Term.evalRuntimeGo ctx abbrevs
+        (captured ++ [.concrete state, motive]) body
+      let result ← result.asConcrete?
+      let resultRaw ← result.as? resultTy
+      return .concrete (Val.mk resultTy resultRaw)
+partial_fixpoint
+
+end
 
 mutual
 
@@ -135,15 +261,11 @@ def Term.evalGo (ctx : Ctx)
 | .var idx => env[idx]?
 | .op name args => do
     let oper ← ctx.opCtx.get? name
-    if args.length = oper.arity then
-      Term.evalBody ctx motives env args oper.body
-    else none
-| .«abbrev» name typeArgs args => do
-    let definition ← ctx.termAbbrevCtx.get? name
-    if typeArgs.length = definition.typeArity && args.length = definition.varCtx.length then
-      let vargs ← Term.evalList ctx motives env args
-      Term.evalGo ctx [] vargs (definition.body.substTy typeArgs)
-    else none
+    if args.length = oper.arity then Term.evalBody ctx motives env args oper.body else none
+| term@(.«abbrev» ..) => do
+    let value ← Term.evalRuntimeGo ctx ctx.termAbbrevCtx.val
+      (env.map RuntimeValue.concrete) term
+    value.asConcrete?
 | .mkStruct tys =>
     some <| Val.mk (.func tys (.struct tys))
       (cast (Ty.type.eq_6 ctx.primCtx tys (.struct tys)).symm
@@ -164,32 +286,35 @@ def Term.evalGo (ctx : Ctx)
     let fields ← value.as? (.struct tys)
     some (Val.mk tys[idx] ((cast (Ty.type.eq_5 ctx.primCtx tys) fields) idx))
 | .app (.var idx) [arg] =>
-    -- A `.var idx` in application position may be a motive of *any* enclosing recursor (e.g. an
-    -- inner loop body calling the outer motive to break out), so we search the whole recursor
-    -- stack rather than only the innermost context.
     match Term.MotiveCtx.findMotive idx motives with
     | some (motive, stack) => do
         let state ← Term.evalGo ctx motives env arg
         let stateRaw ← state.as? motive.stateTy
-        let stateVal := Val.mk motive.stateTy stateRaw
+        let state := Val.mk motive.stateTy stateRaw
         let motiveVal := Term.motiveVal motive.stateTy motive.resultTy
-        let result ← Term.evalGo ctx stack (motive.env ++ [stateVal, motiveVal]) motive.body
+        let result ← Term.evalGo ctx stack (motive.env ++ [state, motiveVal]) motive.body
         let resultRaw ← result.as? motive.resultTy
         some (Val.mk motive.resultTy resultRaw)
     | none => do
-        let vf ← Term.evalGo ctx motives env (.var idx)
-        let varg ← Term.evalGo ctx motives env arg
-        Term.evalApp vf [varg]
-| .app f args => do
-    let vf ← Term.evalGo ctx motives env f
-    let vargs ← Term.evalList ctx motives env args
-    Term.evalApp vf vargs
-| .recurse resultTy init body => do
-    let v ← Term.evalGo ctx motives env init
-    let motiveVal := Term.motiveVal v.ty resultTy
-    let motiveCtx : Term.MotiveCtx ctx.primCtx :=
-      { body := body, env := env, stateTy := v.ty, resultTy := resultTy }
-    Term.evalGo ctx (motives ++ [motiveCtx]) (env ++ [v, motiveVal]) body
+        let fn ← Term.evalGo ctx motives env (.var idx)
+        let arg ← Term.evalGo ctx motives env arg
+        Term.evalApp fn [arg]
+| .app fn args => do
+    let fn ← Term.evalGo ctx motives env fn
+    let args ← Term.evalList ctx motives env args
+    Term.evalApp fn args
+| term@(.recurse resultTy init body) =>
+    match ctx.termAbbrevCtx.val with
+    | [] => do
+        let value ← Term.evalGo ctx motives env init
+        let motiveVal := Term.motiveVal value.ty resultTy
+        let motiveCtx : Term.MotiveCtx ctx.primCtx :=
+          { body := body, env := env, stateTy := value.ty, resultTy := resultTy }
+        Term.evalGo ctx (motives ++ [motiveCtx]) (env ++ [value, motiveVal]) body
+    | _ :: _ => do
+        let value ← Term.evalRuntimeGo ctx ctx.termAbbrevCtx.val
+          (env.map RuntimeValue.concrete) term
+        value.asConcrete?
 partial_fixpoint
 
 def Term.evalList (ctx : Ctx)

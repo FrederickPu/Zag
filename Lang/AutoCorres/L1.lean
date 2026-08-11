@@ -64,6 +64,43 @@ def init (update : (Value -> Value) -> State -> State) : L1Program State :=
 def fail : L1Program State :=
   AutoCorres.fail
 
+/-! ## Reified syntax -/
+
+/-- Canonical reified syntax shared by the structural L1 passes. -/
+inductive Syntax (State : Type u) where
+  | skip
+  | seq (left right : Syntax State)
+  | modify (transform : State -> State)
+  | condition (test : State -> Prop) (thenProgram elseProgram : Syntax State)
+  | «catch» (body handler : Syntax State)
+  | «while» (test : State -> Prop) (body : Syntax State)
+  | throw
+  | spec (relation : Set (State × State))
+  | guard (test : State -> Prop)
+  | fail
+  /-- A statically resolved call. The body is reified so recursive schedulers can
+  instantiate it at the preceding recursion measure. -/
+  | «call» (body : Syntax State)
+
+namespace Syntax
+
+/-- Interpret canonical L1 syntax using the existing shallow L1 semantics. -/
+@[simp] noncomputable def denote : Syntax State -> L1Program State
+  | .skip => L1.skip
+  | .seq left right => L1.seq left.denote right.denote
+  | .modify transform => L1.modify transform
+  | .condition test thenProgram elseProgram =>
+      L1.condition test thenProgram.denote elseProgram.denote
+  | .catch body handler => L1.catch body.denote handler.denote
+  | .while test body => L1.while test body.denote
+  | .throw => L1.throw
+  | .spec relation => L1.spec relation
+  | .guard test => L1.guard test
+  | .fail => L1.fail
+  | .call body => body.denote
+
+end Syntax
+
 /-- `L1_recguard`: recursive calls at measure zero fail. -/
 noncomputable def recguard (measure : Nat) (body : L1Program State) : L1Program State :=
   condition (fun _ => measure = 0) fail body
@@ -120,6 +157,29 @@ theorem L1Corres_throw (checkTermination : Bool) (env : Simpl.Body State Proc Fa
     simp [Matches, throw, AutoCorres.throw]
   · intro _
     exact .throw
+
+/-- A resolved SIMPL call corresponds to the already certified callee body. -/
+theorem L1Corres_call {State : Type u} {Proc : Type v} {Fault : Type w}
+    {checkTermination : Bool} {env : Simpl.Body State Proc Fault}
+    {proc : Proc} {sourceBody : Simpl.Com State Proc Fault}
+    {targetBody : L1Program State}
+    (defined : env proc = some sourceBody)
+    (bodyCorres : L1Corres checkTermination env targetBody sourceBody) :
+    L1Corres checkTermination env targetBody (.Call proc) := by
+  intro state noFail
+  have bodyRule := bodyCorres state noFail
+  constructor
+  · intro result execution
+    cases execution with
+    | «call» found bodyExecution =>
+        rw [defined] at found
+        cases Option.some.inj found
+        exact bodyRule.1 result bodyExecution
+    | callUndefined missing =>
+        rw [defined] at missing
+        contradiction
+  · intro check
+    exact .call defined (bodyRule.2 check)
 
 theorem L1Corres_seq {State : Type u} {Proc : Type v} {Fault : Type w}
     {checkTermination : Bool} {env : Simpl.Body State Proc Fault}

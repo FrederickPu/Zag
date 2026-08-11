@@ -241,7 +241,7 @@ theorem gaussProvable (n : Nat) :
   change Term.eq peanoCtx [] (Ty.subst [] NatTy)
     (Term.subst [] (lhsProgram n)) (Term.subst [] (rhsTerm n))
   rw [lhsProgram_subst_nil n, rhsTerm_subst_nil n]
-  simp [NatTy, Ty.subst]
+  simp [NatTy]
   exact Term.eq.mk
     (lhsProgram_hasType n)
     (rhsTerm_hasType n)

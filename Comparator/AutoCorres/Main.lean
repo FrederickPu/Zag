@@ -3,6 +3,7 @@ import Lang.AutoCorres.LocalVarExtract
 import Lang.AutoCorres.HeapLift
 import Lang.AutoCorres.WordAbstract
 import Lang.AutoCorres.TypeStrengthen
+import Lang.AutoCorres.Pipeline
 
 /-!
 # Trusted AutoCorres Comparator interface

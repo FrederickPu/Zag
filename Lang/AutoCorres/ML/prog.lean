@@ -318,29 +318,24 @@ private def sameLiveData [DecidableEq Var] :
 private def liveFixpoint [DecidableEq Var]
     (step : Prog (Finset Var) Expr Modification Call ->
       Prog (Finset Var) Expr Modification Call) :
-    Nat -> Prog (Finset Var) Expr Modification Call ->
-      Prog (Finset Var) Expr Modification Call
-  | 0, current => current
-  | fuel + 1, current =>
+    Prog (Finset Var) Expr Modification Call ->
+      Option (Prog (Finset Var) Expr Modification Call)
+  | current =>
       let next := step current
-      if sameLiveData current next then current else liveFixpoint step fuel next
+      if sameLiveData current next then some next else liveFixpoint step next
+partial_fixpoint
 
 /--
-Compute live variables to a fixed point. The finite bound counts every possible
-new `(node, variable)` fact in the universe formed by reads and requested outputs.
+Compute live variables to a fixed point, or `none` if iteration does not terminate.
+This fixed-point partiality is separate from object-level `.recGuard` program nodes.
 -/
 def calcLiveVars [DecidableEq Var]
     (program : Prog Node (Head × Finset Var × Tail) (Option Var) Call)
-    (outputVars : Finset Var) : Prog (Finset Var) (Finset Var) (Option Var) Call :=
+    (outputVars : Finset Var) : Option (Prog (Finset Var) (Finset Var) (Option Var) Call) :=
   let initial := mapProg (fun _ => emptySet) (fun expression => expression.2.1)
     (fun modified => modified) (fun callData => callData) program
-  let relevantVars := foldProg (fun _ variables => variables)
-    (fun expression variables => union expression.2.1 variables)
-    (fun _ variables => variables) (fun _ variables => variables) program outputVars
-  let nodeCount := foldProg (fun _ count => count + 1) (fun _ count => count)
-    (fun _ count => count) (fun _ count => count) program 0
   liveFixpoint (fun current => calcLiveVarsPass current outputVars emptySet)
-    (nodeCount * relevantVars.card + 1) initial
+    initial
 
 /-- Decorate each node with all variables read in its subtree. -/
 def getReadVars [DecidableEq Var] :
