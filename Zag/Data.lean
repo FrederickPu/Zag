@@ -428,6 +428,10 @@ inductive Term (primCtx : PrimitiveCtx) where
 | op : String → List (Term primCtx) → Term primCtx
 /- saturated call of a named block -/
 | call : String → List (Term primCtx) → Term primCtx
+/- Non-local exit: unwind to the nearest enclosing call of the block named here and return the
+  given value from it. Naming the current block is an early return; naming an enclosing one
+  breaks out of it, which is what the old recursor stack allowed by calling an outer motive. -/
+| exit : String → Term primCtx → Term primCtx
 
 /- One instruction names the value of a term for the remainder of its block. Instructions are
   terms rather than flat `op name args` rows, so operands may nest. -/
@@ -452,6 +456,7 @@ def callNames {primCtx : PrimitiveCtx} : Term primCtx → List String
 | .app fn args => fn.callNames ++ args.flatMap callNames
 | .op _ args => args.flatMap callNames
 | .call name args => name :: args.flatMap callNames
+| .exit name value => name :: value.callNames
 
 end Term
 
@@ -522,6 +527,7 @@ private def reprString {primCtx : PrimitiveCtx} [PrimitiveCtx.ReprName primCtx] 
 | .app fn args => "Zag.Term.app (" ++ reprString fn ++ ") " ++ reprListString args
 | .op name args => "Zag.Term.op " ++ reprStr name ++ " " ++ reprListString args
 | .call name args => "Zag.Term.call " ++ reprStr name ++ " " ++ reprListString args
+| .exit name value => "Zag.Term.exit " ++ reprStr name ++ " (" ++ reprString value ++ ")"
 
 private def reprListString {primCtx : PrimitiveCtx} [PrimitiveCtx.ReprName primCtx] :
     List (Term primCtx) → String
@@ -625,6 +631,13 @@ inductive Term.hasType (ctx : Ctx) : VarCtx → Term ctx.primCtx → Ty → Prop
     (hargs₁ : args.length = block.params.length)
     (hargs₂ : ∀ idx : Fin args.length, hasType ctx varCtx args[idx] block.params[idx].2) :
     hasType ctx varCtx (.call name args) block.outTy
+/- An exit never returns normally, so it can stand where a value of *any* type is expected. Its
+  own value must match the declared output type of the block it unwinds to. -/
+| exit {varCtx} {name : String} {value : Term ctx.primCtx} {ty : Ty}
+    {block : Block ctx.primCtx}
+    (hget : ctx.blockCtx.get? name = some block)
+    (hvalue : hasType ctx varCtx value block.outTy) :
+    hasType ctx varCtx (.exit name value) ty
 | app {varCtx} {f : Term ctx.primCtx} {fTy : Ty}
     {args : List (Term ctx.primCtx)} {argsTy : List Ty}
     (hf : hasType ctx varCtx f (.func argsTy fTy))

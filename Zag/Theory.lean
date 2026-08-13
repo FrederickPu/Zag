@@ -77,84 +77,178 @@ def Block.entryEnv {primCtx : PrimitiveCtx} (block : Block primCtx)
     (vargs : List (Val primCtx)) : Env primCtx :=
   (block.params.map Prod.fst).zip vargs
 
+/- Evaluating anything either produces an `α` or unwinds the call stack, carrying the value to
+  return and the name of the block to return it from. This is the `retBlock` continuation list
+  of a stack-based IR, reified as data: naming a block is how you pick a frame to return from. -/
+inductive Outcome (primCtx : PrimitiveCtx) (α : Type) where
+| ok (value : α)
+| exit (block : String) (value : Val primCtx)
+
+def Outcome.ok? {primCtx : PrimitiveCtx} {α : Type} : Outcome primCtx α → Option α
+| .ok value => some value
+| .exit _ _ => none
+
+@[simp] theorem Outcome.bind_map_ok {primCtx : PrimitiveCtx} {α : Type} (o : Option α) :
+    (o.map (Outcome.ok (primCtx := primCtx))).bind Outcome.ok? = o := by
+  cases o <;> rfl
+
 mutual
 
-def Term.evalGo (ctx : Ctx) (env : Env ctx.primCtx) :
-    Term ctx.primCtx → Option (Val ctx.primCtx)
-| .prim ty val => some (Val.mk ty val)
-| .var name => Scope.get? env name
+def Term.evalOutcome (ctx : Ctx) (env : Env ctx.primCtx) :
+    Term ctx.primCtx → Option (Outcome ctx.primCtx (Val ctx.primCtx))
+| .prim ty val => some (.ok (Val.mk ty val))
+| .var name => (Scope.get? env name).map .ok
+| .exit blockName value => do
+    match ← Term.evalOutcome ctx env value with
+    | .ok v => some (.exit blockName v)
+    | .exit b v => some (.exit b v)
 | .op name args => do
     let oper ← ctx.opCtx.get? name
     if args.length = oper.arity then
-      Term.evalBody ctx env args oper.body
+      Term.evalBodyOutcome ctx env args oper.body
     else none
 | .call name args => do
     let block ← ctx.blockCtx.get? name
-    let vargs ← Term.evalList ctx env args
-    if vargs.length = block.params.length then
-      Term.evalBlock ctx (block.entryEnv vargs) block
-    else none
+    match ← Term.evalListOutcome ctx env args with
+    | .exit b v => some (.exit b v)
+    | .ok vargs =>
+        if vargs.length = block.params.length then
+          Term.evalBlock ctx name (block.entryEnv vargs) block
+        else none
 | .app f args => do
-    let vf ← Term.evalGo ctx env f
-    let vargs ← Term.evalList ctx env args
-    Term.evalApp vf vargs
+    match ← Term.evalOutcome ctx env f with
+    | .exit b v => some (.exit b v)
+    | .ok vf =>
+        match ← Term.evalListOutcome ctx env args with
+        | .exit b v => some (.exit b v)
+        | .ok vargs => (Term.evalApp vf vargs).map .ok
 partial_fixpoint
 
-/- run a block's instructions in order, then return its result term -/
-def Term.evalBlock (ctx : Ctx) (env : Env ctx.primCtx) (block : Block ctx.primCtx) :
-    Option (Val ctx.primCtx) := do
-  let scope ← Term.evalInstrs ctx env block.instrs
-  Term.evalGo ctx scope block.result
+/- A call is the frame an unwind can target: an exit naming `name` stops here and becomes this
+  call's value, and any other exit keeps unwinding to an outer frame. -/
+def Term.evalBlock (ctx : Ctx) (name : String) (env : Env ctx.primCtx)
+    (block : Block ctx.primCtx) : Option (Outcome ctx.primCtx (Val ctx.primCtx)) := do
+  match ← Term.evalInstrs ctx env block.instrs with
+  | .exit b v => some (if b = name then .ok v else .exit b v)
+  | .ok scope =>
+      match ← Term.evalOutcome ctx scope block.result with
+      | .exit b v => some (if b = name then .ok v else .exit b v)
+      | .ok v => some (.ok v)
 partial_fixpoint
 
-/- each instruction extends the environment with its own name -/
+/- Each instruction extends the environment with its own name. An instruction that unwinds skips
+  every later instruction and the block's result term -- that is early return. -/
 def Term.evalInstrs (ctx : Ctx) (env : Env ctx.primCtx) :
-    List (Instr ctx.primCtx) → Option (Env ctx.primCtx)
-| [] => some env
+    List (Instr ctx.primCtx) → Option (Outcome ctx.primCtx (Env ctx.primCtx))
+| [] => some (.ok env)
 | instr :: instrs => do
-    let value ← Term.evalGo ctx env instr.value
-    Term.evalInstrs ctx (env ++ [(instr.name, value)]) instrs
+    match ← Term.evalOutcome ctx env instr.value with
+    | .exit b v => some (.exit b v)
+    | .ok value => Term.evalInstrs ctx (env ++ [(instr.name, value)]) instrs
 partial_fixpoint
 
-def Term.evalList (ctx : Ctx) (env : Env ctx.primCtx)
-    (terms : List (Term ctx.primCtx)) : Option (List (Val ctx.primCtx)) :=
-  terms.mapM (Term.evalGo ctx env)
+def Term.evalListOutcome (ctx : Ctx) (env : Env ctx.primCtx) :
+    List (Term ctx.primCtx) → Option (Outcome ctx.primCtx (List (Val ctx.primCtx)))
+| [] => some (.ok [])
+| term :: terms => do
+    match ← Term.evalOutcome ctx env term with
+    | .exit b v => some (.exit b v)
+    | .ok value =>
+        match ← Term.evalListOutcome ctx env terms with
+        | .exit b v => some (.exit b v)
+        | .ok vals => some (.ok (value :: vals))
 partial_fixpoint
 
-def Term.evalBody (ctx : Ctx) (env : Env ctx.primCtx) :
-    List (Term ctx.primCtx) → Op.Body ctx.primCtx → Option (Val ctx.primCtx)
+def Term.evalBodyOutcome (ctx : Ctx) (env : Env ctx.primCtx) :
+    List (Term ctx.primCtx) → Op.Body ctx.primCtx →
+      Option (Outcome ctx.primCtx (Val ctx.primCtx))
 | _, .fail => none
-| _, .done value => some value
+| _, .done value => some (.ok value)
 | [], .next _ _ => none
 | term :: terms, .next evaluate resume =>
     if evaluate then do
-      let value ← Term.evalGo ctx env term
-      Term.evalBody ctx env terms (resume (some value))
+      match ← Term.evalOutcome ctx env term with
+      | .exit b v => some (.exit b v)
+      | .ok value => Term.evalBodyOutcome ctx env terms (resume (some value))
     else
-      Term.evalBody ctx env terms (resume none)
+      Term.evalBodyOutcome ctx env terms (resume none)
 partial_fixpoint
 
 end
 
+/-! ### the value-level view
+
+  An unwind that escapes every enclosing call is stuck, so at the level of values evaluation
+  behaves exactly as it did before non-local exit existed. Every equation below is the
+  definition `Term.evalGo` used to have. -/
+
+def Term.evalGo (ctx : Ctx) (env : Env ctx.primCtx) (term : Term ctx.primCtx) :
+    Option (Val ctx.primCtx) :=
+  (Term.evalOutcome ctx env term).bind Outcome.ok?
+
+def Term.evalList (ctx : Ctx) (env : Env ctx.primCtx) (terms : List (Term ctx.primCtx)) :
+    Option (List (Val ctx.primCtx)) :=
+  (Term.evalListOutcome ctx env terms).bind Outcome.ok?
+
+def Term.evalBody (ctx : Ctx) (env : Env ctx.primCtx) (terms : List (Term ctx.primCtx))
+    (body : Op.Body ctx.primCtx) : Option (Val ctx.primCtx) :=
+  (Term.evalBodyOutcome ctx env terms body).bind Outcome.ok?
+
+@[simp] theorem Term.evalGo_prim (ctx : Ctx) (env : Env ctx.primCtx) (ty : Ty)
+    (val : Ty.type ctx.primCtx ty) :
+    Term.evalGo ctx env (.prim ty val) = some (Val.mk ty val) := by
+  simp [Term.evalGo, Term.evalOutcome.eq_def, Outcome.ok?]
+
+@[simp] theorem Term.evalGo_var (ctx : Ctx) (env : Env ctx.primCtx) (name : String) :
+    Term.evalGo ctx env (.var name) = Scope.get? env name := by
+  rw [Term.evalGo, Term.evalOutcome.eq_def]
+  cases h : Scope.get? env name <;> simp [h, Outcome.ok?]
+
+@[simp] theorem Term.evalGo_op (ctx : Ctx) (env : Env ctx.primCtx) (name : String)
+    (args : List (Term ctx.primCtx)) :
+    Term.evalGo ctx env (.op name args) = (do
+      let oper ← ctx.opCtx.get? name
+      if args.length = oper.arity then Term.evalBody ctx env args oper.body else none) := by
+  simp [Term.evalGo, Term.evalOutcome.eq_def, Term.evalBody]
+  cases hop : ctx.opCtx.get? name with
+  | none => simp
+  | some oper =>
+      by_cases h : args.length = oper.arity <;> simp [h]
+
+theorem Term.evalGo_exit (ctx : Ctx) (env : Env ctx.primCtx) (name : String)
+    (value : Term ctx.primCtx) :
+    Term.evalGo ctx env (.exit name value) = none := by
+  rw [Term.evalGo, Term.evalOutcome.eq_def]
+  cases hvalue : Term.evalOutcome ctx env value with
+  | none => simp [hvalue]
+  | some outcome => cases outcome <;> simp [hvalue, Outcome.ok?]
+
+def Term.eval (ctx : Ctx) (env : Env ctx.primCtx) (term : Term ctx.primCtx) :
+    Option (Val ctx.primCtx) :=
+  Term.evalGo ctx env term
+
 theorem Term.evalBody_nil (ctx : Ctx) (env : Env ctx.primCtx) (body : Op.Body ctx.primCtx) :
     Term.evalBody ctx env [] body = body.applyVals [] := by
-  rw [Term.evalBody.eq_def]
-  cases body <;> simp [Op.Body.applyVals]
+  rw [Term.evalBody, Term.evalBodyOutcome.eq_def]
+  cases body <;> simp [Op.Body.applyVals, Outcome.ok?]
 
 @[simp] theorem Term.evalBody_fail (ctx : Ctx) (env : Env ctx.primCtx)
     (terms : List (Term ctx.primCtx)) :
     Term.evalBody ctx env terms .fail = none := by
-  rw [Term.evalBody.eq_def]
+  rw [Term.evalBody, Term.evalBodyOutcome.eq_def]
+  rfl
 
 @[simp] theorem Term.evalBody_done (ctx : Ctx) (env : Env ctx.primCtx)
     (terms : List (Term ctx.primCtx)) (value : Val ctx.primCtx) :
     Term.evalBody ctx env terms (.done value) = some value := by
-  rw [Term.evalBody.eq_def]
+  rw [Term.evalBody, Term.evalBodyOutcome.eq_def]
+  rfl
 
 @[simp] theorem Term.evalBody_next_nil (ctx : Ctx) (env : Env ctx.primCtx)
     (evaluate : Bool) (resume : Option (Val ctx.primCtx) → Op.Body ctx.primCtx) :
     Term.evalBody ctx env [] (.next evaluate resume) = none := by
-  rw [Term.evalBody.eq_def]
+  rw [Term.evalBody, Term.evalBodyOutcome.eq_def]
+  rfl
 
 @[simp] theorem Term.evalBody_next_true (ctx : Ctx) (env : Env ctx.primCtx)
     (term : Term ctx.primCtx) (terms : List (Term ctx.primCtx))
@@ -162,15 +256,17 @@ theorem Term.evalBody_nil (ctx : Ctx) (env : Env ctx.primCtx) (body : Op.Body ct
     Term.evalBody ctx env (term :: terms) (.next true resume) = (do
       let value ← Term.evalGo ctx env term
       Term.evalBody ctx env terms (resume (some value))) := by
-  rw [Term.evalBody.eq_def]
-  rfl
+  rw [Term.evalBody, Term.evalBodyOutcome.eq_def, Term.evalGo]
+  cases hterm : Term.evalOutcome ctx env term with
+  | none => simp [hterm]
+  | some outcome => cases outcome <;> simp [hterm, Outcome.ok?, Term.evalBody]
 
 @[simp] theorem Term.evalBody_next_false (ctx : Ctx) (env : Env ctx.primCtx)
     (term : Term ctx.primCtx) (terms : List (Term ctx.primCtx))
     (resume : Option (Val ctx.primCtx) → Op.Body ctx.primCtx) :
     Term.evalBody ctx env (term :: terms) (.next false resume) =
       Term.evalBody ctx env terms (resume none) := by
-  rw [Term.evalBody.eq_def]
+  rw [Term.evalBody, Term.evalBodyOutcome.eq_def]
   rfl
 
 @[simp] theorem Term.evalBody_eager_one (ctx : Ctx) (env : Env ctx.primCtx)
@@ -190,10 +286,6 @@ theorem Term.evalBody_nil (ctx : Ctx) (env : Env ctx.primCtx) (body : Op.Body ct
       (Op.Body.eager run 2 []).applyVals [va, vb] := by
   simp [Op.Body.eager, ha, hb, Term.evalBody_nil, Op.Body.applyVals]
 
-def Term.eval (ctx : Ctx) (env : Env ctx.primCtx) (term : Term ctx.primCtx) :
-    Option (Val ctx.primCtx) :=
-  Term.evalGo ctx env term
-
 /- termination of a partial `Option` evaluator is successful evaluation -/
 def Term.Terminates (ctx : Ctx) (env : Env ctx.primCtx) (term : Term ctx.primCtx) : Prop :=
   ∃ v, Term.eval ctx env term = some v
@@ -208,6 +300,7 @@ def Term.subst {primCtx : PrimitiveCtx} (ctxTerm : Scope (Term primCtx))
       | .var name => (Scope.get? ctxTerm name).getD (.var name)
       | .op name args => .op name (args.map (Term.subst ctxTerm))
       | .call name args => .call name (args.map (Term.subst ctxTerm))
+      | .exit name value => .exit name (Term.subst ctxTerm value)
       | .app f args => .app (Term.subst ctxTerm f) (args.map (Term.subst ctxTerm))
 
 @[simp] theorem Term.subst_nil {primCtx : PrimitiveCtx} (term : Term primCtx) :
@@ -239,6 +332,11 @@ private theorem Term.map_subst_nil {primCtx : PrimitiveCtx} (terms : List (Term 
     (name : String) (args : List (Term primCtx)) :
     Term.subst ctxTerm (.call name args) = .call name (args.map (Term.subst ctxTerm)) := by
   cases ctxTerm <;> simp [Term.subst, Term.map_subst_nil]
+
+@[simp] theorem Term.subst_exit {primCtx : PrimitiveCtx} (ctxTerm : Scope (Term primCtx))
+    (name : String) (value : Term primCtx) :
+    Term.subst ctxTerm (.exit name value) = .exit name (Term.subst ctxTerm value) := by
+  cases ctxTerm <;> simp [Term.subst]
 
 @[simp] theorem Term.subst_app {primCtx : PrimitiveCtx} (ctxTerm : Scope (Term primCtx))
     (f : Term primCtx) (args : List (Term primCtx)) :
