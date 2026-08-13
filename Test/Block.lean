@@ -1,4 +1,5 @@
 import Lib.Peano.Defs
+import Meta.UnifyType
 
 /-!
 Blocks are where Zag gets recursion: a block may call itself.
@@ -55,19 +56,10 @@ theorem sumTo_hasType {varCtx : VarCtx} {arg : Term natCtx}
       contradiction
 
 theorem sumToBlock_wellTyped : Block.WellTyped sumToCtx sumToBlock := by
-  refine ⟨[("n", Peano.NatTy), ("isZero", Peano.BoolTy)], ?_, ?_⟩
-  · refine Block.instrsHaveType.cons (ty := Peano.BoolTy) ?_ .nil
-    exact Term.hasType.binOp (by rfl) (Term.hasType.var rfl) (Term.hasType.prim _)
-  · refine Term.hasType.ite (Term.hasType.var rfl) (Term.hasType.prim _) ?_
-    exact Term.hasType.binOp (by rfl)
-      (sumTo_hasType (Term.hasType.binOp (by rfl) (Term.hasType.var rfl) (Term.hasType.prim _)))
-      (Term.hasType.var rfl)
+  typecheck_block
 
 theorem sumToCtx_wellTyped : Ctx.WellTyped sumToCtx := by
-  intro entry hentry
-  simp only [sumToCtx, sumToBlocks, List.mem_singleton] at hentry
-  subst hentry
-  exact sumToBlock_wellTyped
+  typecheck_ctx
 
 /-- info: some 10 -/
 #guard_msgs in

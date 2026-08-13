@@ -284,7 +284,7 @@ theorem Term.evalGo_op_compare {ctx : Ctx} [Peano.Types ctx.primCtx]
     (ha : Term.evalGo ctx env a = some va)
     (hb : Term.evalGo ctx env b = some vb) (hty : va.ty = vb.ty) :
     Term.evalGo ctx env (.op name [a, b]) = (cmp va vb).map Val.bool := by
-  rw [Term.evalGo.eq_def]
+  rw [Term.evalGo_op]
   simp [hop, Op.compare, ha, hb, hty]
   cases cmp va vb <;> simp
 
@@ -297,19 +297,17 @@ theorem Term.evalGo_ite {ctx : Ctx} [Peano.Model ctx]
         Term.evalGo ctx env thenTerm
       else
         Term.evalGo ctx env elseTerm) := by
+  change Term.evalGo ctx env (.op "ite" [cond, thenTerm, elseTerm]) = _
+  rw [Term.evalGo_op]
+  rw [Peano.Model.iteOp]
   cases hcond : Term.evalGo ctx env cond with
-  | none =>
-      rw [Term.evalGo.eq_def]
-      simp [Term.ite, Peano.Model.iteOp, Op.ite, hcond]
+  | none => simp [Op.ite, hcond]
   | some value =>
       cases hvalue : value.as? Peano.BoolTy with
-      | none =>
-          rw [Term.evalGo.eq_def]
-          simp [Term.ite, Peano.Model.iteOp, Op.ite, hcond, hvalue]
+      | none => simp [Op.ite, hcond, hvalue]
       | some condition =>
           cases hcondition : Ty.toBool ctx.primCtx condition <;>
-            rw [Term.evalGo.eq_def] <;>
-            simp [Term.ite, Peano.Model.iteOp, Op.ite, hcond, hvalue, hcondition]
+            simp [Op.ite, hcond, hvalue, hcondition]
 
 syntax "nat(" term ")" : zagTerm
 syntax "bool(" term ")" : zagTerm

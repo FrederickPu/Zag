@@ -37,6 +37,7 @@ def Term.varNames {primCtx : PrimitiveCtx} : Term primCtx → List String
 | .app f args => Term.varNames f ++ Term.varNamesList args
 | .op _ args => Term.varNamesList args
 | .call _ args => Term.varNamesList args
+| .exit _ value => Term.varNames value
 
 def Term.varNamesList {primCtx : PrimitiveCtx} : List (Term primCtx) → List String
 | [] => []
@@ -74,6 +75,7 @@ def Term.instantiateVar {primCtx : PrimitiveCtx} (name : String) (replacement : 
     .app (Term.instantiateVar name replacement f) (Term.instantiateVarList name replacement args)
 | .op n args => .op n (Term.instantiateVarList name replacement args)
 | .call n args => .call n (Term.instantiateVarList name replacement args)
+| .exit n value => .exit n (Term.instantiateVar name replacement value)
 
 def Term.instantiateVarList {primCtx : PrimitiveCtx} (name : String)
     (replacement : Term primCtx) : List (Term primCtx) → List (Term primCtx)
@@ -158,6 +160,9 @@ theorem Term.subst_instantiateVar {primCtx : PrimitiveCtx} (ctxTerm : Scope (Ter
 | .call n args => by
     simp only [Term.instantiateVar, Term.subst_call]
     rw [Term.subst_instantiateVarList ctxTerm name t ht args]
+| .exit n value => by
+    simp only [Term.instantiateVar, Term.subst_exit]
+    rw [Term.subst_instantiateVar ctxTerm name t ht value]
 
 theorem Term.subst_instantiateVarList {primCtx : PrimitiveCtx} (ctxTerm : Scope (Term primCtx))
     (name : String) (t : Term primCtx) (ht : Term.subst ctxTerm t = t) :
@@ -205,6 +210,10 @@ theorem Term.subst_shadowed {primCtx : PrimitiveCtx} (ctxTerm : Scope (Term prim
     simp only [Term.varNames] at hfresh
     simp only [Term.instantiateVar, Term.subst_call]
     rw [Term.subst_shadowedList ctxTerm name yName u t hu args hfresh]
+| .exit n value, hfresh => by
+    simp only [Term.varNames] at hfresh
+    simp only [Term.instantiateVar, Term.subst_exit]
+    rw [Term.subst_shadowed ctxTerm name yName u t hu value hfresh]
 
 theorem Term.subst_shadowedList {primCtx : PrimitiveCtx} (ctxTerm : Scope (Term primCtx))
     (name yName : String) (u t : Term primCtx) (hu : Term.subst ctxTerm u = u) :
@@ -263,6 +272,10 @@ theorem Term.subst_instantiateVar_rename {primCtx : PrimitiveCtx}
     simp only [Term.varNames] at hfresh
     simp only [Term.instantiateVar, Term.subst_call]
     rw [Term.subst_instantiateVarList_rename ctxTerm name yName hne u t ht args hfresh]
+| .exit n value, hfresh => by
+    simp only [Term.varNames] at hfresh
+    simp only [Term.instantiateVar, Term.subst_exit]
+    rw [Term.subst_instantiateVar_rename ctxTerm name yName hne u t ht value hfresh]
 
 theorem Term.subst_instantiateVarList_rename {primCtx : PrimitiveCtx}
     (ctxTerm : Scope (Term primCtx)) (name yName : String) (hne : ¬ (yName = name))
@@ -421,8 +434,8 @@ structure SuccSpec (ctx : Ctx) [Peano.Types ctx.primCtx] (succName : String) : P
 
 theorem eval_natLit {ctx : Ctx} [Peano.Types ctx.primCtx] (env : Env ctx.primCtx) (n : Nat) :
     Term.eval ctx env (Term.nat n) = some (Val.nat n) := by
-  rw [Term.eval, Term.evalGo.eq_def]
-  rfl
+  rw [Term.eval]
+  simp [Term.nat]
 
 theorem subst_natLit {primCtx : PrimitiveCtx} [Peano.Types primCtx]
     (ctxTerm : Scope (Term primCtx)) (n : Nat) :
@@ -456,14 +469,14 @@ theorem succEq_natLit {ctx : Ctx} [Peano.Model ctx] {succName : String}
   have hy : Term.subst (ctxTerm ++ [(name, Term.nat k)] ++ [(yName, Term.nat (k + 1))])
       (.var yName) = Term.nat (k + 1) := subst_var_append _ _ _
   refine ⟨?_, ?_, ?_⟩
-  · simp only [Pr.interp, Term.subst_op, List.map_cons, List.map_nil, hx, hy,
+  · simp only [Term.subst_op, List.map_cons, List.map_nil, hx, hy,
       varCtx_subst_nil, subst_boolTy]
     refine Term.hasType.binOp (argTy := Peano.NatTy) ?_ ?_ (Term.hasType.prim _)
     · unfold OpCtx.outTy?
       rw [Peano.Model.eqOp]
       simp [Op.eq, Op.compare]
     · exact hspec.hasType_op _ _ (Term.hasType.prim _)
-  · simp only [Pr.interp, Term.bool, Term.subst_prim, varCtx_subst_nil, subst_boolTy]
+  · simp only [Term.bool, Term.subst_prim, varCtx_subst_nil, subst_boolTy]
     exact Term.hasType.prim _
   · intro env _
     simp only [Term.subst_op, List.map_cons, List.map_nil, hx, hy,
@@ -478,7 +491,10 @@ theorem succEq_natLit {ctx : Ctx} [Peano.Model ctx] {succName : String}
       (by rw [Peano.Model.eqOp]; rfl) hsucc hlit rfl
     have hprimEq : Val.primEq? (Val.nat (k + 1) : Val ctx.primCtx) (Val.nat (k + 1)) =
         some true := by simp [Val.primEq?]
-    rw [Term.eval, Term.eval, heq, hprimEq, Term.evalGo.eq_def]
+    rw [Term.eval, Term.eval, heq, hprimEq]
+    change some (Val.bool (primCtx := ctx.primCtx) true) =
+      Term.evalGo ctx env (Term.prim Peano.BoolTy (Ty.ofBool ctx.primCtx true))
+    rw [Term.evalGo_prim]
     rfl
 
 theorem natInductionChain {ctx : Ctx} [Peano.Model ctx] {ctxTy : Scope Ty}

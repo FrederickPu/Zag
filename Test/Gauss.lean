@@ -1,4 +1,5 @@
 import Lib.Peano.Defs
+import Meta.UnifyType
 
 /-!
 Gauss's sum as a block program.
@@ -83,23 +84,12 @@ theorem loop_hasType {varCtx : VarCtx} {i acc : Term natCtx}
       contradiction
 
 theorem loopBlock_wellTyped : Block.WellTyped gaussCtx loopBlock := by
-  refine ⟨[("i", Peano.NatTy), ("acc", Peano.NatTy), ("cond", Peano.BoolTy)], ?_, ?_⟩
-  · refine Block.instrsHaveType.cons (ty := Peano.BoolTy) ?_ .nil
-    exact Term.hasType.binOp (by rfl) (Term.hasType.var rfl) (Term.hasType.prim _)
-  · refine Term.hasType.ite (Term.hasType.var rfl) ?_ (Term.hasType.var rfl)
-    exact loop_hasType
-      (Term.hasType.binOp (by rfl) (Term.hasType.var rfl) (Term.hasType.prim _))
-      (Term.hasType.binOp (by rfl) (Term.hasType.var rfl) (Term.hasType.var rfl))
+  typecheck_block
 
 theorem gaussBlock_wellTyped : Block.WellTyped gaussCtx gaussBlock := by
-  refine ⟨[("n", Peano.NatTy)], .nil, ?_⟩
-  exact loop_hasType (Term.hasType.var rfl) (Term.hasType.prim _)
+  typecheck_block
 
 theorem gaussCtx_wellTyped : Ctx.WellTyped gaussCtx := by
-  intro entry hentry
-  simp only [gaussCtx, gaussBlocks, List.mem_cons, List.not_mem_nil, or_false] at hentry
-  rcases hentry with rfl | rfl
-  · exact gaussBlock_wellTyped
-  · exact loopBlock_wellTyped
+  typecheck_ctx
 
 end Zag.Test.Gauss

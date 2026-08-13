@@ -130,9 +130,8 @@ def runM (term : Term stateCtx) (state : Nat) : Option (Option Nat × Nat) := do
 theorem lift_eval (n : Nat) :
     Term.eval ctx [] (lift (Term.nat n)) = Op.applyVals pureOp [Val.nat n] := by
   have hnat : Term.evalGo ctx [] (Term.nat n) = some (Val.nat n) := by
-    rw [Term.evalGo.eq_def]
-    rfl
-  simp [Term.eval, lift, Term.evalGo, OpCtx.get?, Op.applyVals, pureOp]
+    simp [Term.nat]
+  simp [Term.eval, lift, Term.evalGo_op, Op.applyVals, pureOp]
   exact Term.evalBody_eager_one ctx [] _ _ _ hnat
 
 theorem lift_eval_val (n : Nat) :
@@ -152,9 +151,8 @@ theorem bind_eval (n : Nat) :
     lift_eval_val n
   have hcontinuation : Term.evalGo ctx [] identityContinuation =
       some (Val.mk (.func [NatTy] (MTy NatTy)) identityContinuationValue) := by
-    rw [Term.evalGo.eq_def]
-    rfl
-  simp [Term.eval, bindTerm, Term.evalGo, OpCtx.get?, Op.applyVals, bindOp]
+    simp [identityContinuation]
+  simp [Term.eval, bindTerm, Term.evalGo_op, Op.applyVals, bindOp]
   exact Term.evalBody_eager_two ctx [] _ _ _ _ _ hlift hcontinuation
 
 end Zag.Test.Monad
