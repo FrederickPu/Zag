@@ -7,6 +7,6 @@ namespace Zag.Test.AutoCorres.CParser.PhasePipeline.Basic
 open Zag.Lang.AutoCorres.CParser
 
 noncomputable def translation :=
-  Zag.Lang.AutoCorres.CParser.PhasePipeline.Scalar.translate certified support
+  prepared.translation
 
 end Zag.Test.AutoCorres.CParser.PhasePipeline.Basic

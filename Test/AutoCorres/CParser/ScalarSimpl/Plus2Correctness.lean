@@ -17,6 +17,12 @@ def plus2Result (a b : Word32) : State :=
   (plus2State (Int.ofNat a.toNat + Int.ofNat b.toNat) 0).returnValue u32
     (u32.cast (Int.ofNat a.toNat + Int.ofNat b.toNat))
 
+theorem plus2_enter_eq (a b : Word32) :
+    plus2.enter [Int.ofNat a.toNat, Int.ofNat b.toNat] = .ok (plus2Initial a b) := by
+  unfold plus2Initial
+  rw [plus2_is_resolved_while_body]
+  simp [expectedPlus2, Function.enter]
+
 theorem plus2_initial_eq_state (a b : Word32) :
     plus2Initial a b = plus2State (Int.ofNat a.toNat) b.toNat := by
   simp [plus2Initial, plus2_is_resolved_while_body, expectedPlus2, Function.enter,

@@ -66,7 +66,7 @@ theorem additional_references_are_committed :
   native_decide
 
 theorem core_fragment_test_count :
-    (activeTests.filter fun test => test.coverage.isFragment).length = 2 := by
+    (activeTests.filter fun test => test.coverage.isFragment).length = 4 := by
   native_decide
 
 theorem core_blocked_test_count :
@@ -74,7 +74,7 @@ theorem core_blocked_test_count :
   native_decide
 
 theorem core_complete_test_count :
-    (activeTests.filter fun test => test.coverage.isComplete).length = 4 := by
+    (activeTests.filter fun test => test.coverage.isComplete).length = 2 := by
   native_decide
 
 theorem active_tests_are_not_known_failures :
@@ -92,11 +92,11 @@ theorem broader_blocked_test_count :
   native_decide
 
 theorem broader_fragment_test_count :
-    (allValidationTests.filter fun test => test.coverage.isFragment).length = 2 := by
+    (allValidationTests.filter fun test => test.coverage.isFragment).length = 5 := by
   native_decide
 
 theorem broader_complete_test_count :
-    (allValidationTests.filter fun test => test.coverage.isComplete).length = 5 := by
+    (allValidationTests.filter fun test => test.coverage.isComplete).length = 2 := by
   native_decide
 
 theorem fragment_entries_have_anchors :

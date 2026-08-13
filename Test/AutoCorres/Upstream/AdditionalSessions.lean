@@ -43,17 +43,28 @@ private def quickstartComplete (name theory fixture reason leanEntry : String)
     coverage := .complete { moduleName := leanEntry, anchor, additionalAnchors }
     reason }
 
+private def quickstartFragment (name theory fixture reason leanEntry : String)
+    (anchor : Lean.Name) (additionalAnchors : List Lean.Name := []) : TestCase :=
+  { name
+    session := "AutoCorresQuickstart"
+    sessionEntry := name
+    upstreamEntry := autocorresFile s!"doc/quickstart/{theory}"
+    fixtures := [autocorresFile s!"doc/quickstart/{fixture}"]
+    coverage := .fragment { moduleName := leanEntry, anchor, additionalAnchors }
+    reason }
+
 def additionalValidationTests : List TestCase := [
   quickstartCase "Chapter1_MinMax" "Chapter1_MinMax.thy" "minmax.c"
     "C parsing, generated translation, and the tutorial min/max proofs are unavailable",
-  quickstartComplete "Chapter2_HoareHeap" "Chapter2_HoareHeap.thy" "mult_by_add.c"
-    "exact quickstart fixture certificate and function/body identity with the completed MultByAdd invariant, termination, generated total-correctness, and no-failure pipeline"
+  quickstartFragment "Chapter2_HoareHeap" "Chapter2_HoareHeap.thy" "mult_by_add.c"
+    "exact quickstart fixture and body identity, invariant, concrete termination, final correspondence, total result correctness, no failure, and no exceptional outcomes are certified; the generated abstract-definition inspection and exact state/result interface remain absent"
     "Test.AutoCorres.Upstream.Chapter2_HoareHeap"
     `Zag.Test.AutoCorres.Upstream.Chapter2_HoareHeap.fixture_file_map_entry_is_exact
     [`Zag.Test.AutoCorres.Upstream.Chapter2_HoareHeap.fixture_source_is_not_examples_source,
-     `Zag.Test.AutoCorres.Upstream.Chapter2_HoareHeap.fixture_certifies,
-     `Zag.Test.AutoCorres.Upstream.Chapter2_HoareHeap.function_is_mult_by_add_pipeline,
-     `Zag.Test.AutoCorres.Upstream.Chapter2_HoareHeap.body_is_exact_pipeline_shape,
+     `Zag.Test.AutoCorres.Upstream.Chapter2_HoareHeap.certified,
+      `Zag.Test.AutoCorres.Upstream.Chapter2_HoareHeap.function_is_mult_by_add_pipeline,
+      `Zag.Test.AutoCorres.Upstream.Chapter2_HoareHeap.body_is_exact_pipeline_shape,
+      `Zag.Test.AutoCorres.Upstream.Chapter2_HoareHeap.command_is_mult_by_add_pipeline,
      `Zag.Test.AutoCorres.Upstream.Chapter2_HoareHeap.invariant_initial,
      `Zag.Test.AutoCorres.Upstream.Chapter2_HoareHeap.invariant_preserved,
      `Zag.Test.AutoCorres.Upstream.Chapter2_HoareHeap.variant_decreases,

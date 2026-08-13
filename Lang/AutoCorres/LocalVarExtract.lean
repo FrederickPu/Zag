@@ -118,6 +118,55 @@ noncomputable def denote :
   | .call body, locals => body.denote locals
   | .fail, _ => L2.fail
 
+/-- Generated local-extraction targets have one result path and cannot both
+return and fail. This excludes the nondeterministic `spec`/`unknown` L2 forms. -/
+theorem functional {Locals Globals : Type} (target : Syntax Locals Globals)
+    (locals : Locals) :
+    Nondet.Functional (target.denote locals) := by
+  induction target generalizing locals with
+  | skip => exact Nondet.Functional.liftE (Nondet.Functional.gets _)
+  | localUpdate => exact Nondet.Functional.liftE (Nondet.Functional.gets _)
+  | globalUpdate update =>
+      exact Nondet.Functional.bindE
+        (Nondet.Functional.liftE (Nondet.Functional.modify _))
+        (fun _ => Nondet.Functional.liftE (Nondet.Functional.gets _))
+  | guard test =>
+      apply Nondet.Functional.bindE
+      · apply Nondet.Functional.liftE
+        constructor
+        · intro state left right leftMember rightMember
+          exact leftMember.2.trans rightMember.2.symm
+        · intro state result member failed
+          exact failed member.1
+      · intro _
+        exact Nondet.Functional.liftE (Nondet.Functional.gets _)
+  | throw => exact Nondet.Functional.throw _
+  | seq first second firstIH secondIH =>
+      exact Nondet.Functional.bindE (firstIH locals) secondIH
+  | condition test thenBranch elseBranch thenIH elseIH =>
+      classical
+      simp only [denote]
+      unfold L2.condition
+      constructor
+      · intro state left right leftMember rightMember
+        by_cases holds : test locals state
+        · simp only [if_pos holds] at leftMember rightMember
+          exact (thenIH locals).unique state leftMember rightMember
+        · simp only [if_neg holds] at leftMember rightMember
+          exact (elseIH locals).unique state leftMember rightMember
+      · intro state result member failed
+        by_cases holds : test locals state
+        · simp only [if_pos holds] at member failed
+          exact (thenIH locals).success state member failed
+        · simp only [if_neg holds] at member failed
+          exact (elseIH locals).success state member failed
+  | «catch» body handler bodyIH handlerIH =>
+      exact Nondet.Functional.handle (bodyIH locals) handlerIH
+  | «loop» test body bodyIH =>
+      exact Nondet.Functional.whileLoopE0 bodyIH locals
+  | «call» body bodyIH => exact bodyIH locals
+  | fail => exact Nondet.Functional.fail
+
 end Syntax
 
 end Target
@@ -233,6 +282,8 @@ structure ClosedCertificate (model : StateModel Full Locals Globals)
     (source : Source.Syntax Full Locals Globals) where
   target : CanonicalTarget.Syntax Locals Globals
   corres : ClosedExtracts model target source
+  functional : ∀ locals,
+    Nondet.Functional (CanonicalTarget.Syntax.denote target locals)
 
 /-- Close a Type0 generic certificate without changing its denotation or proof. -/
 def Certificate.close {Full : Type u} {Locals Globals : Type}
@@ -242,7 +293,10 @@ def Certificate.close {Full : Type u} {Locals Globals : Type}
   { target := CanonicalTarget.Syntax.ofGeneric certificate.target
     corres := fun locals => by
       rw [CanonicalTarget.Syntax.denote_ofGeneric]
-      exact certificate.corres locals }
+      exact certificate.corres locals
+    functional := fun locals => by
+      rw [CanonicalTarget.Syntax.denote_ofGeneric]
+      exact Target.Syntax.functional certificate.target locals }
 
 /-- Evidence for the exact canonical L1 terms handled by local extraction. -/
 inductive Supported {Full : Type u} {Locals : Type v} {Globals : Type w}

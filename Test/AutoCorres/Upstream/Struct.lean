@@ -5,9 +5,10 @@ import Test.AutoCorres.Upstream.Types
 /-!
 # Complete `struct` proof test
 
-The pinned theory only registers `struct.c` with `external_file` and runs
-`install_C_file`.  This certificate therefore stops at exact source
-provenance and the substantive metadata produced by parser analysis.
+The pinned [`struct.thy`](https://github.com/seL4/l4v/blob/bc2599a59c43e673dca021b10b9841e9b8da4430/tools/autocorres/tests/proof-tests/struct.thy)
+only registers [`struct.c`](https://github.com/seL4/l4v/blob/bc2599a59c43e673dca021b10b9841e9b8da4430/tools/autocorres/tests/proof-tests/struct.c)
+with `external_file` and runs `install_C_file`. This certificate therefore
+stops at exact source provenance and the parser metadata that command produces.
 -/
 
 namespace Zag.Test.AutoCorres.Upstream.Struct
@@ -53,65 +54,6 @@ def structType : AnalyzedCType := .structTy "s_C#0"
 
 def functionType : AnalyzedCType := .function structType [structType]
 
-structure FieldMetadata where
-  sourceName : String
-  type : AnalyzedCType
-  offset : Nat
-  deriving DecidableEq, Repr
-
-structure StructMetadata where
-  id : Nat
-  sourceName : String
-  canonicalName : String
-  fields : List FieldMetadata
-  size : Nat
-  alignment : Nat
-  defined : Bool
-  complete : Bool
-  deriving DecidableEq, Repr
-
-def structMetadata : List StructMetadata :=
-  installedProgram.structs.map fun info =>
-    { id := info.id
-      sourceName := info.sourceName
-      canonicalName := info.canonicalName
-      fields := info.fields.map fun field =>
-        { sourceName := field.sourceName, type := field.type, offset := field.offset }
-      size := info.size
-      alignment := info.alignment
-      defined := info.defined
-      complete := info.complete }
-
-structure SymbolMetadata where
-  id : Nat
-  sourceName : String
-  type : AnalyzedCType
-  kind : SymbolKind
-  linkage : Option Linkage
-  deriving DecidableEq, Repr
-
-def symbolMetadata : List SymbolMetadata :=
-  installedProgram.symbols.map fun symbol =>
-    { id := symbol.id
-      sourceName := symbol.sourceName
-      type := symbol.type
-      kind := symbol.kind
-      linkage := symbol.linkage }
-
-structure FunctionMetadata where
-  symbolId : Nat
-  returnType : AnalyzedCType
-  parameters : List Nat
-  locals : List Nat
-  deriving DecidableEq, Repr
-
-def functionMetadata : List FunctionMetadata :=
-  installedProgram.functions.map fun info =>
-    { symbolId := info.symbolId
-      returnType := info.returnType
-      parameters := info.parameters
-      locals := info.locals }
-
 abbrev SourceProvenance : Prop :=
   pinnedCommit = "bc2599a59c43e673dca021b10b9841e9b8da4430" ∧
     vendoredSource = pinnedSource ∧
@@ -128,15 +70,15 @@ abbrev InstallationSuccess : Prop :=
     installationResult.analysisError.isNone = true
 
 abbrev StructDeclaration : Prop :=
-  structMetadata = [{
-    id := 0
-    sourceName := "s_C"
-    canonicalName := "s_C#0"
-    fields := [{ sourceName := "x_C", type := .unsigned .long, offset := 0 }]
-    size := 4
-    alignment := 4
-    defined := true
-    complete := true }]
+  installedProgram.structs.map (·.id) = [0] ∧
+    installedProgram.structs.map (·.sourceName) = ["s_C"] ∧
+    installedProgram.structs.map (·.canonicalName) = ["s_C#0"] ∧
+    installedProgram.structs.map (·.fields.map fun field =>
+      (field.sourceName, field.type, field.offset)) = [[("x_C", .unsigned .long, 0)]] ∧
+    installedProgram.structs.map (·.size) = [4] ∧
+    installedProgram.structs.map (·.alignment) = [4] ∧
+    installedProgram.structs.map (·.defined) = [true] ∧
+    installedProgram.structs.map (·.complete) = [true]
 
 abbrev ArmLayout : Prop :=
   installedProgram.target = Target.arm ∧
@@ -146,13 +88,15 @@ abbrev ArmLayout : Prop :=
       (fun name => if name = "s_C#0" then 4 else -1) structType).toOption = some 4
 
 abbrev ByValueFunctionSignature : Prop :=
-  symbolMetadata = [{
-      id := 0, sourceName := "f", type := functionType,
-      kind := .function, linkage := some .external }, {
-      id := 1, sourceName := "v", type := structType,
-      kind := .parameter 0, linkage := none }] ∧
-    functionMetadata = [{
-      symbolId := 0, returnType := structType, parameters := [1], locals := [] }]
+  installedProgram.symbols.map (·.id) = [0, 1] ∧
+    installedProgram.symbols.map (·.sourceName) = ["f", "v"] ∧
+    installedProgram.symbols.map (·.type) = [functionType, structType] ∧
+    installedProgram.symbols.map (·.kind) = [.function, .parameter 0] ∧
+    installedProgram.symbols.map (·.linkage) = [some .external, none] ∧
+    installedProgram.functions.map (·.symbolId) = [0] ∧
+    installedProgram.functions.map (·.returnType) = [structType] ∧
+    installedProgram.functions.map (·.parameters) = [[1]] ∧
+    installedProgram.functions.map (·.locals) = [[]]
 
 abbrev SymbolUniqueness : Prop :=
   (installedProgram.symbols.map (·.id)).Nodup ∧
@@ -176,39 +120,30 @@ structure InstallationCertificate : Prop where
 
 set_option maxRecDepth 100000 in
 set_option maxHeartbeats 500000 in
-theorem installationCertificate : InstallationCertificate := by
-  constructor
-  · native_decide
-  · constructor
-    · exact option_eq_some_get installationResult.program (by native_decide)
-    · native_decide
-  · native_decide
-  · native_decide
-  · native_decide
-  · native_decide
-  · native_decide
+theorem install_C_file_certificate : InstallationCertificate := by
+  refine ⟨by native_decide, ?_, by native_decide, by native_decide,
+    by native_decide, by native_decide, by native_decide⟩
+  exact ⟨option_eq_some_get installationResult.program (by native_decide), by native_decide⟩
 
 theorem exact_source_provenance : SourceProvenance :=
-  installationCertificate.sourceProvenance
+  install_C_file_certificate.sourceProvenance
 
 theorem install_C_file_succeeds : InstallationSuccess :=
-  installationCertificate.installationSuccess
+  install_C_file_certificate.installationSuccess
 
 theorem struct_tag_fields_are_exact : StructDeclaration :=
-  installationCertificate.structDeclaration
+  install_C_file_certificate.structDeclaration
 
 theorem arm_size_alignment_layout_are_exact : ArmLayout :=
-  installationCertificate.armLayout
+  install_C_file_certificate.armLayout
 
 theorem by_value_signature_is_exact : ByValueFunctionSignature :=
-  installationCertificate.byValueFunctionSignature
+  install_C_file_certificate.byValueFunctionSignature
 
 theorem installed_symbols_are_unique : SymbolUniqueness :=
-  installationCertificate.symbolUniqueness
+  install_C_file_certificate.symbolUniqueness
 
 theorem generated_type_names_are_stable : GeneratedTypeNameStability :=
-  installationCertificate.generatedTypeNameStability
-
-theorem install_C_file_certificate : InstallationCertificate := installationCertificate
+  install_C_file_certificate.generatedTypeNameStability
 
 end Zag.Test.AutoCorres.Upstream.Struct

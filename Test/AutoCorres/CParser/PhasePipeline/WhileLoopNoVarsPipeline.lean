@@ -9,7 +9,7 @@ open Zag.Lang.AutoCorres.CParser.ScalarSimpl
 open Zag.Lang.AutoCorres.CParser.PhasePipeline
 open Zag.Lang.AutoCorres.CParser.PhasePipeline.Scalar
 
-noncomputable def translation := Scalar.translate certified support
+noncomputable def translation := prepared.translation
 
 theorem ordinary_autocorres_succeeds :
     translation.metadata.phases =
@@ -22,8 +22,8 @@ theorem ordinary_autocorres_succeeds :
 
 theorem final_correspondence :
     ac_corres id false emptyEnvironment
-      (readWord support) (fun _ => True)
-      translation.strengthen.target certified.function.command :=
-  translation.finalCorres
+      (readWord prepared.supported) (fun _ => True)
+      prepared.translation.strengthen.target prepared.certified.function.command :=
+  prepared.finalCorres
 
 end Zag.Test.AutoCorres.CParser.PhasePipeline.WhileLoopNoVars

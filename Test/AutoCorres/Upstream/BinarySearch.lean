@@ -2,11 +2,16 @@ import Lang.AutoCorres.CParser.MemorySimpl
 import Test.AutoCorres.CParser.EmbeddedFixtures
 
 /-!
-# Binary search fixture-derived lowering
+# `BinarySearch` upstream fragment
 
-This certifies the pinned C function through parsing, analysis, memory layout,
-statement resolution, and the generated SIMPL correspondence. The upstream
-sorted-array model and total-correctness theorem remain separate obligations.
+Sources:
+
+* [`binary_search.c`](https://github.com/seL4/l4v/blob/bc2599a59c43e673dca021b10b9841e9b8da4430/tools/autocorres/tests/examples/binary_search.c)
+* [`BinarySearch.thy`](https://github.com/seL4/l4v/blob/bc2599a59c43e673dca021b10b9841e9b8da4430/tools/autocorres/tests/examples/BinarySearch.thy)
+
+The exact fixture passes the frontend and uniquely resolves `binary_search`.
+Certified lowering then stops at the short-circuit loop guard, before an
+AutoCorres function or the upstream array and total-correctness proofs exist.
 -/
 
 namespace Zag.Test.AutoCorres.Upstream.BinarySearch
@@ -17,12 +22,10 @@ open Zag.Lang.AutoCorres.CParser.MemorySimpl
 
 def entry : String := "examples/binary_search.c"
 def functionName : String := "binary_search"
-
-def fixtureResult :=
-  certifyFrontend .arm Zag.Test.AutoCorres.CParser.EmbeddedFixtures.files entry functionName
+abbrev Files := Zag.Test.AutoCorres.CParser.EmbeddedFixtures.files
 
 def frontendResult :=
-  Frontend.preprocessAndAnalyze .arm Zag.Test.AutoCorres.CParser.EmbeddedFixtures.files entry
+  Frontend.preprocessAndAnalyze .arm Files entry
 
 theorem frontend_succeeds : frontendResult.isSuccess := by
   native_decide
@@ -32,9 +35,13 @@ theorem generated_function_is_unique :
       some 1 := by
   native_decide
 
+def fixtureResult := certifyFrontend .arm Files entry functionName
+
 def isLogicalGuardBlocker : Except MemorySimpl.Error α → Bool
   | .error (.unsupportedExpression region description) =>
-      region.left.file == entry && region.left.line == 17 && region.left.column == 11 &&
+      region == {
+        left := { file := entry, line := 17, column := 11, offset := 341 }
+        right := { file := entry, line := 17, column := 25, offset := 355 } } &&
         description == "integer operator is not implemented"
   | _ => false
 

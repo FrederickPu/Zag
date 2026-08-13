@@ -13,17 +13,14 @@ open Zag.Lang.AutoCorres.CParser.PhasePipeline
 open Zag.Test.AutoCorres.CParser
 open Zag.Test.AutoCorres.CParser.ScalarSimpl.FixtureHelpers
 
-def installation := ScalarSimpl.certifyFrontend .arm EmbeddedFixtures.files
-  "parse-tests/basic.c" "add"
-
 set_option maxRecDepth 100000 in
 set_option maxHeartbeats 500000 in
-theorem installation_succeeds : installation.isOk := by native_decide
+run_refinement prepared from
+  Scalar.prepare .arm EmbeddedFixtures.files "parse-tests/basic.c" "add"
+success_by native_decide
 
-def certified : ScalarSimpl.Certified .arm EmbeddedFixtures.files
-    "parse-tests/basic.c" "add" :=
-  installation.toOption.get
-    (except_toOption_isSome_of_isOk installation installation_succeeds)
+abbrev certified := prepared.certified
+abbrev support := prepared.supported
 
 def addExpression : ScalarSimpl.Expr :=
   .binary u32 u32 .add (.variable u32 1)
@@ -41,24 +38,9 @@ set_option maxHeartbeats 500000 in
 theorem exact_function_and_body : certified.function = expectedFunction := by
   native_decide
 
-def expectedExpressionSupport :
-    Zag.Lang.AutoCorres.CParser.PhasePipeline.Scalar.AddExpression .unsigned .w32
-      [(1, u32), (2, u32), (3, u32)] addExpression :=
-  .add (.parameter 1 (by
-      simp [u32, Scalar.scalarType, WordAbstract.WordWidth.bits]))
-      (.add (.parameter 2 (by
-        simp [u32, Scalar.scalarType, WordAbstract.WordWidth.bits]))
-        (.parameter 3 (by
-          simp [u32, Scalar.scalarType, WordAbstract.WordWidth.bits])))
-
-def expectedSupport :
-    Zag.Lang.AutoCorres.CParser.PhasePipeline.Scalar.Supported expectedFunction :=
-  .returnedAdd "add" .w32 [(1, u32), (2, u32), (3, u32)] addExpression
-    expectedExpressionSupport
-
-def support : Zag.Lang.AutoCorres.CParser.PhasePipeline.Scalar.Supported
-    certified.function :=
-  expectedSupport.transport exact_function_and_body.symm
+def expectedExpressionSupport : Scalar.AddExpression .unsigned .w32
+    [(1, u32), (2, u32), (3, u32)] addExpression := by
+  derive_add_expression <;> simp [u32, Scalar.scalarType, WordAbstract.WordWidth.bits]
 
 theorem recognized_from_exact_fixture :
     Zag.Lang.AutoCorres.CParser.PhasePipeline.Scalar.recognizes

@@ -1,4 +1,6 @@
 import Test.AutoCorres.CParser.ScalarSimpl.MaxResolution
+import Lang.AutoCorres.ML.simpl_conv
+import Lang.AutoCorres.ML.type_strengthen
 
 namespace Zag.Test.AutoCorres.CParser.ScalarSimpl
 
@@ -109,5 +111,84 @@ theorem max_raw_else_branch_executes_in_simpl :
   simpa [Raw.embedOutcome] using
     (max_finite_execution_iff (maxInitial 9 4) (.success (maxResult 9 4))).1
       max_raw_fixture_executes_else_branch
+
+/-! Phase-local regressions. These are exact for their stated manual models, but
+are not claimed to be generated from `maxFunction`. -/
+
+namespace MaxManual
+
+open Zag.Lang.AutoCorres
+
+abbrev Word32 := BitVec 32
+private def w32 (value : Nat) : Word32 := BitVec.ofNat 32 value
+
+structure State where
+  a : Word32
+  b : Word32
+  result : Word32
+  deriving DecidableEq
+
+def env : Simpl.Body State Unit Unit := fun _ => none
+
+def source : Simpl.Com State Unit Unit :=
+  .Cond (fun state => state.a.toNat <= state.b.toNat)
+    (.Basic fun state => { state with result := state.b })
+    (.Basic fun state => { state with result := state.a })
+
+def supported : Zag.Lang.AutoCorres.SimplConv.Kernel.Supported source :=
+  .cond (fun state : State => state.a.toNat <= state.b.toNat)
+    (.basic fun state : State => { state with result := state.b })
+    (.basic fun state : State => { state with result := state.a })
+
+def certificate := ML.SimplConv.simplConv false env supported
+
+theorem keeps_condition :
+    match certificate.target with
+    | .condition _ (.modify _) (.modify _) => True
+    | _ => False := by
+  trivial
+
+theorem manual_source_corres : L1.L1Corres false env certificate.target.denote source :=
+  certificate.corres
+
+def initial : State := { a := w32 3, b := w32 5, result := 0 }
+
+theorem chooses_larger_argument :
+    (Except.ok (), { initial with result := w32 5 }) ∈
+      (certificate.target.denote initial).results := by
+  simp [certificate, supported, ML.SimplConv.simplConv,
+    Zag.Lang.AutoCorres.SimplConv.Kernel.Target.denote, L1.condition,
+    L1.modify, initial, w32]
+
+namespace TypeStrengthen
+
+open Zag.Lang.AutoCorres.TypeStrengthen.Kernel
+
+abbrev Arguments := Word32 × Word32
+
+def source : Source.Term Arguments Unit Unit Word32 :=
+  .conditionPure (fun arguments => decide (arguments.1 <= arguments.2))
+    (.pure Prod.snd ["ret"]) (.pure Prod.fst ["ret"])
+
+def supported : Supported .pure source :=
+  .pureCondition .pureValue .pureValue
+
+def certificate (arguments : Arguments) :=
+  ML.TypeStrengthen.strengthenAt supported arguments
+
+theorem target_is_max (arguments : Arguments) :
+    (certificate arguments).target.denote =
+      if decide (arguments.1 <= arguments.2) then arguments.2 else arguments.1 := by
+  rfl
+
+theorem manual_phase_exact (arguments : Arguments) :
+    source.denote arguments =
+      Zag.Lang.AutoCorres.TypeStrengthen.embed .pure
+        (certificate arguments).target.denote :=
+  (certificate arguments).equality
+
+end TypeStrengthen
+
+end MaxManual
 
 end Zag.Test.AutoCorres.CParser.ScalarSimpl

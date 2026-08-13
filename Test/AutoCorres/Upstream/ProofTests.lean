@@ -20,6 +20,11 @@ private def proofComplete (name theory fixture reason leanEntry : String)
   { completeCase name s!"proof-tests/{theory}" reason leanEntry anchor additionalAnchors with
     fixtures := [sourceFile s!"proof-tests/{fixture}"] }
 
+private def proofFragment (name theory fixture reason leanEntry : String)
+    (anchor : Lean.Name) (additionalAnchors : List Lean.Name) : TestCase :=
+  { fragmentCase name s!"proof-tests/{theory}" reason leanEntry anchor additionalAnchors with
+    fixtures := [sourceFile s!"proof-tests/{fixture}"] }
+
 def proofTests : List TestCase := [
   proofBlocked "array_indirect_update" "array_indirect_update.thy" "array_indirect_update.c" "array descriptors and HeapLift calls are representable, but parser layouts, symbols, earlier-phase calls, and automatic indirect-update evidence are unavailable",
   proofBlocked "badnames" "badnames.thy" "badnames.c" "C parser generated-name, collision, and demangling behavior is unavailable",
@@ -29,7 +34,7 @@ def proofTests : List TestCase := [
   proofBlocked "nested_struct" "nested_struct.thy" "nested_struct.c" "explicit field obligations exist, but nested packed layout and field-address generation are unavailable",
   proofBlocked "prototyped_functions" "prototyped_functions.thy" "prototyped_functions.c" "carrier unknown/failure forms exist, but bodyless-function generation and call-graph integration are unavailable",
   proofBlocked "SignedWordAbsHeap" "SignedWordAbsHeap.thy" "signed_word_abs_heap.c" "typed signed state reads and scalar WA are available, but automatic signed HeapLift getter rules and parser-generated heap integration are unavailable",
-  proofComplete "skip_heap_abs" "skip_heap_abs.thy" "skip_heap_abs.c" "the exact fixture is analyzed and lowered with bounded caller memory; generated persistent metadata omits HeapLift while retaining certified SimplConv/LVE and exact later-phase endpoints"
+  proofComplete "skip_heap_abs" "skip_heap_abs.thy" "skip_heap_abs.c" "skip_heap_abs metadata exists for the analyzed fixture and omits HeapLift, exactly covering the theory's sole explicit generated-metadata assertion; additional certified lowering and behavior are regression coverage"
     "Test.AutoCorres.Upstream.SkipHeapAbs"
     `Zag.Test.AutoCorres.Upstream.SkipHeapAbs.heap_lift_metadata_absent
     [`Zag.Test.AutoCorres.Upstream.SkipHeapAbs.exact_fixture_analyzed,
@@ -38,7 +43,7 @@ def proofTests : List TestCase := [
      `Zag.Test.AutoCorres.Upstream.SkipHeapAbs.word_abstract_corresponds,
      `Zag.Test.AutoCorres.Upstream.SkipHeapAbs.type_strengthen_is_exact,
      `Zag.Test.AutoCorres.Upstream.SkipHeapAbs.behavioral_endpoint],
-  proofComplete "struct" "struct.thy" "struct.c" "the exact external file is installed successfully with pinned source provenance, struct tag and canonical name, field and ARM layout metadata, exact by-value function signature, unique symbols, and stable generated type names"
+  proofFragment "struct" "struct.thy" "struct.c" "pinned source provenance, successful frontend analysis, struct layout, symbols, and the by-value signature are certified; the installed generated function body and typed by-value return semantics are not yet represented"
     "Test.AutoCorres.Upstream.Struct"
     `Zag.Test.AutoCorres.Upstream.Struct.install_C_file_certificate
     [`Zag.Test.AutoCorres.Upstream.Struct.exact_source_provenance,

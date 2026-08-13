@@ -19,6 +19,8 @@ import Test.AutoCorres.CParser.CallGraph
 import Test.AutoCorres.CParser.MemoryLayout
 import Test.AutoCorres.CParser.MemoryModel
 import Test.AutoCorres.CParser.ScalarSimpl
+import Test.AutoCorres.CParser.ScalarSimpl.PlusKernelRegressions
+import Test.AutoCorres.CParser.ScalarSimpl.MultByAddKernelRegressions
 import Test.AutoCorres.CParser.PhasePipeline.Basic
 import Test.AutoCorres.Prog
 import Test.AutoCorres.CParser.FixtureSmoke

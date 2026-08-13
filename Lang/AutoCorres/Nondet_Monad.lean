@@ -299,6 +299,197 @@ def whileLoopE {State : Type u} {Acc : Type v} {Error : Type w}
       | .ok value => test value state)
     (whileLoopEBody body) (.ok initial)
 
+/-! ## Functional computations -/
+
+/-- A nondeterministic computation is functional when it has at most one complete
+result and a successful result excludes every failure branch. -/
+structure Nondet.Functional (program : Nondet State Value) : Prop where
+  unique : ∀ state {left right : Result State Value},
+    (program state).results left → (program state).results right → left = right
+  success : ∀ state {result : Result State Value},
+    (program state).results result → ¬(program state).failed
+
+namespace Nondet.Functional
+
+theorem pure (value : Value) : Functional (AutoCorres.pure (σ := State) value) := by
+  constructor
+  · intro state left right leftMember rightMember
+    exact leftMember.trans rightMember.symm
+  · simp [AutoCorres.pure]
+
+theorem fail : Functional (AutoCorres.fail : Nondet State Value) := by
+  constructor
+  · intro state left right leftMember
+    exact False.elim leftMember
+  · intro state result member
+    exact False.elim member
+
+theorem gets (read : State → Value) : Functional (AutoCorres.gets read) := by
+  constructor
+  · intro state left right leftMember rightMember
+    exact leftMember.trans rightMember.symm
+  · simp [AutoCorres.gets]
+
+theorem modify (update : State → State) : Functional (AutoCorres.modify update) := by
+  constructor
+  · intro state left right leftMember rightMember
+    exact leftMember.trans rightMember.symm
+  · simp [AutoCorres.modify]
+
+theorem bind {first : Nondet State Alpha} {next : Alpha → Nondet State Beta}
+    (firstFunctional : Functional first)
+    (nextFunctional : ∀ value, Functional (next value)) :
+    Functional (AutoCorres.bind first next) := by
+  constructor
+  · intro state left right leftMember rightMember
+    obtain ⟨leftValue, leftState, leftFirst, leftNext⟩ := leftMember
+    obtain ⟨rightValue, rightState, rightFirst, rightNext⟩ := rightMember
+    have firstEq := firstFunctional.unique state leftFirst rightFirst
+    cases firstEq
+    exact (nextFunctional leftValue).unique leftState leftNext rightNext
+  · intro state result member failed
+    obtain ⟨value, middle, firstMember, nextMember⟩ := member
+    rcases failed with firstFailed | ⟨otherValue, otherMiddle, otherMember, nextFailed⟩
+    · exact firstFunctional.success state firstMember firstFailed
+    · have firstEq := firstFunctional.unique state firstMember otherMember
+      cases firstEq
+      exact (nextFunctional value).success middle nextMember nextFailed
+
+theorem returnOk (value : Value) :
+    Functional (AutoCorres.returnOk (σ := State) (ε := Error) value) :=
+  by simpa [AutoCorres.returnOk] using
+    (pure (State := State) (Except.ok value : Except Error Value))
+
+theorem throw (error : Error) :
+    Functional (AutoCorres.throw (σ := State) (α := Value) error) :=
+  by simpa [AutoCorres.throw] using
+    (pure (State := State) (Except.error error : Except Error Value))
+
+theorem bindE {first : Nondet State (Except Error Alpha)}
+    {next : Alpha → Nondet State (Except Error Beta)}
+    (firstFunctional : Functional first)
+    (nextFunctional : ∀ value, Functional (next value)) :
+    Functional (AutoCorres.bindE first next) := by
+  apply bind firstFunctional
+  intro result
+  cases result with
+  | error error => exact throw error
+  | ok value => exact nextFunctional value
+
+theorem liftE {program : Nondet State Value} (programFunctional : Functional program) :
+    Functional (AutoCorres.liftE (ε := Error) program) := by
+  apply bind programFunctional
+  intro value
+  exact returnOk value
+
+theorem handle {body : Nondet State (Except Error Value)}
+    {handler : Error → Nondet State (Except NewError Value)}
+    (bodyFunctional : Functional body)
+    (handlerFunctional : ∀ error, Functional (handler error)) :
+    Functional (AutoCorres.handle body handler) := by
+  apply bind bodyFunctional
+  intro result
+  cases result with
+  | error error => exact handlerFunctional error
+  | ok value => exact returnOk value
+
+private theorem whileResult_deterministic
+    {State : Type u} {Accumulator : Type v} {test : Accumulator → State → Prop}
+    {body : Accumulator → Nondet State Accumulator}
+    {input leftResult rightResult : Option (Accumulator × State)}
+    (bodyFunctional : ∀ value, Functional (body value))
+    (left : WhileResult test body input leftResult)
+    (right : WhileResult test body input rightResult) :
+    leftResult = rightResult := by
+  induction left generalizing rightResult with
+  | stop leftStopped =>
+      cases right with
+      | stop => rfl
+      | bodyFailure rightHolds _ => exact False.elim (leftStopped rightHolds)
+      | step rightHolds _ _ => exact False.elim (leftStopped rightHolds)
+  | bodyFailure leftHolds leftFailed =>
+      cases right with
+      | stop rightStopped => exact False.elim (rightStopped leftHolds)
+      | bodyFailure => rfl
+      | step _ rightMember _ =>
+          exact False.elim ((bodyFunctional _).success _ rightMember leftFailed)
+  | step leftHolds leftMember leftRest induction =>
+      cases right with
+      | stop rightStopped => exact False.elim (rightStopped leftHolds)
+      | bodyFailure _ rightFailed =>
+          exact False.elim ((bodyFunctional _).success _ leftMember rightFailed)
+      | step _ rightMember rightRest =>
+          have nextEq := (bodyFunctional _).unique _ leftMember rightMember
+          cases nextEq
+          exact induction rightRest
+
+private theorem whileResult_terminates
+    {State : Type u} {Accumulator : Type v} {test : Accumulator → State → Prop}
+    {body : Accumulator → Nondet State Accumulator}
+    {input : Option (Accumulator × State)} {result : Accumulator × State}
+    (bodyFunctional : ∀ value, Functional (body value))
+    (success : WhileResult test body input (some result)) :
+    ∀ value state, input = some (value, state) →
+      WhileTerminates test body value state := by
+  have general : ∀ {initial final}, WhileResult test body initial final →
+      ∀ result, final = some result → ∀ value state,
+        initial = some (value, state) → WhileTerminates test body value state := by
+    intro initial final execution
+    apply WhileResult.rec
+      (motive := fun initial final _ => ∀ result, final = some result →
+        ∀ value state, initial = some (value, state) →
+          WhileTerminates test body value state)
+    · intro current currentState stopped result finalEq value state inputEq
+      cases Option.some.inj finalEq
+      cases Option.some.inj inputEq
+      exact .stop stopped
+    · intro current currentState holds failed result finalEq
+      cases finalEq
+    · intro current currentState next nextState final holds member rest induction
+      intro result finalEq value state inputEq
+      cases Option.some.inj inputEq
+      apply WhileTerminates.step holds
+      intro otherValue otherState otherMember
+      have nextEq := (bodyFunctional _).unique _ member otherMember
+      cases nextEq
+      exact induction result finalEq next nextState rfl
+    · exact execution
+  exact general success result rfl
+
+theorem whileLoop {State : Type u} {Accumulator : Type v}
+    {test : Accumulator → State → Prop}
+    {body : Accumulator → Nondet State Accumulator}
+    (bodyFunctional : ∀ value, Functional (body value)) (initial : Accumulator) :
+    Functional (AutoCorres.whileLoop test body initial) := by
+  constructor
+  · intro state left right leftMember rightMember
+    change WhileResult test body (some (initial, state)) (some left) at leftMember
+    change WhileResult test body (some (initial, state)) (some right) at rightMember
+    exact Option.some.inj (whileResult_deterministic bodyFunctional leftMember rightMember)
+  · intro state result member failed
+    change WhileResult test body (some (initial, state)) (some result) at member
+    change WhileResult test body (some (initial, state)) none ∨
+      ¬WhileTerminates test body initial state at failed
+    rcases failed with failedRun | notTerminates
+    · have impossible := whileResult_deterministic bodyFunctional member failedRun
+      cases impossible
+    · exact notTerminates (whileResult_terminates bodyFunctional member _ _ rfl)
+
+/-- The closed exception loop used by canonical generated L2 syntax. -/
+theorem whileLoopE0 {State Error Accumulator : Type}
+    {test : Accumulator → State → Prop}
+    {body : Accumulator → Nondet State (Except Error Accumulator)}
+    (bodyFunctional : ∀ value, Functional (body value)) (initial : Accumulator) :
+    Functional (AutoCorres.whileLoopE test body initial) := by
+  unfold AutoCorres.whileLoopE
+  apply whileLoop
+  intro result
+  cases result with
+  | error error => exact pure (Except.error error)
+  | ok value => exact bodyFunctional value
+
+end Nondet.Functional
+
 /-! ## Semantic regression pins -/
 
 /-- Empty nondeterminism and failure have the same empty result set but differ in failure. -/

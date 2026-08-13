@@ -1041,6 +1041,138 @@ theorem Stmt.Exec.normal_flag (execution : Stmt.Exec statement state (.normal re
     result.returned = state.returned :=
   execution.flags.2 result rfl
 
+theorem Stmt.Exec.deterministic
+    (first : Stmt.Exec statement state firstOutcome)
+    (second : Stmt.Exec statement state secondOutcome) :
+    firstOutcome = secondOutcome := by
+  induction first generalizing secondOutcome with
+  | skip => cases second; rfl
+  | seqNormal first rest firstIH restIH =>
+      cases second with
+      | seqNormal otherFirst otherRest =>
+          cases firstIH otherFirst
+          exact restIH otherRest
+      | seqReturned otherFirst => cases firstIH otherFirst
+      | seqFault otherFirst => cases firstIH otherFirst
+  | seqReturned first firstIH =>
+      cases second with
+      | seqNormal otherFirst _ => cases firstIH otherFirst
+      | seqReturned otherFirst => cases firstIH otherFirst; rfl
+      | seqFault otherFirst => cases firstIH otherFirst
+  | seqFault first firstIH =>
+      cases second with
+      | seqNormal otherFirst _ => cases firstIH otherFirst
+      | seqReturned otherFirst => cases firstIH otherFirst
+      | seqFault otherFirst => cases firstIH otherFirst; rfl
+  | assign id type value evaluation =>
+      cases second with
+      | assign _ _ _ other => rw [evaluation] at other; cases other; rfl
+      | assignFault _ _ _ other => rw [evaluation] at other; cases other
+  | assignFault id type value evaluation =>
+      cases second with
+      | assign _ _ _ other => rw [evaluation] at other; cases other
+      | assignFault => rfl
+  | declare => cases second; rfl
+  | init id type value evaluation =>
+      cases second with
+      | init _ _ _ other => rw [evaluation] at other; cases other; rfl
+      | initFault _ _ _ other => rw [evaluation] at other; cases other
+  | initFault id type value evaluation =>
+      cases second with
+      | init _ _ _ other => rw [evaluation] at other; cases other
+      | initFault => rfl
+  | ret evaluation =>
+      cases second with
+      | ret other => rw [evaluation] at other; cases other; rfl
+      | retFault other => rw [evaluation] at other; cases other
+  | retFault evaluation =>
+      cases second with
+      | ret other => rw [evaluation] at other; cases other
+      | retFault => rfl
+  | condTrue evaluation nonzero branch branchIH =>
+      cases second with
+      | condTrue otherEvaluation _ otherBranch =>
+          rw [evaluation] at otherEvaluation
+          cases otherEvaluation
+          exact branchIH otherBranch
+      | condFalse otherEvaluation _ =>
+          rw [evaluation] at otherEvaluation
+          cases otherEvaluation
+          exact (nonzero rfl).elim
+      | condFault otherEvaluation => rw [evaluation] at otherEvaluation; cases otherEvaluation
+  | condFalse evaluation branch branchIH =>
+      cases second with
+      | condTrue otherEvaluation otherNonzero _ =>
+          rw [evaluation] at otherEvaluation
+          cases otherEvaluation
+          exact (otherNonzero rfl).elim
+      | condFalse otherEvaluation otherBranch =>
+          rw [evaluation] at otherEvaluation
+          exact branchIH otherBranch
+      | condFault otherEvaluation => rw [evaluation] at otherEvaluation; cases otherEvaluation
+  | condFault evaluation =>
+      cases second with
+      | condTrue otherEvaluation _ _ => rw [evaluation] at otherEvaluation; cases otherEvaluation
+      | condFalse otherEvaluation _ => rw [evaluation] at otherEvaluation; cases otherEvaluation
+      | condFault => rfl
+  | whileFalse evaluation =>
+      cases second with
+      | whileFalse => rfl
+      | whileTrue otherEvaluation otherNonzero _ _ =>
+          rw [evaluation] at otherEvaluation
+          cases otherEvaluation
+          exact (otherNonzero rfl).elim
+      | whileRet otherEvaluation otherNonzero _ =>
+          rw [evaluation] at otherEvaluation
+          cases otherEvaluation
+          exact (otherNonzero rfl).elim
+      | whileBodyFault otherEvaluation otherNonzero _ =>
+          rw [evaluation] at otherEvaluation
+          cases otherEvaluation
+          exact (otherNonzero rfl).elim
+      | whileGuardFault otherEvaluation => rw [evaluation] at otherEvaluation; cases otherEvaluation
+  | whileTrue evaluation nonzero iteration rest iterationIH restIH =>
+      cases second with
+      | whileFalse otherEvaluation =>
+          rw [evaluation] at otherEvaluation
+          cases otherEvaluation
+          exact (nonzero rfl).elim
+      | whileTrue otherEvaluation _ otherIteration otherRest =>
+          rw [evaluation] at otherEvaluation
+          cases otherEvaluation
+          cases iterationIH otherIteration
+          exact restIH otherRest
+      | whileRet otherEvaluation _ otherIteration => cases iterationIH otherIteration
+      | whileBodyFault otherEvaluation _ otherIteration => cases iterationIH otherIteration
+      | whileGuardFault otherEvaluation => rw [evaluation] at otherEvaluation; cases otherEvaluation
+  | whileRet evaluation nonzero iteration iterationIH =>
+      cases second with
+      | whileFalse otherEvaluation =>
+          rw [evaluation] at otherEvaluation
+          cases otherEvaluation
+          exact (nonzero rfl).elim
+      | whileTrue otherEvaluation _ otherIteration _ => cases iterationIH otherIteration
+      | whileRet otherEvaluation _ otherIteration => exact iterationIH otherIteration
+      | whileBodyFault otherEvaluation _ otherIteration => exact iterationIH otherIteration
+      | whileGuardFault otherEvaluation => rw [evaluation] at otherEvaluation; cases otherEvaluation
+  | whileBodyFault evaluation nonzero iteration iterationIH =>
+      cases second with
+      | whileFalse otherEvaluation =>
+          rw [evaluation] at otherEvaluation
+          cases otherEvaluation
+          exact (nonzero rfl).elim
+      | whileTrue otherEvaluation _ otherIteration _ => cases iterationIH otherIteration
+      | whileRet otherEvaluation _ otherIteration => cases iterationIH otherIteration
+      | whileBodyFault otherEvaluation _ otherIteration => exact iterationIH otherIteration
+      | whileGuardFault otherEvaluation => rw [evaluation] at otherEvaluation
+  | whileGuardFault evaluation =>
+      cases second with
+      | whileFalse otherEvaluation => rw [evaluation] at otherEvaluation; cases otherEvaluation
+      | whileTrue otherEvaluation _ _ _ => rw [evaluation] at otherEvaluation; cases otherEvaluation
+      | whileRet otherEvaluation _ _ => rw [evaluation] at otherEvaluation; cases otherEvaluation
+      | whileBodyFault otherEvaluation _ _ => rw [evaluation] at otherEvaluation
+      | whileGuardFault => rfl
+
 structure Function where
   name : String
   returnType : ScalarType
@@ -1111,6 +1243,26 @@ theorem command_correct (function : Function) : function.Corresponds function.co
           exact .guard (by simp [State.returnValue]) .skip
         · simp [finalize, flag, isMain]
           exact .guardFault (by simp [flag])
+
+theorem Exec.deterministic {function : Function}
+    (first : function.Exec state firstOutcome)
+    (second : function.Exec state secondOutcome) : firstOutcome = secondOutcome := by
+  cases first with
+  | returned firstBody =>
+      cases second with
+      | returned secondBody => cases firstBody.deterministic secondBody; rfl
+      | fault secondBody => cases firstBody.deterministic secondBody
+      | fellOff secondBody => cases firstBody.deterministic secondBody
+  | fault firstBody =>
+      cases second with
+      | returned secondBody => cases firstBody.deterministic secondBody
+      | fault secondBody => cases firstBody.deterministic secondBody; rfl
+      | fellOff secondBody => cases firstBody.deterministic secondBody
+  | fellOff firstBody =>
+      cases second with
+      | returned secondBody => cases firstBody.deterministic secondBody
+      | fault secondBody => cases firstBody.deterministic secondBody
+      | fellOff secondBody => cases firstBody.deterministic secondBody; rfl
 
 private theorem finish_result (function : Function) (execution :
     Simpl.Exec emptyEnvironment

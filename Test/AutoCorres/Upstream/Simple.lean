@@ -1,99 +1,57 @@
-import Lang.AutoCorres.ML.simpl_conv
-import Lang.AutoCorres.ML.type_strengthen
+import Test.AutoCorres.CParser.ScalarSimpl.Max
 import Test.AutoCorres.CParser.ScalarSimpl.GcdCoreObstruction
 import Test.AutoCorres.CParser.ScalarSimpl.GcdExecution
 import Test.AutoCorres.CParser.ScalarSimpl.GcdPipelineFinal
 
 /-!
-# `Simple` upstream example
+# Fragment of upstream `Simple`
 
 Sources:
 
 * [`simple.c`](https://github.com/seL4/l4v/blob/bc2599a59c43e673dca021b10b9841e9b8da4430/tools/autocorres/tests/examples/simple.c)
 * [`Simple.thy`](https://github.com/seL4/l4v/blob/bc2599a59c43e673dca021b10b9841e9b8da4430/tools/autocorres/tests/examples/Simple.thy)
 
-This file retains the `max` pins and links the exact `gcd` fixture, Euclidean
-proofs, generated five-phase chain, and arbitrary-input final correctness.
+The fixture frontend, resolved ASTs, finite C/Simpl semantics, Euclidean proof,
+and the manually assembled `gcd` five-phase correspondence are exact. The
+phase-local `max` checks are deliberately named `manual`: no generated chain
+connects them to its fixture endpoint.
+
+The remaining gap is infrastructure rather than a hidden proof: a generated
+loop-capable phase chain, total-correctness `wp`, and monad extensionality are
+needed before the Isabelle-shaped `gcd_wp` and `monad_to_gets` script exists.
 -/
 
 namespace Zag.Test.AutoCorres.Upstream.Simple
 
-open Zag.Lang.AutoCorres
+set_option linter.defProp false
 
-abbrev Word32 := BitVec 32
-private def w32 (value : Nat) : Word32 := BitVec.ofNat 32 value
-
-structure State where
-  a : Word32
-  b : Word32
-  result : Word32
-  deriving DecidableEq
-
-def env : Simpl.Body State Unit Unit := fun _ => none
-
-def source : Simpl.Com State Unit Unit :=
-  .Cond (fun state => state.a.toNat <= state.b.toNat)
-    (.Basic fun state => { state with result := state.b })
-    (.Basic fun state => { state with result := state.a })
-
-def supported : Zag.Lang.AutoCorres.SimplConv.Kernel.Supported source :=
-  .cond (fun state : State => state.a.toNat <= state.b.toNat)
-    (.basic fun state : State => { state with result := state.b })
-    (.basic fun state : State => { state with result := state.a })
-
-def certificate := ML.SimplConv.simplConv false env supported
-
-theorem keeps_condition :
-    match certificate.target with
-    | .condition _ (.modify _) (.modify _) => True
-    | _ => False := by
-  trivial
-
-theorem manual_source_corres : L1.L1Corres false env certificate.target.denote source :=
-  certificate.corres
-
-def initial : State := { a := w32 3, b := w32 5, result := 0 }
-
-theorem chooses_larger_argument :
-    (Except.ok (), { initial with result := w32 5 }) ∈
-      (certificate.target.denote initial).results := by
-  simp [certificate, supported, ML.SimplConv.simplConv,
-    Zag.Lang.AutoCorres.SimplConv.Kernel.Target.denote, L1.condition,
-    L1.modify, initial, w32]
+export Zag.Test.AutoCorres.CParser.ScalarSimpl.MaxManual
+  (keeps_condition manual_source_corres chooses_larger_argument)
 
 namespace TypeStrengthen
 
-open Zag.Lang.AutoCorres.TypeStrengthen.Kernel
-
-abbrev Arguments := Word32 × Word32
-
-def source : Source.Term Arguments Unit Unit Word32 :=
-  .conditionPure (fun arguments => decide (arguments.1 <= arguments.2))
-    (.pure Prod.snd ["ret"]) (.pure Prod.fst ["ret"])
-
-def supported : Supported .pure source :=
-  .pureCondition .pureValue .pureValue
-
-def certificate (arguments : Arguments) :=
-  ML.TypeStrengthen.strengthenAt supported arguments
-
-theorem target_is_max (arguments : Arguments) :
-    (certificate arguments).target.denote =
-      if decide (arguments.1 <= arguments.2) then arguments.2 else arguments.1 := by
-  rfl
-
-theorem manual_phase_exact (arguments : Arguments) :
-    source.denote arguments =
-      Zag.Lang.AutoCorres.TypeStrengthen.embed .pure
-        (certificate arguments).target.denote :=
-  (certificate arguments).equality
+export Zag.Test.AutoCorres.CParser.ScalarSimpl.MaxManual.TypeStrengthen
+  (target_is_max manual_phase_exact)
 
 end TypeStrengthen
+
+namespace Max
+
+open Zag.Test.AutoCorres.CParser.ScalarSimpl
+
+def frontend := max_fixture_certifies
+def ast := max_is_resolved_by_symbol_id
+def semantics := max_finite_execution_iff
+def arbitrary_inputs := max_resolved_executes
+
+end Max
 
 namespace Gcd
 
 open Zag.Test.AutoCorres.CParser.ScalarSimpl
 
+def frontend := gcd_fixture_certifies
+def ast := gcd_is_exact_resolved_function
 def fixture_shape := gcd_body_has_uninitialized_c_loop_mod_assignments_and_return
 def finite_c_simpl_correspondence := gcd_finite_execution_iff
 def invariant_initial := gcd_invariant_initial

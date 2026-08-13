@@ -17,9 +17,11 @@ without claiming its unsupported calls and loops. Rules are linked directly to:
 namespace Zag.Test.AutoCorres.Kernel.WordAbstract
 
 open Zag.Lang.AutoCorres
+open Zag.Lang.AutoCorres.WordAbstract
+open Zag.Lang.AutoCorres.WordAbstract.Kernel
 
 abbrev Word32 := BitVec 32
-abbrev Word := Zag.Lang.AutoCorres.WordAbstract.Kernel.ValueType.word 32
+abbrev Word := ValueType.word 32
 private def w32 (value : Nat) : Word32 := BitVec.ofNat 32 value
 
 def expression : ML.WordAbstract.Source.Expr Word Word32 Word :=
@@ -39,15 +41,12 @@ theorem generates_entry_guard :
 
 theorem exact_target :
     certificate.target =
-      Zag.Lang.AutoCorres.WordAbstract.Kernel.Target.Syntax.seq
-        (.guard expressionCertificate.guard)
+      Target.Syntax.seq (.guard expressionCertificate.guard)
         (fun _ => .gets expressionCertificate.target ["ret"]) := by
   rfl
 
 theorem certified (a : Word32) :
-    Zag.Lang.AutoCorres.WordAbstract.corresTA (fun _ => True)
-      (Zag.Lang.AutoCorres.WordAbstract.Kernel.typeMap Word).abstract
-      (Zag.Lang.AutoCorres.WordAbstract.Kernel.typeMap .unit).abstract
+    corresTA (fun _ => True) (typeMap Word).abstract (typeMap .unit).abstract
       (certificate.target.denote a.toNat) (source.denote a) :=
   certificate.corres a
 
@@ -58,10 +57,7 @@ theorem generated_guard_eq (a : Nat) (b : Word32) :
     generatedGuard a b <-> a + b.toNat <= 4294967295 := by
   simp [generatedGuard, expressionCertificate, expression,
     ML.WordAbstract.Expr.supported, ML.WordAbstract.Expr.transform,
-    Zag.Lang.AutoCorres.WordAbstract.Kernel.Target.Expr.eval,
-    Zag.Lang.AutoCorres.WordAbstract.Kernel.Target.asNat,
-    Zag.Lang.AutoCorres.WordAbstract.Kernel.Target.maxFor,
-    Zag.Lang.AutoCorres.WordAbstract.UWORD_MAX]
+    Target.Expr.eval, Target.asNat, Target.maxFor, UWORD_MAX]
 
 theorem in_range_guard_holds : generatedGuard 3 (w32 4) := by
   rw [generated_guard_eq]
@@ -74,25 +70,19 @@ theorem overflow_guard_rejects : ¬generatedGuard 4294967295 (w32 1) := by
 theorem target_runs_in_range :
     (Except.ok 7, w32 4) ∈ (certificate.target.denote 3 (w32 4)).results := by
   rw [exact_target]
-  simp [Zag.Lang.AutoCorres.WordAbstract.Kernel.Target.Syntax.denote,
+  simp [Target.Syntax.denote,
     expressionCertificate, expression, ML.WordAbstract.Expr.supported,
-    ML.WordAbstract.Expr.transform,
-    Zag.Lang.AutoCorres.WordAbstract.Kernel.Target.Expr.eval,
-    Zag.Lang.AutoCorres.WordAbstract.Kernel.Target.asNat,
-    Zag.Lang.AutoCorres.WordAbstract.Kernel.Target.maxFor,
-    Zag.Lang.AutoCorres.WordAbstract.UWORD_MAX, L2.seq, L2.guard, L2.gets]
+    ML.WordAbstract.Expr.transform, Target.Expr.eval, Target.asNat,
+    Target.maxFor, UWORD_MAX, L2.seq, L2.guard, L2.gets]
   constructor <;> native_decide
 
 theorem in_range_target_does_not_fail :
     ¬(certificate.target.denote 3 (w32 4)).failed := by
   rw [exact_target]
-  simp [Zag.Lang.AutoCorres.WordAbstract.Kernel.Target.Syntax.denote,
+  simp [Target.Syntax.denote,
     expressionCertificate, expression, ML.WordAbstract.Expr.supported,
-    ML.WordAbstract.Expr.transform,
-    Zag.Lang.AutoCorres.WordAbstract.Kernel.Target.Expr.eval,
-    Zag.Lang.AutoCorres.WordAbstract.Kernel.Target.asNat,
-    Zag.Lang.AutoCorres.WordAbstract.Kernel.Target.maxFor,
-    Zag.Lang.AutoCorres.WordAbstract.UWORD_MAX, L2.seq, L2.guard, bindE,
+    ML.WordAbstract.Expr.transform, Target.Expr.eval, Target.asNat,
+    Target.maxFor, UWORD_MAX, L2.seq, L2.guard, bindE,
     L2.failed_liftE, Zag.Lang.AutoCorres.guard]
   constructor
   · native_decide
@@ -105,25 +95,18 @@ theorem concrete_source_wraps_without_failure :
       ¬(source.denote (w32 4294967295) (w32 1)).failed := by
   constructor
   · simp [source, expression,
-      Zag.Lang.AutoCorres.WordAbstract.Kernel.Source.Syntax.denote,
-      Zag.Lang.AutoCorres.WordAbstract.Kernel.Source.Expr.eval,
-      Zag.Lang.AutoCorres.WordAbstract.Kernel.Source.asWord, L2.gets, w32]
+      Source.Syntax.denote, Source.Expr.eval, Source.asWord, L2.gets, w32]
   · simp [source, expression,
-      Zag.Lang.AutoCorres.WordAbstract.Kernel.Source.Syntax.denote,
-      Zag.Lang.AutoCorres.WordAbstract.Kernel.Source.Expr.eval,
-      Zag.Lang.AutoCorres.WordAbstract.Kernel.Source.asWord, L2.gets,
+      Source.Syntax.denote, Source.Expr.eval, Source.asWord, L2.gets,
       Zag.Lang.AutoCorres.gets]
 
 theorem target_fails_on_overflow :
     (certificate.target.denote 4294967295 (w32 1)).failed := by
   rw [exact_target]
-  simp [Zag.Lang.AutoCorres.WordAbstract.Kernel.Target.Syntax.denote,
+  simp [Target.Syntax.denote,
     expressionCertificate, expression, ML.WordAbstract.Expr.supported,
-    ML.WordAbstract.Expr.transform,
-    Zag.Lang.AutoCorres.WordAbstract.Kernel.Target.Expr.eval,
-    Zag.Lang.AutoCorres.WordAbstract.Kernel.Target.asNat,
-    Zag.Lang.AutoCorres.WordAbstract.Kernel.Target.maxFor,
-    Zag.Lang.AutoCorres.WordAbstract.UWORD_MAX, L2.seq, L2.guard, bindE,
+    ML.WordAbstract.Expr.transform, Target.Expr.eval, Target.asNat,
+    Target.maxFor, UWORD_MAX, L2.seq, L2.guard, bindE,
     L2.failed_liftE, Zag.Lang.AutoCorres.guard]
   exact Or.inl (by native_decide)
 
@@ -131,13 +114,10 @@ theorem overflow_target_has_no_results (result : Except Unit Nat × Word32) :
     result ∉ (certificate.target.denote 4294967295 (w32 1)).results := by
   rw [exact_target]
   rcases result with ⟨outcome, post⟩
-  simp [Zag.Lang.AutoCorres.WordAbstract.Kernel.Target.Syntax.denote,
+  simp [Target.Syntax.denote,
     expressionCertificate, expression, ML.WordAbstract.Expr.supported,
-    ML.WordAbstract.Expr.transform,
-    Zag.Lang.AutoCorres.WordAbstract.Kernel.Target.Expr.eval,
-    Zag.Lang.AutoCorres.WordAbstract.Kernel.Target.asNat,
-    Zag.Lang.AutoCorres.WordAbstract.Kernel.Target.maxFor,
-    Zag.Lang.AutoCorres.WordAbstract.UWORD_MAX, L2.seq, L2.guard, bindE,
+    ML.WordAbstract.Expr.transform, Target.Expr.eval, Target.asNat,
+    Target.maxFor, UWORD_MAX, L2.seq, L2.guard, bindE,
     Zag.Lang.AutoCorres.bind, Zag.Lang.AutoCorres.liftE,
     Zag.Lang.AutoCorres.guard]
   rintro ⟨_, _, ⟨_, _, impossible, _⟩, _⟩
@@ -145,8 +125,8 @@ theorem overflow_target_has_no_results (result : Except Unit Nat × Word32) :
     native_decide
   exact overflow impossible.1
 
-abbrev UnitType := Zag.Lang.AutoCorres.WordAbstract.Kernel.ValueType.unit
-abbrev Word8 := Zag.Lang.AutoCorres.WordAbstract.Kernel.ValueType.word 8
+abbrev UnitType := ValueType.unit
+abbrev Word8 := ValueType.word 8
 private def w8 (value : Nat) : BitVec 8 := BitVec.ofNat 8 value
 
 def throwSource : ML.WordAbstract.Source.Syntax UnitType Unit Word8 Word8 :=
@@ -163,17 +143,14 @@ def expectedCatchTarget :
     .catch (show ML.WordAbstract.Target.Syntax UnitType Unit Word8 Word8 from
       .throw 7 ["throw"]) fun caught =>
       .seq (.guard fun _ _ =>
-        (Zag.Lang.AutoCorres.WordAbstract.Kernel.typeMap Word8).certificate.concreteGuard
-          caught /\ True) fun _ =>
+        (typeMap Word8).certificate.concreteGuard caught /\ True) fun _ =>
         .gets (.word 8 (BitVec.ofNat 8 caught).toNat) ["caught"]
 
 theorem catch_target_is_wired : catchCertificate.target = expectedCatchTarget := by
   rfl
 
 theorem catch_is_certified :
-    Zag.Lang.AutoCorres.WordAbstract.corresTA (fun _ => True)
-      (Zag.Lang.AutoCorres.WordAbstract.Kernel.typeMap Word8).abstract
-      (Zag.Lang.AutoCorres.WordAbstract.Kernel.typeMap UnitType).abstract
+    corresTA (fun _ => True) (typeMap Word8).abstract (typeMap UnitType).abstract
       (catchCertificate.target.denote ()) (catchSource.denote ()) :=
   catchCertificate.corres ()
 
@@ -181,7 +158,7 @@ theorem catch_target_runs_handler :
     (Except.ok 7, ()) ∈ (catchCertificate.target.denote () ()).results := by
   rw [catch_target_is_wired]
   simp [expectedCatchTarget,
-    Zag.Lang.AutoCorres.WordAbstract.Kernel.Target.Syntax.denote,
+    Target.Syntax.denote,
     L2.seq, L2.guard, L2.catch, L2.throw, L2.gets]
   refine ⟨(), ?_⟩
   unfold handle
@@ -211,7 +188,7 @@ theorem catch_target_does_not_fail :
     ¬(catchCertificate.target.denote () ()).failed := by
   rw [catch_target_is_wired]
   simp [expectedCatchTarget,
-    Zag.Lang.AutoCorres.WordAbstract.Kernel.Target.Syntax.denote,
+    Target.Syntax.denote,
     L2.seq, L2.guard, L2.catch, L2.throw, L2.gets, bindE,
     L2.failed_liftE, Zag.Lang.AutoCorres.guard]
   intro x x1 x2 hx _
@@ -251,7 +228,7 @@ theorem catch_consumes_exception :
     (Except.error (), ()) ∉ (catchCertificate.target.denote () ()).results := by
   rw [catch_target_is_wired]
   simp [expectedCatchTarget,
-    Zag.Lang.AutoCorres.WordAbstract.Kernel.Target.Syntax.denote,
+    Target.Syntax.denote,
     L2.seq, L2.guard, L2.catch, L2.throw, L2.gets]
   rintro ⟨value, middle, outer, continuation⟩
   rcases outer with ⟨outerValue, outerState, _, returned⟩

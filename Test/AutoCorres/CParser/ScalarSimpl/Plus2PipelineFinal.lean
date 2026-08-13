@@ -259,6 +259,9 @@ def strengthenSupported :
 def strengthenCertificate :=
   ML.TypeStrengthen.strengthenClosed strengthenSupported
 
+/-! The pinned `Plus.thy` does not request unsigned word abstraction for
+`plus2`. Keep the result word-valued through the default generated chain. -/
+
 private theorem loop_test_function :
     (fun locals state => propositionBool (splitLoopTest locals state) = true) =
       splitLoopTest := by
@@ -304,6 +307,43 @@ theorem type_strengthen_consumes_word_endpoint :
 
 def finalTarget : L2.L2Program Globals Unit Nat :=
   TypeStrengthen.Kernel.embed .nondet strengthenCertificate.target.denote
+
+/-- Source-faithful generated endpoint for default word abstraction. -/
+def wordFinalTarget : L2.L2Program Globals Unit (BitVec 32) :=
+  L2.call projectedL2
+
+theorem word_type_strengthen_consumes_heap_endpoint :
+    L2.call (Exception := Unit) projectedL2 = wordFinalTarget := by
+  rfl
+
+def wordFinalChain : ChainCertificate
+    (L2State := Globals) (L2Exception := Bool) (L2Result := BitVec 32)
+    (HLState := Globals) (WAException := Bool)
+    false emptyEnvironment plus2.command wordFinalTarget :=
+  { stateProjectL2 := model.projectGlobals
+    returnExtractL2 := fun state => readResult (model.projectGlobals state)
+    exceptionExtractL2 := model.projectLocals
+    preconditionL2 := fun state => model.projectLocals state = false
+    stateProjectHL := id
+    preconditionWA := fun _ => True
+    returnExtractWA := id
+    exceptionExtractWA := id
+    l1 := generatedL1.denote
+    l1Corres := fixtureSimplCertificate.corres
+    l2 := projectedL2
+    l2Corres := projectedL2Corres
+    heapLifted := projectedL2
+    heapLiftCorres := heapLiftCorres
+    wordAbstracted := projectedL2
+    wordAbstractCorres := CorresXF.refl (fun _ => True) projectedL2
+    typeStrengthen := word_type_strengthen_consumes_heap_endpoint }
+
+theorem wordFinalAcCorres :
+    ac_corres model.projectGlobals false emptyEnvironment
+      (fun state => readResult (model.projectGlobals state))
+      (fun state => model.projectLocals state = false)
+      wordFinalTarget plus2.command := by
+  simpa [wordFinalChain, Function.comp_def] using wordFinalChain.acCorres
 
 def finalChain : ChainCertificate
     (L2State := Globals) (L2Exception := Bool) (L2Result := BitVec 32)
@@ -683,6 +723,25 @@ theorem final_target_no_failure (a b : Word32) :
   rw [final_target_exact]
   exact returnOk_not_failed _ _
 
+theorem word_final_target_no_failure (a b : Word32) :
+    ¬(wordFinalTarget (initialGlobals a b)).failed := by
+  have finalNoFail := final_target_no_failure a b
+  have wordCallNoFail : ¬(L2.call (Exception := Unit)
+      (wordCertificate.target.denote ()) (initialGlobals a b)).failed := by
+    rw [type_strengthen_consumes_word_endpoint]
+    exact finalNoFail
+  have wordNoFail : ¬((wordCertificate.target.denote ())
+      (initialGlobals a b)).failed := fun failed =>
+    wordCallNoFail (TypeStrengthen.failed_call.mpr (Or.inl failed))
+  have correspondence := word_consumes_heap_endpoint (initialGlobals a b)
+    ⟨True.intro, wordNoFail⟩
+  rw [wordFinalTarget, TypeStrengthen.failed_call]
+  rintro (failed | ⟨exception, post, member⟩)
+  · exact correspondence.2 failed
+  · have mapped := correspondence.1 (Except.error exception) post member
+    exact wordCallNoFail (TypeStrengthen.failed_call.mpr
+      (Or.inr ⟨exception, post, mapped⟩))
+
 theorem final_preserves_arbitrary_wrapping_result (a b : Word32) :
     (Except.ok (a + b).toNat, model.projectGlobals (plus2Result a b)) ∈
       (finalTarget (initialGlobals a b)).results := by
@@ -697,6 +756,36 @@ theorem plus2_correct (a b : Word32) :
   intro result post member
   rw [final_target_exact, mem_returnOk] at member
   exact member.1
+
+theorem word_plus2_correct (a b : Word32) :
+    ∀ result post,
+      (Except.ok result, post) ∈
+          (wordFinalTarget (initialGlobals a b)).results →
+        result = a + b := by
+  intro result post member
+  have finalNoFail := final_target_no_failure a b
+  have wordCallNoFail : ¬(L2.call (Exception := Unit)
+      (wordCertificate.target.denote ()) (initialGlobals a b)).failed := by
+    rw [type_strengthen_consumes_word_endpoint]
+    exact finalNoFail
+  have wordNoFail : ¬((wordCertificate.target.denote ())
+      (initialGlobals a b)).failed := fun failed =>
+    wordCallNoFail (TypeStrengthen.failed_call.mpr (Or.inl failed))
+  have correspondence := word_consumes_heap_endpoint (initialGlobals a b)
+    ⟨True.intro, wordNoFail⟩
+  have projectedMember : (Except.ok result, post) ∈
+      (projectedL2 (initialGlobals a b)).results := by
+    exact TypeStrengthen.mem_call_ok.mp member
+  have mapped := correspondence.1 (Except.ok result) post projectedMember
+  have finalMember : (Except.ok result.toNat, post) ∈
+      (finalTarget (initialGlobals a b)).results := by
+    change (Except.ok result.toNat, post) ∈
+      (TypeStrengthen.Kernel.embed .nondet strengthenCertificate.target.denote
+        (initialGlobals a b)).results
+    rw [← type_strengthen_consumes_word_endpoint]
+    exact TypeStrengthen.mem_call_ok.mpr mapped
+  have naturalEquality := plus2_correct a b result.toNat post finalMember
+  exact BitVec.toNat_inj.mp naturalEquality
 
 /-- Generated-endpoint counterpart of upstream `plus2_is_plus`. -/
 theorem plus2_is_plus (a b : Word32) :

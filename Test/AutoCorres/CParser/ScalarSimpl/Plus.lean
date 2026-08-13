@@ -39,6 +39,30 @@ private theorem plus_read_two (a b : Int) :
   simp [plusInitial, plus_is_resolved_by_symbol_id, expectedPlus, Function.enter,
     State.resetReturn, State.read?, State.write]
 
+theorem plus_enter_eq (a b : Int) :
+    plus.enter [a, b] = .ok (plusInitial a b) := by
+  unfold plusInitial
+  rw [plus_is_resolved_by_symbol_id]
+  simp [expectedPlus, Function.enter]
+
+private theorem plus_initial_read_one (a b : Int) :
+    (plusInitial a b).read? 1 = some (u32.cast a) := by
+  simp [plusInitial, plus_is_resolved_by_symbol_id, expectedPlus, Function.enter,
+    State.read?, State.write]
+
+private theorem plus_initial_read_two (a b : Int) :
+    (plusInitial a b).read? 2 = some (u32.cast b) := by
+  simp [plusInitial, plus_is_resolved_by_symbol_id, expectedPlus, Function.enter,
+    State.read?, State.write]
+
+theorem plus_add_expression_eval (a b : Int) :
+    (Expr.binary u32 u32 .add (.variable u32 1) (.variable u32 2)).eval
+        (plusInitial a b) =
+      some (u32.cast (u32.cast a + u32.cast b)) := by
+  simp only [Expr.eval]
+  rw [plus_initial_read_one, plus_initial_read_two]
+  simp [u32_checked, u32_cast_idempotent]
+
 theorem plus_resolved_executes (a b : Int) :
     plus.Exec (plusInitial a b) (.normal (plusResult a b)) := by
   apply Function.Exec.returned

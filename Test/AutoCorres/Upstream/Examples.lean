@@ -38,7 +38,7 @@ private def exampleComplete (name theory reason leanEntry : String)
 def exampleTests : List TestCase := [
   exampleBlocked "AC_Rename" "AC_Rename.thy" "generated C and phase symbol renaming is unavailable" ["rename.c"],
   exampleBlocked "Alloc" "Alloc.thy" "header parsing, structs, linked heaps, casts, loops, calls, and generated allocator definitions are unavailable" ["alloc.c", "alloc.h"],
-  exampleFragment "BinarySearch" "BinarySearch.thy" "the exact fixture passes frontend analysis and uniquely resolves binary_search, but certified lowering stops at the short-circuit loop guard; array heap lifting, unsigned abstraction, ts_rules nondet processing, and the total-correctness proof remain unavailable"
+  exampleFragment "BinarySearch" "BinarySearch.thy" "the exact fixture passes frontend analysis and uniquely selects binary_search, but certified lowering stops at short-circuit conjunction; parameter-pointer indexing and bounds, typed array HeapLift, unsigned abstraction, nondeterministic strengthening, the array model, and total correctness remain unavailable"
     "Test.AutoCorres.Upstream.BinarySearch"
     `Zag.Test.AutoCorres.Upstream.BinarySearch.frontend_succeeds
     [`Zag.Test.AutoCorres.Upstream.BinarySearch.generated_function_is_unique,
@@ -56,7 +56,7 @@ def exampleTests : List TestCase := [
   exampleBlocked "ListRev" "ListRev.thy" "typed pointer heaps, loop lifting, list models, and reversal proofs are unavailable" ["list_rev.c"],
   exampleBlocked "Memcpy" "Memcpy.thy" "raw byte-heap semantics, no_heap_abs dispatch, wrappers/calls, struct copying, and proofs are unavailable" ["memcpy.c"],
   exampleBlocked "Memset" "Memset.thy" "mixed raw-byte and lifted typed-heap behavior plus both correctness proofs are unavailable" ["memset.c"],
-  exampleComplete "MultByAdd" "MultByAdd.thy" "complete fixture-derived C/SIMPL correspondence, wrapping invariant and termination proof, five-phase generated chain, SIMPL partial correctness, and final total correctness"
+  exampleFragment "MultByAdd" "MultByAdd.thy" "fixture-derived body semantics, wrapping invariant and termination, and a certified manually assembled five-phase endpoint are present; the endpoint returns Nat at encoded internal state, the composed correspondence does not check termination, and the upstream SIMPL CALL/assignment Hoare theorem is absent"
     "Test.AutoCorres.Upstream.MultByAdd"
     `Zag.Test.AutoCorres.CParser.ScalarSimpl.mult_by_add_fixture_certifies
     [`Zag.Test.AutoCorres.CParser.ScalarSimpl.mult_by_add_body_is_actual_initialized_loop,
@@ -80,39 +80,19 @@ def exampleTests : List TestCase := [
      `Zag.Test.AutoCorres.Upstream.MultByAdd.LocalVarExtract.manual_source_extracts,
      `Zag.Test.AutoCorres.Upstream.MultByAdd.TypeStrengthen.manual_phase_exact]
     ["mult_by_add.c"],
-  exampleComplete "Plus" "Plus.thy" "complete fixture-derived plus/plus2 port: exact generated pure wrapping-add endpoint and 3+2 theorem; inspected plus2 loop/final definitions; forced-nondet generated loop correctness, plus equivalence, and total no-failure"
-    "Test.AutoCorres.CParser.ScalarSimpl"
-    `Zag.Test.AutoCorres.CParser.ScalarSimpl.PlusPipeline.plus_three_plus_two
-    [`Zag.Test.AutoCorres.CParser.ScalarSimpl.plus_fixture_certifies,
-      `Zag.Test.AutoCorres.CParser.ScalarSimpl.PlusPipeline.pure_normalized_fixture_endpoint,
-      `Zag.Test.AutoCorres.CParser.ScalarSimpl.PlusPipeline.pure_lve_consumes_fixture_endpoint,
-      `Zag.Test.AutoCorres.CParser.ScalarSimpl.PlusPipeline.pure_projected_l2_exact,
-      `Zag.Test.AutoCorres.CParser.ScalarSimpl.PlusPipeline.pure_type_strengthen_consumes_word_endpoint,
-      `Zag.Test.AutoCorres.CParser.ScalarSimpl.PlusPipeline.pure_final_chain_endpoints,
-      `Zag.Test.AutoCorres.CParser.ScalarSimpl.PlusPipeline.generated_plus_eq_wrapping_add,
-      `Zag.Test.AutoCorres.CParser.ScalarSimpl.PlusPipeline.plus_correct,
-      `Zag.Test.AutoCorres.CParser.ScalarSimpl.PlusPipeline.FixtureSchedule.plus_and_plus2_are_nonrecursive_sccs,
-      `Zag.Test.AutoCorres.CParser.ScalarSimpl.PlusPipeline.FixtureSchedule.only_main_depends_on_plus_and_plus2,
-      `Zag.Test.AutoCorres.CParser.ScalarSimpl.plus2_body_is_actual_loop,
-      `Zag.Test.AutoCorres.CParser.ScalarSimpl.plus2_finite_execution_iff,
-      `Zag.Test.AutoCorres.CParser.ScalarSimpl.plus2_any_success_is_wrapping_add,
-      `Zag.Test.AutoCorres.CParser.ScalarSimpl.plus2_is_plus,
-      `Zag.Test.AutoCorres.CParser.ScalarSimpl.plus2_total_no_failure,
-      `Zag.Test.AutoCorres.CParser.ScalarSimpl.Plus2Pipeline.fixture_simpl_endpoint,
-      `Zag.Test.AutoCorres.CParser.ScalarSimpl.Plus2Pipeline.type_strengthen_consumes_word_endpoint,
-      `Zag.Test.AutoCorres.CParser.ScalarSimpl.Plus2Pipeline.final_target_exact,
-      `Zag.Test.AutoCorres.CParser.ScalarSimpl.Plus2Pipeline.final_target_no_failure,
-      `Zag.Test.AutoCorres.CParser.ScalarSimpl.Plus2Pipeline.plus2_correct,
-      `Zag.Test.AutoCorres.CParser.ScalarSimpl.Plus2Pipeline.plus2_is_plus,
-      `Zag.Test.AutoCorres.CParser.ScalarSimpl.Plus2Pipeline.plus2_valid,
-      `Zag.Test.AutoCorres.Upstream.Plus.SimplConv.manual_source_corres,
-      `Zag.Test.AutoCorres.Upstream.Plus.LocalVarExtract.manual_source_extracts,
-     `Zag.Test.AutoCorres.Upstream.Plus.TypeStrengthen.manual_phase_exact]
+  exampleComplete "Plus" "Plus.thy" "the embedded source is reflected directly; `plus` and the forced-nondeterministic `plus2` target expose the upstream correctness and no-failure results"
+    "Test.AutoCorres.Upstream.Plus"
+    `Zag.Test.AutoCorres.Upstream.Plus.plus_three_plus_two
+    [`Zag.Test.AutoCorres.Upstream.Plus.plus_correct,
+       `Zag.Test.AutoCorres.Upstream.Plus.plus2'_ac_corres,
+       `Zag.Test.AutoCorres.Upstream.Plus.plus2_correct,
+       `Zag.Test.AutoCorres.Upstream.Plus.plus2_is_plus,
+       `Zag.Test.AutoCorres.Upstream.Plus.plus2_valid]
     ["plus.c"],
   exampleBlocked "Quicksort" "Quicksort.thy" "recursive functions, pointer arrays, typed heaps, and sorting proofs are unavailable" ["quicksort.c"],
   exampleBlocked "SchorrWaite" "SchorrWaite.thy" "graph heap lifting, traversal, and the graph proof are unavailable" ["schorr_waite.c"],
-  exampleFragment "Simple" "Simple.thy" "gcd has an exact fixture-derived five-phase chain and arbitrary-input correctness; max has arbitrary-input execution and manual phase proofs, but its fixture endpoint is not connected through the generated final chain and the upstream monad_to_gets objective is not represented"
-    "Test.AutoCorres.CParser.ScalarSimpl"
+  exampleFragment "Simple" "Simple.thy" "gcd has a fixture-derived certified endpoint for arbitrary u32 inputs, but the exact unsigned-abstracted gcd interface, universal gcd_wp, monad_to_gets, and gcd-to-return theorem are absent; max lacks a fixture-connected generated pure endpoint and max'_ac_corres"
+    "Test.AutoCorres.Upstream.Simple"
     `Zag.Test.AutoCorres.CParser.ScalarSimpl.GcdPipeline.final_target_exact
     [`Zag.Test.AutoCorres.CParser.ScalarSimpl.maxCertificate,
       `Zag.Test.AutoCorres.CParser.ScalarSimpl.max_finite_execution_iff,

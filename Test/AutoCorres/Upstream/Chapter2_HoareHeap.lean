@@ -1,4 +1,5 @@
-import Test.AutoCorres.Upstream.MultByAdd
+import Lang.AutoCorres.Refinement
+import Test.AutoCorres.CParser.ScalarSimpl.MultByAdd
 
 /-!
 # `Chapter2_HoareHeap` quickstart port
@@ -40,21 +41,11 @@ theorem fixture_source_is_not_examples_source :
     vendoredFixtureSource ≠ examplesFixtureSource := by
   native_decide
 
-opaque certifiedResult :
-    Except Zag.Lang.AutoCorres.CParser.ScalarSimpl.Error
-      (Certified .arm EmbeddedFixtures.files fixturePath "mult_by_add") :=
+set_option maxRecDepth 100000 in
+set_option maxHeartbeats 500000 in
+run_refinement certified from
   certifyFrontend .arm EmbeddedFixtures.files fixturePath "mult_by_add"
-
-set_option maxRecDepth 100000 in
-set_option maxHeartbeats 500000 in
-theorem fixture_certifies : certifiedResult.isOk := by
-  native_decide
-
-set_option maxRecDepth 100000 in
-set_option maxHeartbeats 500000 in
-def certified : Certified .arm EmbeddedFixtures.files fixturePath "mult_by_add" :=
-  certifiedResult.toOption.get
-    (except_toOption_isSome_of_isOk certifiedResult fixture_certifies)
+success_by native_decide
 
 def function : Function := certified.function
 
@@ -93,37 +84,27 @@ theorem variant_decreases (remaining : Nat) (bound : remaining + 1 < 2 ^ 32) :
       multByAddVariant (BitVec.ofNat 32 (remaining + 1)) :=
   mult_by_add_variant_decreases remaining bound
 
-theorem raw_fixture_executes (a b : MultByAddWord32) :
-    Raw.FunctionExec certificate.program "mult_by_add" certificate.functionInfo
-      certificate.rawBody function.returnType (multByAddInitial a b)
-      (.success (multByAddResult a b)) := by
-  apply (certificate.finite_iff (multByAddInitial a b)
-    (.success (multByAddResult a b))).2
-  rw [command_is_mult_by_add_pipeline]
-  exact mult_by_add_generated_simpl_executes a b
-
-theorem raw_fixture_no_failure (a b : MultByAddWord32) :
-    ¬Raw.FunctionExec certificate.program "mult_by_add" certificate.functionInfo
-      certificate.rawBody function.returnType (multByAddInitial a b)
-      .undefinedBehavior := by
-  intro failed
-  have resolvedFailure := certificate.resolution.rawToResolved
-    (multByAddInitial a b) .undefinedBehavior failed
-  have successful : function.Exec (multByAddInitial a b)
-      (.normal (multByAddResult a b)) := by
-    rw [function_is_mult_by_add_pipeline]
-    exact mult_by_add_resolved_executes a b
-  have equality := function_exec_deterministic function successful resolvedFailure
-  cases equality
-
 theorem raw_fixture_total_no_failure (a b : MultByAddWord32) :
     Raw.FunctionExec certificate.program "mult_by_add" certificate.functionInfo
         certificate.rawBody function.returnType (multByAddInitial a b)
         (.success (multByAddResult a b)) ∧
       ¬Raw.FunctionExec certificate.program "mult_by_add" certificate.functionInfo
         certificate.rawBody function.returnType (multByAddInitial a b)
-        .undefinedBehavior :=
-  ⟨raw_fixture_executes a b, raw_fixture_no_failure a b⟩
+        .undefinedBehavior := by
+  constructor
+  · apply (certificate.finite_iff (multByAddInitial a b)
+      (.success (multByAddResult a b))).2
+    rw [command_is_mult_by_add_pipeline]
+    exact mult_by_add_generated_simpl_executes a b
+  · intro failed
+    have resolvedFailure := certificate.resolution.rawToResolved
+      (multByAddInitial a b) .undefinedBehavior failed
+    have successful : function.Exec (multByAddInitial a b)
+        (.normal (multByAddResult a b)) := by
+      rw [function_is_mult_by_add_pipeline]
+      exact mult_by_add_resolved_executes a b
+    have equality := function_exec_deterministic function successful resolvedFailure
+    cases equality
 
 theorem final_correspondence_uses_quickstart_function :
     ac_corres model.projectGlobals false emptyEnvironment
@@ -142,8 +123,8 @@ def ValidNF (precondition : Globals → Prop)
     (postcondition : Nat → Globals → Prop) : Prop :=
   ∀ state, precondition state →
     ¬(program state).failed ∧
-      ∀ result post, (Except.ok result, post) ∈ (program state).results →
-        postcondition result post
+      ∀ outcome post, (outcome, post) ∈ (program state).results →
+        ∃ result, outcome = Except.ok result ∧ postcondition result post
 
 theorem final_total_correctness (a b : MultByAddWord32) :
     ∀ state, True →
@@ -163,7 +144,10 @@ theorem mult_by_add_correct (a b : MultByAddWord32) :
     ValidNF (fun _ => True) (multByAdd' a b)
       (fun result _ => result = (a * b).toNat) := by
   intro state precondition
-  exact ⟨final_no_failure a b state precondition,
-    final_total_correctness a b state precondition⟩
+  refine ⟨final_no_failure a b state precondition, ?_⟩
+  intro outcome post execution
+  rw [multByAdd', final_target_exact] at execution
+  rw [mem_returnOk] at execution
+  exact ⟨(a * b).toNat, congrArg Prod.fst execution, execution.1⟩
 
 end Zag.Test.AutoCorres.Upstream.Chapter2_HoareHeap

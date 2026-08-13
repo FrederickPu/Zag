@@ -88,19 +88,12 @@ theorem analyzed_c_to_simpl_certified
         (CParser.ScalarSimpl.Raw.embedOutcome outcome) :=
   CParser.ScalarSimpl.plus_finite_execution_iff state outcome
 
-theorem simpl_to_l1_certified :
-    L1.L1Corres false
-      Upstream.Plus.SimplConv.env
-      Upstream.Plus.SimplConv.certificate.target.denote
-      Upstream.Plus.SimplConv.source :=
-  Upstream.Plus.SimplConv.manual_source_corres
+theorem source_plus_is_correct (a b : BitVec 32) :
+    Upstream.Plus.plus' a b = a + b :=
+  Upstream.Plus.plus_correct a b
 
-theorem simpl_target_executes_addition :
-    (Except.ok (), Upstream.Plus.SimplConv.update
-      Upstream.Plus.SimplConv.initial) ∈
-      (Upstream.Plus.SimplConv.certificate.target.denote
-        Upstream.Plus.SimplConv.initial).results :=
-  Upstream.Plus.SimplConv.target_runs
+theorem source_plus_executes_addition : Upstream.Plus.plus' 3 2 = 5 :=
+  Upstream.Plus.plus_three_plus_two
 
 theorem l1_closed_ssa_is_exact :
     cast (by simp only [SSABridge.outcomeTy_type])
@@ -109,20 +102,18 @@ theorem l1_closed_ssa_is_exact :
       some (SSABridge.suspend Zag.Test.L1.caughtThrow) :=
   Zag.Test.L1.closed_ssa_bridge_eval_exact
 
-theorem l1_to_l2_certified :
-    Zag.Lang.AutoCorres.ML.LocalVarExtract.Extracts
-      Upstream.Plus.LocalVarExtract.model
-      Upstream.Plus.LocalVarExtract.certificate.target
-      Upstream.Plus.LocalVarExtract.source :=
-  Upstream.Plus.LocalVarExtract.manual_source_extracts
+theorem source_plus2_is_certified (a b : BitVec 32) :
+    ac_corres id false CParser.ScalarSimpl.emptyEnvironment
+      (fun state => BitVec.ofInt 32 state.result)
+      (fun state => state = CParser.ScalarSimpl.plus2Initial a b)
+      (Upstream.Plus.plus2' a b) CParser.ScalarSimpl.plus2.command :=
+  Upstream.Plus.plus2'_ac_corres a b
 
-theorem l2_target_executes_local_update :
-    (Except.ok
-        { Upstream.Plus.LocalVarExtract.initial with
-          result := BitVec.ofNat 32 7 }, ()) ∈
-      (Upstream.Plus.LocalVarExtract.certificate.target.denote
-        Upstream.Plus.LocalVarExtract.initial ()).results :=
-  Upstream.Plus.LocalVarExtract.target_returns_updated_locals
+theorem source_plus2_executes (a b : BitVec 32) :
+    (Except.ok (BitVec.ofInt 32 (CParser.ScalarSimpl.plus2Result a b).result),
+        CParser.ScalarSimpl.plus2Result a b) ∈
+      (Upstream.Plus.plus2' a b {}).results :=
+  Upstream.Plus.plus2_generated_member a b
 
 theorem l2_closed_ssa_is_exact :
     cast (by simp only [SSABridge.outcomeTy_type])
@@ -162,11 +153,12 @@ theorem word_abstract_overflow_is_guarded :
       (BitVec.ofNat 32 1)).failed :=
   Kernel.WordAbstract.target_fails_on_overflow
 
-theorem type_strengthen_is_exact (arguments : BitVec 32 × BitVec 32) :
-    Upstream.Plus.TypeStrengthen.source.denote arguments =
-      Zag.Lang.AutoCorres.TypeStrengthen.embed .pure
-        (Upstream.Plus.TypeStrengthen.certificate arguments).target.denote :=
-  Upstream.Plus.TypeStrengthen.manual_phase_exact arguments
+theorem source_plus2_is_valid (a b : BitVec 32) :
+    ¬(Upstream.Plus.plus2' a b {}).failed ∧
+      ∀ result post,
+        (Except.ok result, post) ∈ (Upstream.Plus.plus2' a b {}).results →
+          result = a + b :=
+  Upstream.Plus.plus2_valid a b
 
 theorem skip_heap_abs_target_updates_state :
     Zag.Lang.AutoCorres.CParser.MemoryModel.loadExternalInteger?
