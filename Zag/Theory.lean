@@ -5,6 +5,9 @@ import Zag.Data
 but allows the meta-theory (in this case lean) to determine which of those statements are provable.
 Meaning that depending on the consistency strength of the metatheory different programs will provably terminate
 (see goodstein sequence).
+
+Evaluation is partial: a block may call itself, so `Term.evalGo` is defined by
+`partial_fixpoint` and a non-terminating program evaluates to `none`.
 -/
 
 namespace Zag
@@ -55,298 +58,157 @@ def Op.applyVals {primCtx : PrimitiveCtx} (oper : Op primCtx) (vals : List (Val 
     (input : Ty) (value : Ty.type primCtx input) :
     Op.applyVals (Signature.unary output run).toOp [Val.mk input value] =
       some (Val.mk (output input) (run input value)) := by
-  simp [Op.applyVals, Signature.toOp, Signature.unary, Signature.eagerBody,
+  simp [Op.applyVals, Signature.toOp, Signature.unary, Signature.eagerBody, Op.Body.eager,
     Signature.apply, Op.Body.applyVals]
 
-def PrimFunc.apply {primCtx : PrimitiveCtx} (pfunc : PrimFunc primCtx) (vargs : List (Val primCtx)) : Option (Val primCtx) :=
-  if vargs.length = pfunc.args.length then do
-    let raw ← (← pfunc.interp vargs).as? pfunc.outTy
-    some (Val.mk pfunc.outTy raw)
-  else none
-
-def PrimFunc.toVal {primCtx : PrimitiveCtx} (pfunc : PrimFunc primCtx) : Val primCtx :=
-  Val.mk pfunc.ty
-    (cast (Ty.type.eq_6 primCtx (pfunc.args.map (.prim ·)) pfunc.outTy).symm
-      (fun args => do
-        let argTys := pfunc.args.map (.prim ·)
-        let vargs := (List.finRange argTys.length).map fun idx =>
-          Val.mk argTys[idx] (args idx)
-        let result ← pfunc.apply vargs
-        result.as? pfunc.outTy))
-
-def Term.evalMkStruct {primCtx : PrimitiveCtx} (tys : List Ty) (vargs : List (Val primCtx)) : Option (Val primCtx) := do
-  let fields ← valsAs? tys vargs
-  some (Val.mk (.struct tys) (cast (Ty.type.eq_5 primCtx tys).symm fields))
-
-def Term.evalApp {primCtx : PrimitiveCtx} (fn : Val primCtx) (args : List (Val primCtx)) : Option (Val primCtx) :=
+def Term.evalApp {primCtx : PrimitiveCtx} (fn : Val primCtx) (args : List (Val primCtx)) :
+    Option (Val primCtx) :=
   match h : fn.ty with
   | .func argsTy outTy => do
       let typedArgs ← valsAs? argsTy args
       let funcVal := cast (congrArg (Ty.type primCtx) h) fn.val
-      let f := cast (Ty.type.eq_6 primCtx argsTy outTy) funcVal
+      let f := cast (Ty.type_func primCtx argsTy outTy) funcVal
       let result ← f typedArgs
       some (Val.mk outTy result)
   | _ => none
 
-def Term.motiveVal {primCtx : PrimitiveCtx} (stateTy resultTy : Ty) : Val primCtx :=
-  Val.mk (.func [stateTy] resultTy)
-    (cast (Ty.type.eq_6 primCtx [stateTy] resultTy).symm
-      (fun _ => none))
-
-structure Term.MotiveCtx (primCtx : PrimitiveCtx) where
-  body : Term primCtx
-  env : List (Val primCtx)
-  stateTy : Ty
-  resultTy : Ty
-
-/- Instantiate generic types embedded in a term abbreviation body. Intrinsic values stay unchanged. -/
-def Term.substTy {primCtx : PrimitiveCtx} (typeArgs : List Ty) : Term primCtx → Term primCtx
-| .prim ty value => .prim ty value
-| .primFunc name => .primFunc name
-| .var idx => .var idx
-| .app fn args => .app (substTy typeArgs fn) (args.map (substTy typeArgs))
-| .op name args => .op name (args.map (substTy typeArgs))
-| .«abbrev» name nestedTypeArgs args =>
-    .«abbrev» name (nestedTypeArgs.map (Ty.subst typeArgs)) (args.map (substTy typeArgs))
-| .mkStruct tys => .mkStruct (tys.map (Ty.subst typeArgs))
-| .structProj tys idx =>
-    have hlen : (tys.map (Ty.subst typeArgs)).length = tys.length := by simp
-    .structProj (tys.map (Ty.subst typeArgs)) (idx.cast hlen.symm)
-| .recurse resultTy init body =>
-    .recurse (Ty.subst typeArgs resultTy) (substTy typeArgs init) (substTy typeArgs body)
-
-/- Find the motive named by the de Bruijn variable `idx`, searching all enclosing motives. Returns it with the stack prefix up to and including it
-  (re-invoking a motive restarts that level, so inner motives are dropped). -/
-def Term.MotiveCtx.findMotive {primCtx : PrimitiveCtx} (idx : Nat)
-    (motives : List (Term.MotiveCtx primCtx)) : Option (Term.MotiveCtx primCtx × List (Term.MotiveCtx primCtx)) := do
-  let i ← motives.findIdx? (·.env.length + 1 = idx)
-  let motive ← motives[i]?
-  some (motive, motives.take (i + 1))
+/- the environment a block is entered with: each parameter name bound to its argument -/
+def Block.entryEnv {primCtx : PrimitiveCtx} (block : Block primCtx)
+    (vargs : List (Val primCtx)) : Env primCtx :=
+  (block.params.map Prod.fst).zip vargs
 
 mutual
 
-def Term.evalGo (ctx : Ctx)
-    (motives : List (Term.MotiveCtx ctx.primCtx)) (env : List (Val ctx.primCtx)) :
+def Term.evalGo (ctx : Ctx) (env : Env ctx.primCtx) :
     Term ctx.primCtx → Option (Val ctx.primCtx)
 | .prim ty val => some (Val.mk ty val)
-| .primFunc name => do
-    let pfunc ← ctx.primFuncCtx.get? name
-    some pfunc.toVal
-| .var idx => env[idx]?
+| .var name => Scope.get? env name
 | .op name args => do
     let oper ← ctx.opCtx.get? name
     if args.length = oper.arity then
-      Term.evalBody ctx motives env args oper.body
+      Term.evalBody ctx env args oper.body
     else none
-| .«abbrev» name typeArgs args => do
-    let definition ← ctx.termAbbrevCtx.get? name
-    if typeArgs.length = definition.typeArity && args.length = definition.varCtx.length then
-      let vargs ← Term.evalList ctx motives env args
-      Term.evalGo ctx [] vargs (definition.body.substTy typeArgs)
+| .call name args => do
+    let block ← ctx.blockCtx.get? name
+    let vargs ← Term.evalList ctx env args
+    if vargs.length = block.params.length then
+      Term.evalBlock ctx (block.entryEnv vargs) block
     else none
-| .mkStruct tys =>
-    some <| Val.mk (.func tys (.struct tys))
-      (cast (Ty.type.eq_6 ctx.primCtx tys (.struct tys)).symm
-        (fun args => some (cast (Ty.type.eq_5 ctx.primCtx tys).symm args)))
-| .structProj tys idx =>
-    some <| Val.mk (.func [.struct tys] tys[idx])
-      (cast (Ty.type.eq_6 ctx.primCtx [.struct tys] tys[idx]).symm
-        (fun args => some ((cast (Ty.type.eq_5 ctx.primCtx tys) (args 0)) idx)))
-| .app (.primFunc name) args => do
-    let pfunc ← ctx.primFuncCtx.get? name
-    let vargs ← Term.evalList ctx motives env args
-    PrimFunc.apply pfunc vargs
-| .app (.mkStruct tys) args => do
-    let vargs ← Term.evalList ctx motives env args
-    Term.evalMkStruct tys vargs
-| .app (.structProj tys idx) [arg] => do
-    let value ← Term.evalGo ctx motives env arg
-    let fields ← value.as? (.struct tys)
-    some (Val.mk tys[idx] ((cast (Ty.type.eq_5 ctx.primCtx tys) fields) idx))
-| .app (.var idx) [arg] =>
-    -- A `.var idx` in application position may be a motive of *any* enclosing recursor (e.g. an
-    -- inner loop body calling the outer motive to break out), so we search the whole recursor
-    -- stack rather than only the innermost context.
-    match Term.MotiveCtx.findMotive idx motives with
-    | some (motive, stack) => do
-        let state ← Term.evalGo ctx motives env arg
-        let stateRaw ← state.as? motive.stateTy
-        let stateVal := Val.mk motive.stateTy stateRaw
-        let motiveVal := Term.motiveVal motive.stateTy motive.resultTy
-        let result ← Term.evalGo ctx stack (motive.env ++ [stateVal, motiveVal]) motive.body
-        let resultRaw ← result.as? motive.resultTy
-        some (Val.mk motive.resultTy resultRaw)
-    | none => do
-        let vf ← Term.evalGo ctx motives env (.var idx)
-        let varg ← Term.evalGo ctx motives env arg
-        Term.evalApp vf [varg]
 | .app f args => do
-    let vf ← Term.evalGo ctx motives env f
-    let vargs ← Term.evalList ctx motives env args
+    let vf ← Term.evalGo ctx env f
+    let vargs ← Term.evalList ctx env args
     Term.evalApp vf vargs
-| .recurse resultTy init body => do
-    let v ← Term.evalGo ctx motives env init
-    let motiveVal := Term.motiveVal v.ty resultTy
-    let motiveCtx : Term.MotiveCtx ctx.primCtx :=
-      { body := body, env := env, stateTy := v.ty, resultTy := resultTy }
-    Term.evalGo ctx (motives ++ [motiveCtx]) (env ++ [v, motiveVal]) body
 partial_fixpoint
 
-def Term.evalList (ctx : Ctx)
-    (motives : List (Term.MotiveCtx ctx.primCtx)) (env : List (Val ctx.primCtx))
+/- run a block's instructions in order, then return its result term -/
+def Term.evalBlock (ctx : Ctx) (env : Env ctx.primCtx) (block : Block ctx.primCtx) :
+    Option (Val ctx.primCtx) := do
+  let scope ← Term.evalInstrs ctx env block.instrs
+  Term.evalGo ctx scope block.result
+partial_fixpoint
+
+/- each instruction extends the environment with its own name -/
+def Term.evalInstrs (ctx : Ctx) (env : Env ctx.primCtx) :
+    List (Instr ctx.primCtx) → Option (Env ctx.primCtx)
+| [] => some env
+| instr :: instrs => do
+    let value ← Term.evalGo ctx env instr.value
+    Term.evalInstrs ctx (env ++ [(instr.name, value)]) instrs
+partial_fixpoint
+
+def Term.evalList (ctx : Ctx) (env : Env ctx.primCtx)
     (terms : List (Term ctx.primCtx)) : Option (List (Val ctx.primCtx)) :=
-  terms.mapM (Term.evalGo ctx motives env)
+  terms.mapM (Term.evalGo ctx env)
 partial_fixpoint
 
-def Term.evalBody (ctx : Ctx)
-    (motives : List (Term.MotiveCtx ctx.primCtx)) (env : List (Val ctx.primCtx)) :
+def Term.evalBody (ctx : Ctx) (env : Env ctx.primCtx) :
     List (Term ctx.primCtx) → Op.Body ctx.primCtx → Option (Val ctx.primCtx)
 | _, .fail => none
 | _, .done value => some value
 | [], .next _ _ => none
 | term :: terms, .next evaluate resume =>
     if evaluate then do
-      let value ← Term.evalGo ctx motives env term
-      Term.evalBody ctx motives env terms (resume (some value))
+      let value ← Term.evalGo ctx env term
+      Term.evalBody ctx env terms (resume (some value))
     else
-      Term.evalBody ctx motives env terms (resume none)
+      Term.evalBody ctx env terms (resume none)
 partial_fixpoint
 
 end
 
-theorem Term.evalBody_nil (ctx : Ctx)
-    (motives : List (Term.MotiveCtx ctx.primCtx)) (env : List (Val ctx.primCtx))
-    (body : Op.Body ctx.primCtx) :
-    Term.evalBody ctx motives env [] body = body.applyVals [] := by
+theorem Term.evalBody_nil (ctx : Ctx) (env : Env ctx.primCtx) (body : Op.Body ctx.primCtx) :
+    Term.evalBody ctx env [] body = body.applyVals [] := by
   rw [Term.evalBody.eq_def]
   cases body <;> simp [Op.Body.applyVals]
 
-@[simp] theorem Term.evalBody_fail (ctx : Ctx)
-    (motives : List (Term.MotiveCtx ctx.primCtx)) (env : List (Val ctx.primCtx))
+@[simp] theorem Term.evalBody_fail (ctx : Ctx) (env : Env ctx.primCtx)
     (terms : List (Term ctx.primCtx)) :
-    Term.evalBody ctx motives env terms .fail = none := by
+    Term.evalBody ctx env terms .fail = none := by
   rw [Term.evalBody.eq_def]
 
-@[simp] theorem Term.evalBody_done (ctx : Ctx)
-    (motives : List (Term.MotiveCtx ctx.primCtx)) (env : List (Val ctx.primCtx))
+@[simp] theorem Term.evalBody_done (ctx : Ctx) (env : Env ctx.primCtx)
     (terms : List (Term ctx.primCtx)) (value : Val ctx.primCtx) :
-    Term.evalBody ctx motives env terms (.done value) = some value := by
+    Term.evalBody ctx env terms (.done value) = some value := by
   rw [Term.evalBody.eq_def]
 
-@[simp] theorem Term.evalBody_next_nil (ctx : Ctx)
-    (motives : List (Term.MotiveCtx ctx.primCtx)) (env : List (Val ctx.primCtx))
+@[simp] theorem Term.evalBody_next_nil (ctx : Ctx) (env : Env ctx.primCtx)
     (evaluate : Bool) (resume : Option (Val ctx.primCtx) → Op.Body ctx.primCtx) :
-    Term.evalBody ctx motives env [] (.next evaluate resume) = none := by
+    Term.evalBody ctx env [] (.next evaluate resume) = none := by
   rw [Term.evalBody.eq_def]
 
-@[simp] theorem Term.evalBody_next_true (ctx : Ctx)
-    (motives : List (Term.MotiveCtx ctx.primCtx)) (env : List (Val ctx.primCtx))
+@[simp] theorem Term.evalBody_next_true (ctx : Ctx) (env : Env ctx.primCtx)
     (term : Term ctx.primCtx) (terms : List (Term ctx.primCtx))
     (resume : Option (Val ctx.primCtx) → Op.Body ctx.primCtx) :
-    Term.evalBody ctx motives env (term :: terms) (.next true resume) = (do
-      let value ← Term.evalGo ctx motives env term
-      Term.evalBody ctx motives env terms (resume (some value))) := by
+    Term.evalBody ctx env (term :: terms) (.next true resume) = (do
+      let value ← Term.evalGo ctx env term
+      Term.evalBody ctx env terms (resume (some value))) := by
   rw [Term.evalBody.eq_def]
   rfl
 
-@[simp] theorem Term.evalBody_next_false (ctx : Ctx)
-    (motives : List (Term.MotiveCtx ctx.primCtx)) (env : List (Val ctx.primCtx))
+@[simp] theorem Term.evalBody_next_false (ctx : Ctx) (env : Env ctx.primCtx)
     (term : Term ctx.primCtx) (terms : List (Term ctx.primCtx))
     (resume : Option (Val ctx.primCtx) → Op.Body ctx.primCtx) :
-    Term.evalBody ctx motives env (term :: terms) (.next false resume) =
-      Term.evalBody ctx motives env terms (resume none) := by
+    Term.evalBody ctx env (term :: terms) (.next false resume) =
+      Term.evalBody ctx env terms (resume none) := by
   rw [Term.evalBody.eq_def]
   rfl
 
-@[simp] theorem Term.evalBody_eagerBody_one (ctx : Ctx)
-    (motives : List (Term.MotiveCtx ctx.primCtx)) (env : List (Val ctx.primCtx))
-    (sig : Op.Signature ctx.primCtx 1) (term : Term ctx.primCtx) (value : Val ctx.primCtx)
-    (heval : Term.evalGo ctx motives env term = some value) :
-    Term.evalBody ctx motives env [term] (sig.eagerBody 1 []) =
-      (sig.eagerBody 1 []).applyVals [value] := by
-  simp [Op.Signature.eagerBody, heval, Term.evalBody_nil, Op.Body.applyVals]
+@[simp] theorem Term.evalBody_eager_one (ctx : Ctx) (env : Env ctx.primCtx)
+    (run : List (Val ctx.primCtx) → Option (Val ctx.primCtx))
+    (term : Term ctx.primCtx) (value : Val ctx.primCtx)
+    (heval : Term.evalGo ctx env term = some value) :
+    Term.evalBody ctx env [term] (Op.Body.eager run 1 []) =
+      (Op.Body.eager run 1 []).applyVals [value] := by
+  simp [Op.Body.eager, heval, Term.evalBody_nil, Op.Body.applyVals]
 
-@[simp] theorem Term.evalBody_eagerBody_two (ctx : Ctx)
-    (motives : List (Term.MotiveCtx ctx.primCtx)) (env : List (Val ctx.primCtx))
-    (sig : Op.Signature ctx.primCtx 2) (a b : Term ctx.primCtx) (va vb : Val ctx.primCtx)
-    (ha : Term.evalGo ctx motives env a = some va)
-    (hb : Term.evalGo ctx motives env b = some vb) :
-    Term.evalBody ctx motives env [a, b] (sig.eagerBody 2 []) =
-      (sig.eagerBody 2 []).applyVals [va, vb] := by
-  simp [Op.Signature.eagerBody, ha, hb, Term.evalBody_nil, Op.Body.applyVals]
+@[simp] theorem Term.evalBody_eager_two (ctx : Ctx) (env : Env ctx.primCtx)
+    (run : List (Val ctx.primCtx) → Option (Val ctx.primCtx))
+    (a b : Term ctx.primCtx) (va vb : Val ctx.primCtx)
+    (ha : Term.evalGo ctx env a = some va)
+    (hb : Term.evalGo ctx env b = some vb) :
+    Term.evalBody ctx env [a, b] (Op.Body.eager run 2 []) =
+      (Op.Body.eager run 2 []).applyVals [va, vb] := by
+  simp [Op.Body.eager, ha, hb, Term.evalBody_nil, Op.Body.applyVals]
 
-def Term.eval (ctx : Ctx)
-    (env : List (Val ctx.primCtx)) (term : Term ctx.primCtx) : Option (Val ctx.primCtx) :=
-  Term.evalGo ctx [] env term
-
-theorem Term.hasType_lift {ctx : Ctx}
-    {varCtx : VarCtx} {term : Term ctx.primCtx} {ty : Ty}
-    (hterm : term.hasType ctx varCtx ty) :
-    (Term.lift term).hasType ctx varCtx (.m ty) := by
-  apply Term.hasType.op (tys := [ty]) (by rfl)
-  · intro idx
-    have hlt := idx.isLt
-    change idx.val < 1 at hlt
-    have hval : idx.val = 0 := Nat.eq_zero_of_le_zero (Nat.le_of_lt_succ hlt)
-    have hidx : idx = 0 := Fin.ext hval
-    subst idx
-    simpa using hterm
-  · unfold OpCtx.outTy?
-    simp [OpCtx.get?, Op.pure]
-
-theorem Op.applyVals_pure {primCtx : PrimitiveCtx} (value : Val primCtx) :
-    Op.applyVals Op.pure [value] =
-      some (Val.mk (.m value.ty)
-        (Ty.ofM primCtx value.ty (Pure.pure (some value.val)))) := by
-  exact Signature.applyVals_unary .m
-    (fun ty value => Ty.ofM primCtx ty (Pure.pure (some value))) value.ty value.val
-
-theorem Term.evalGo_lift {ctx : Ctx}
-    {motives : List (Term.MotiveCtx ctx.primCtx)}
-    {env : List (Val ctx.primCtx)} {term : Term ctx.primCtx} {value : Val ctx.primCtx}
-    (heval : Term.evalGo ctx motives env term = some value) :
-    Term.evalGo ctx motives env (Term.lift term) =
-      some (Val.mk (.m value.ty)
-        (Ty.ofM ctx.primCtx value.ty (Pure.pure (some value.val)))) := by
-  have hform : Term.evalGo ctx motives env (Term.lift term) =
-      Op.applyVals Op.pure [value] := by
-    rw [Term.evalGo.eq_def]
-    simp [Term.lift, OpCtx.get?, heval, Op.pure, Op.applyVals,
-      Op.Signature.eagerBody, Op.Body.applyVals, Term.evalBody_nil]
-  rw [hform, Op.applyVals_pure]
+def Term.eval (ctx : Ctx) (env : Env ctx.primCtx) (term : Term ctx.primCtx) :
+    Option (Val ctx.primCtx) :=
+  Term.evalGo ctx env term
 
 /- termination of a partial `Option` evaluator is successful evaluation -/
-def Term.Terminates (ctx : Ctx)
-    (env : List (Val ctx.primCtx)) (term : Term ctx.primCtx) : Prop :=
+def Term.Terminates (ctx : Ctx) (env : Env ctx.primCtx) (term : Term ctx.primCtx) : Prop :=
   ∃ v, Term.eval ctx env term = some v
 
-/- equality at `m` types is the equality supplied by the context's monad -/
-structure Term.eq (ctx : Ctx) (varCtx : VarCtx) (ty : Ty) (t₁ t₂ : Term ctx.primCtx) : Prop where
-  hasType₁ : hasType ctx varCtx t₁ ty
-  hasType₂ : hasType ctx varCtx t₂ ty
-  eq : ∀ env : List (Val ctx.primCtx), env.length = varCtx.length →
-    t₁.eval ctx env = t₂.eval ctx env
-
-def Term.subst {primCtx : PrimitiveCtx} (ctxTerm : List (Term primCtx)) (term : Term primCtx) : Term primCtx :=
+def Term.subst {primCtx : PrimitiveCtx} (ctxTerm : Scope (Term primCtx))
+    (term : Term primCtx) : Term primCtx :=
   match ctxTerm with
   | [] => term
   | _ :: _ =>
       match term with
       | .prim ty val => .prim ty val
-      | .primFunc name => .primFunc name
-      | .var idx =>
-          if idx < ctxTerm.length then
-            (ctxTerm[idx]?).getD (.var idx)
-          else
-            .var (idx - ctxTerm.length)
+      | .var name => (Scope.get? ctxTerm name).getD (.var name)
       | .op name args => .op name (args.map (Term.subst ctxTerm))
-      | .«abbrev» name typeArgs args =>
-          .«abbrev» name typeArgs (args.map (Term.subst ctxTerm))
+      | .call name args => .call name (args.map (Term.subst ctxTerm))
       | .app f args => .app (Term.subst ctxTerm f) (args.map (Term.subst ctxTerm))
-      | .mkStruct tys => .mkStruct tys
-      | .structProj tys idx => .structProj tys idx
-      | .recurse resultTy init body =>
-          .recurse resultTy (Term.subst ctxTerm init) (Term.subst ctxTerm body)
 
 @[simp] theorem Term.subst_nil {primCtx : PrimitiveCtx} (term : Term primCtx) :
     Term.subst [] term = term := by
@@ -358,75 +220,66 @@ private theorem Term.map_subst_nil {primCtx : PrimitiveCtx} (terms : List (Term 
   | nil => rfl
   | cons term terms ih => simp [ih]
 
-@[simp] theorem Term.subst_prim {primCtx : PrimitiveCtx} (ctxTerm : List (Term primCtx))
+@[simp] theorem Term.subst_prim {primCtx : PrimitiveCtx} (ctxTerm : Scope (Term primCtx))
     (ty : Ty) (val : Ty.type primCtx ty) :
     Term.subst ctxTerm (.prim ty val) = .prim ty val := by
   cases ctxTerm <;> simp [Term.subst]
 
-@[simp] theorem Term.subst_primFunc {primCtx : PrimitiveCtx} (ctxTerm : List (Term primCtx))
+@[simp] theorem Term.subst_var {primCtx : PrimitiveCtx} (ctxTerm : Scope (Term primCtx))
     (name : String) :
-    Term.subst ctxTerm (.primFunc name) = .primFunc name := by
+    Term.subst ctxTerm (.var name) = (Scope.get? ctxTerm name).getD (.var name) := by
   cases ctxTerm <;> simp [Term.subst]
 
-@[simp] theorem Term.subst_var {primCtx : PrimitiveCtx} (ctxTerm : List (Term primCtx))
-    (idx : Nat) :
-    Term.subst ctxTerm (.var idx) =
-      if idx < ctxTerm.length then (ctxTerm[idx]?).getD (.var idx) else .var (idx - ctxTerm.length) := by
-  cases ctxTerm <;> simp [Term.subst]
-
-@[simp] theorem Term.subst_op {primCtx : PrimitiveCtx} (ctxTerm : List (Term primCtx))
+@[simp] theorem Term.subst_op {primCtx : PrimitiveCtx} (ctxTerm : Scope (Term primCtx))
     (name : String) (args : List (Term primCtx)) :
     Term.subst ctxTerm (.op name args) = .op name (args.map (Term.subst ctxTerm)) := by
   cases ctxTerm <;> simp [Term.subst, Term.map_subst_nil]
 
-@[simp] theorem Term.subst_abbrev {primCtx : PrimitiveCtx} (ctxTerm : List (Term primCtx))
-    (name : String) (typeArgs : List Ty) (args : List (Term primCtx)) :
-    Term.subst ctxTerm (.«abbrev» name typeArgs args) =
-      .«abbrev» name typeArgs (args.map (Term.subst ctxTerm)) := by
+@[simp] theorem Term.subst_call {primCtx : PrimitiveCtx} (ctxTerm : Scope (Term primCtx))
+    (name : String) (args : List (Term primCtx)) :
+    Term.subst ctxTerm (.call name args) = .call name (args.map (Term.subst ctxTerm)) := by
   cases ctxTerm <;> simp [Term.subst, Term.map_subst_nil]
 
-@[simp] theorem Term.subst_app {primCtx : PrimitiveCtx} (ctxTerm : List (Term primCtx))
+@[simp] theorem Term.subst_app {primCtx : PrimitiveCtx} (ctxTerm : Scope (Term primCtx))
     (f : Term primCtx) (args : List (Term primCtx)) :
-    Term.subst ctxTerm (.app f args) = .app (Term.subst ctxTerm f) (args.map (Term.subst ctxTerm)) := by
+    Term.subst ctxTerm (.app f args) =
+      .app (Term.subst ctxTerm f) (args.map (Term.subst ctxTerm)) := by
   cases ctxTerm <;> simp [Term.subst, Term.map_subst_nil]
 
-@[simp] theorem Term.subst_mkStruct {primCtx : PrimitiveCtx} (ctxTerm : List (Term primCtx))
-    (tys : List Ty) :
-    Term.subst ctxTerm (.mkStruct tys) = .mkStruct tys := by
-  cases ctxTerm <;> simp [Term.subst]
+/- instantiate the generic type variables of every type in a scope -/
+def VarCtx.subst (ctxTy : Scope Ty) (varCtx : VarCtx) : VarCtx :=
+  varCtx.map (fun entry => (entry.1, Ty.subst ctxTy entry.2))
 
-@[simp] theorem Term.subst_structProj {primCtx : PrimitiveCtx} (ctxTerm : List (Term primCtx))
-    (tys : List Ty) (idx : Fin tys.length) :
-    Term.subst ctxTerm (.structProj tys idx) = .structProj tys idx := by
-  cases ctxTerm <;> simp [Term.subst]
-
-@[simp] theorem Term.subst_recurse {primCtx : PrimitiveCtx} (ctxTerm : List (Term primCtx))
-    (resultTy : Ty) (init body : Term primCtx) :
-    Term.subst ctxTerm (.recurse resultTy init body) =
-      .recurse resultTy (Term.subst ctxTerm init) (Term.subst ctxTerm body) := by
-  cases ctxTerm <;> simp [Term.subst]
+/- two terms are equal at a type when they evaluate alike under every environment matching the
+  scope they are stated in -/
+structure Term.eq (ctx : Ctx) (varCtx : VarCtx) (ty : Ty) (t₁ t₂ : Term ctx.primCtx) : Prop where
+  hasType₁ : hasType ctx varCtx t₁ ty
+  hasType₂ : hasType ctx varCtx t₂ ty
+  eq : ∀ env : Env ctx.primCtx, env.Models varCtx →
+    t₁.eval ctx env = t₂.eval ctx env
 
 /- Zag propositions can only be assigned semantics under a fixed `Ctx` -/
 def Pr.interp (ctx : Ctx) :
-    (ctxTy : List Ty) → (ctxTerm : List (Term ctx.primCtx)) → Pr (Term ctx.primCtx) → Prop
+    (ctxTy : Scope Ty) → (ctxTerm : Scope (Term ctx.primCtx)) → Pr (Term ctx.primCtx) → Prop
 | ctxTy, ctxTerm, .eq varCtx ty x y =>
-  Term.eq ctx (varCtx.map (Ty.subst ctxTy)) (Ty.subst ctxTy ty) (Term.subst ctxTerm x) (Term.subst ctxTerm y)
+  Term.eq ctx (VarCtx.subst ctxTy varCtx) (Ty.subst ctxTy ty)
+    (Term.subst ctxTerm x) (Term.subst ctxTerm y)
 | ctxTy, ctxTerm, .hasType varCtx t ty =>
-  Term.hasType ctx (varCtx.map (Ty.subst ctxTy)) (Term.subst ctxTerm t) (Ty.subst ctxTy ty)
+  Term.hasType ctx (VarCtx.subst ctxTy varCtx) (Term.subst ctxTerm t) (Ty.subst ctxTy ty)
 | ctxTy, ctxTerm, .and p q =>
   Pr.interp ctx ctxTy ctxTerm p ∧ Pr.interp ctx ctxTy ctxTerm q
 | ctxTy, ctxTerm, .or p q =>
   Pr.interp ctx ctxTy ctxTerm p ∨ Pr.interp ctx ctxTy ctxTerm q
 | ctxTy, ctxTerm, .implies p q =>
   Pr.interp ctx ctxTy ctxTerm p → Pr.interp ctx ctxTy ctxTerm q
-| ctxTy, ctxTerm, .forallTy p =>
-  ∀ (α : Ty), Pr.interp ctx (ctxTy ++ [α]) ctxTerm p
-| ctxTy, ctxTerm, .forallTerm p =>
-  ∀ (x : Term ctx.primCtx), Pr.interp ctx ctxTy (ctxTerm ++ [x]) p
+| ctxTy, ctxTerm, .forallTy name p =>
+  ∀ (α : Ty), Pr.interp ctx (ctxTy ++ [(name, α)]) ctxTerm p
+| ctxTy, ctxTerm, .forallTerm name p =>
+  ∀ (x : Term ctx.primCtx), Pr.interp ctx ctxTy (ctxTerm ++ [(name, x)]) p
 
 /- metatheory (in this case lean) determines which Zag propositions are provable -/
 inductive Pr.Provable (ctx : Ctx)
-    (ctxTy : List Ty) (ctxTerm : List (Term ctx.primCtx)) (p : Pr (Term ctx.primCtx)) : Prop
+    (ctxTy : Scope Ty) (ctxTerm : Scope (Term ctx.primCtx)) (p : Pr (Term ctx.primCtx)) : Prop
 | ofProof (proof : Pr.interp ctx ctxTy ctxTerm p)
 
 end Zag

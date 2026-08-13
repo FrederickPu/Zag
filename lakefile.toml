@@ -6,57 +6,16 @@ defaultTargets = ["zag"]
 name = "Zag"
 
 [[lean_lib]]
-name = "Lang"
-roots = [
-  "Lang.SSA",
-  "Lang.AutoCorres.AutoCorres",
-  "Lang.AutoCorres.CorresXF",
-  "Lang.AutoCorres.ExecConcrete",
-  "Lang.AutoCorres.HeapLift",
-  "Lang.AutoCorres.L1",
-  "Lang.AutoCorres.L1Peephole",
-  "Lang.AutoCorres.L2",
-  "Lang.AutoCorres.LocalVarExtract",
-  "Lang.AutoCorres.NonDetMonadEx",
-  "Lang.AutoCorres.Nondet_Monad",
-  "Lang.AutoCorres.Reader_Option_Monad",
-  "Lang.AutoCorres.Simpl.Language",
-  "Lang.AutoCorres.Simpl.Semantic",
-  "Lang.AutoCorres.Simpl.Termination",
-  "Lang.AutoCorres.SimplConv",
-  "Lang.AutoCorres.TypeStrengthen",
-  "Lang.AutoCorres.TypHeapSimple",
-  "Lang.AutoCorres.WordAbstract",
-  "Lang.AutoCorres.ML.autocorres",
-  "Lang.AutoCorres.ML.heap_lift",
-  "Lang.AutoCorres.ML.heap_lift_base",
-  "Lang.AutoCorres.ML.local_var_extract",
-  "Lang.AutoCorres.ML.monad_convert",
-  "Lang.AutoCorres.ML.monad_types",
-  "Lang.AutoCorres.ML.prog",
-  "Lang.AutoCorres.ML.simpl_conv",
-  "Lang.AutoCorres.ML.type_strengthen",
-  "Lang.AutoCorres.ML.word_abstract",
-]
-
-[[lean_lib]]
-name = "Test"
-roots = ["Test.Gauss", "Test.Monad", "Test.Peano", "Test.AutoCorres", "Test.L1", "Test.L2"]
-
-[[lean_lib]]
 name = "Lib"
-roots = ["Lib.Peano"]
+roots = ["Lib.Peano.Defs"]
 
 [[lean_lib]]
 name = "Meta"
+roots = ["Meta.Induction"]
 
 [[lean_lib]]
-name = "Comparator"
-roots = [
-  "Comparator.AutoCorres.Main",
-  "Comparator.AutoCorres.Challenge",
-  "Comparator.AutoCorres.Solution",
-]
+name = "Test"
+roots = ["Test.Block", "Test.Gauss", "Test.Monad"]
 
 [[lean_exe]]
 name = "zag"

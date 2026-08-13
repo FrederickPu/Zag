@@ -31,8 +31,8 @@ def toTerm? [Language primCtx E] : Pr E → Option (Pr (Term primCtx))
 | .and p q => return .and (← p.toTerm?) (← q.toTerm?)
 | .or p q => return .or (← p.toTerm?) (← q.toTerm?)
 | .implies p q => return .implies (← p.toTerm?) (← q.toTerm?)
-| .forallTy p => return .forallTy (← p.toTerm?)
-| .forallTerm p => return .forallTerm (← p.toTerm?)
+| .forallTy name p => return .forallTy name (← p.toTerm?)
+| .forallTerm name p => return .forallTerm name (← p.toTerm?)
 
 def ofTerm [Language.Reflects primCtx E] (p : Pr (Term primCtx)) : Pr E :=
   p.map Language.Reflects.ofTerm
@@ -43,8 +43,8 @@ def ofTerm [Language.Reflects primCtx E] (p : Pr (Term primCtx)) : Pr E :=
 | .and p q => by simp [toTerm?, toTerm?_term p, toTerm?_term q]
 | .or p q => by simp [toTerm?, toTerm?_term p, toTerm?_term q]
 | .implies p q => by simp [toTerm?, toTerm?_term p, toTerm?_term q]
-| .forallTy p => by simp [toTerm?, toTerm?_term p]
-| .forallTerm p => by simp [toTerm?, toTerm?_term p]
+| .forallTy _ p => by simp [toTerm?, toTerm?_term p]
+| .forallTerm _ p => by simp [toTerm?, toTerm?_term p]
 
 @[simp] theorem toTerm?_ofTerm [Language.Reflects primCtx E] :
     ∀ p : Pr (Term primCtx), (ofTerm (E := E) p).toTerm? = some p
@@ -68,25 +68,25 @@ def ofTerm [Language.Reflects primCtx E] (p : Pr (Term primCtx)) : Pr E :=
         some (Pr.implies p q)
     rw [toTerm?_ofTerm p, toTerm?_ofTerm q]
     rfl
-| .forallTy p => by
-    change (ofTerm (E := E) p).toTerm?.bind (fun p' => some (Pr.forallTy p')) =
-      some (Pr.forallTy p)
+| .forallTy name p => by
+    change (ofTerm (E := E) p).toTerm?.bind (fun p' => some (Pr.forallTy name p')) =
+      some (Pr.forallTy name p)
     rw [toTerm?_ofTerm p]
     rfl
-| .forallTerm p => by
-    change (ofTerm (E := E) p).toTerm?.bind (fun p' => some (Pr.forallTerm p')) =
-      some (Pr.forallTerm p)
+| .forallTerm name p => by
+    change (ofTerm (E := E) p).toTerm?.bind (fun p' => some (Pr.forallTerm name p')) =
+      some (Pr.forallTerm name p)
     rw [toTerm?_ofTerm p]
     rfl
 
 end Pr
 
 def Language.Provable (ctx : Ctx) {E : Type} [Language ctx.primCtx E]
-    (ctxTy : List Ty) (ctxTerm : List (Term ctx.primCtx)) (p : Pr E) : Prop :=
+    (ctxTy : Scope Ty) (ctxTerm : Scope (Term ctx.primCtx)) (p : Pr E) : Prop :=
   ∃ termPr, p.toTerm? = some termPr ∧ Pr.Provable ctx ctxTy ctxTerm termPr
 
-@[simp] theorem Language.Provable_term {ctx : Ctx} (ctxTy : List Ty)
-    (ctxTerm : List (Term ctx.primCtx)) (p : Pr (Term ctx.primCtx)) :
+@[simp] theorem Language.Provable_term {ctx : Ctx} (ctxTy : Scope Ty)
+    (ctxTerm : Scope (Term ctx.primCtx)) (p : Pr (Term ctx.primCtx)) :
     Language.Provable ctx ctxTy ctxTerm p ↔ Pr.Provable ctx ctxTy ctxTerm p := by
   simp [Language.Provable]
 

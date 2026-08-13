@@ -2,4 +2,5 @@
 -- Import modules here that should be built as part of the library.
 import Zag.Data
 import Zag.Theory
+import Zag.Syntax
 import Zag.Meta

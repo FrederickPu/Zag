@@ -3,23 +3,23 @@ import Zag.Meta.Language
 
 namespace Zag
 
-structure Refinement (ctx : Ctx) (ctxTy : List Ty) (ctxTerm : List (Term ctx.primCtx))
+structure Refinement (ctx : Ctx) (ctxTy : Scope Ty) (ctxTerm : Scope (Term ctx.primCtx))
     {E : Type} [Language ctx.primCtx E] (goal : Pr E) where
   goals : List (Pr E)
   prove : (∀ subgoal, subgoal ∈ goals → Language.Provable ctx ctxTy ctxTerm subgoal) →
     Language.Provable ctx ctxTy ctxTerm goal
 
-abbrev Tactic (ctx : Ctx) (ctxTy : List Ty) (ctxTerm : List (Term ctx.primCtx))
+abbrev Tactic (ctx : Ctx) (ctxTy : Scope Ty) (ctxTerm : Scope (Term ctx.primCtx))
     (E : Type) [Language ctx.primCtx E] :=
   (goal : Pr E) → Refinement ctx ctxTy ctxTerm goal
 
-abbrev Tactic? (ctx : Ctx) (ctxTy : List Ty) (ctxTerm : List (Term ctx.primCtx))
+abbrev Tactic? (ctx : Ctx) (ctxTy : Scope Ty) (ctxTerm : Scope (Term ctx.primCtx))
     (E : Type) [Language ctx.primCtx E] :=
   (goal : Pr E) → Option (Refinement ctx ctxTy ctxTerm goal)
 
 namespace Refinement
 
-variable {ctx : Ctx} {ctxTy : List Ty} {ctxTerm : List (Term ctx.primCtx)}
+variable {ctx : Ctx} {ctxTy : Scope Ty} {ctxTerm : Scope (Term ctx.primCtx)}
   {E : Type} [Language ctx.primCtx E]
 
 def lift {goal : Pr E} (proof : Language.Provable ctx ctxTy ctxTerm goal) :
@@ -38,7 +38,7 @@ theorem toProvable {goal : Pr E} (refinement : Refinement ctx ctxTy ctxTerm goal
   rw [closed] at hsubgoal
   cases hsubgoal
 
-inductive InterpretsGoals (ctx : Ctx) (ctxTy : List Ty) (ctxTerm : List (Term ctx.primCtx)) :
+inductive InterpretsGoals (ctx : Ctx) (ctxTy : Scope Ty) (ctxTerm : Scope (Term ctx.primCtx)) :
     List (Pr (Term ctx.primCtx)) → Prop where
   | nil : InterpretsGoals ctx ctxTy ctxTerm []
   | cons {goal : Pr (Term ctx.primCtx)} {rest : List (Pr (Term ctx.primCtx))} :
@@ -217,7 +217,7 @@ macro_rules
       refinement_goals <;>
       normalize_refinement_goal)
 
-def Refinement.raise {ctx : Ctx} {ctxTy : List Ty} {ctxTerm : List (Term ctx.primCtx)}
+def Refinement.raise {ctx : Ctx} {ctxTy : Scope Ty} {ctxTerm : Scope (Term ctx.primCtx)}
     {E : Type} [Language.Reflects ctx.primCtx E] {goal : Pr E} {termGoal : Pr (Term ctx.primCtx)}
     (hlower : goal.toTerm? = some termGoal)
     (refinement : Refinement ctx ctxTy ctxTerm termGoal) :
@@ -236,7 +236,7 @@ def Refinement.raise {ctx : Ctx} {ctxTy : List Ty} {ctxTerm : List (Term ctx.pri
     cases Option.some.inj hraised
     simpa only [Language.Provable_term] using proof
 
-def Tactic.raise {ctx : Ctx} {ctxTy : List Ty} {ctxTerm : List (Term ctx.primCtx)}
+def Tactic.raise {ctx : Ctx} {ctxTy : Scope Ty} {ctxTerm : Scope (Term ctx.primCtx)}
     {E : Type} [Language.Reflects ctx.primCtx E]
     (tactic : Tactic ctx ctxTy ctxTerm (Term ctx.primCtx)) : Tactic ctx ctxTy ctxTerm E :=
   fun goal =>
@@ -246,7 +246,7 @@ def Tactic.raise {ctx : Ctx} {ctxTy : List Ty} {ctxTerm : List (Term ctx.primCtx
 
 namespace Tactic
 
-variable {ctx : Ctx} {ctxTy : List Ty} {ctxTerm : List (Term ctx.primCtx)}
+variable {ctx : Ctx} {ctxTy : Scope Ty} {ctxTerm : Scope (Term ctx.primCtx)}
   {E : Type} [Language ctx.primCtx E]
 
 def stuck : Tactic ctx ctxTy ctxTerm E := Refinement.stuck
@@ -290,7 +290,7 @@ end Tactic
 
 namespace Tactic?
 
-variable {ctx : Ctx} {ctxTy : List Ty} {ctxTerm : List (Term ctx.primCtx)}
+variable {ctx : Ctx} {ctxTy : Scope Ty} {ctxTerm : Scope (Term ctx.primCtx)}
   {E : Type} [Language ctx.primCtx E]
 
 def orElse (first second : Tactic? ctx ctxTy ctxTerm E) : Tactic? ctx ctxTy ctxTerm E :=
@@ -325,12 +325,12 @@ namespace Refinement
 
 private def structuralGoals {ctx : Ctx} : Pr (Term ctx.primCtx) → List (Pr (Term ctx.primCtx))
 | .and p q => structuralGoals p ++ structuralGoals q
-| .forallTy p => (structuralGoals p).map Pr.forallTy
-| p@(.forallTerm _) => [p]
+| .forallTy name p => (structuralGoals p).map (Pr.forallTy name)
+| p@(.forallTerm _ _) => [p]
 | p => [p]
 
 private theorem structuralInterprets {ctx : Ctx}
-    {ctxTy : List Ty} {ctxTerm : List (Term ctx.primCtx)} (goal : Pr (Term ctx.primCtx)) :
+    {ctxTy : Scope Ty} {ctxTerm : Scope (Term ctx.primCtx)} (goal : Pr (Term ctx.primCtx)) :
     (∀ subgoal, subgoal ∈ structuralGoals goal →
       Pr.Provable ctx ctxTy ctxTerm subgoal) →
       Pr.interp ctx ctxTy ctxTerm goal := by
@@ -360,22 +360,22 @@ private theorem structuralInterprets {ctx : Ctx}
       intro proveSubgoals
       cases proveSubgoals (.implies p q) (by simp [structuralGoals]) with
       | ofProof proof => exact proof
-  | forallTy p ih =>
+  | forallTy name p ih =>
       intro proveSubgoals α
       apply ih
       intro subgoal hsubgoal
-      have hforall : Pr.Provable ctx ctxTy ctxTerm (.forallTy subgoal) :=
-        proveSubgoals (.forallTy subgoal) (by
-          change .forallTy subgoal ∈ (structuralGoals p).map Pr.forallTy
+      have hforall : Pr.Provable ctx ctxTy ctxTerm (.forallTy name subgoal) :=
+        proveSubgoals (.forallTy name subgoal) (by
+          change .forallTy name subgoal ∈ (structuralGoals p).map (Pr.forallTy name)
           exact List.mem_map.mpr ⟨subgoal, hsubgoal, rfl⟩)
       cases hforall with
       | ofProof proof => exact Pr.Provable.ofProof (proof α)
-  | forallTerm p _ =>
+  | forallTerm name p _ =>
       intro proveSubgoals
-      cases proveSubgoals (.forallTerm p) (by simp [structuralGoals]) with
+      cases proveSubgoals (.forallTerm name p) (by simp [structuralGoals]) with
       | ofProof proof => exact proof
 def structural {ctx : Ctx}
-    {ctxTy : List Ty} {ctxTerm : List (Term ctx.primCtx)} (goal : Pr (Term ctx.primCtx)) :
+    {ctxTy : Scope Ty} {ctxTerm : Scope (Term ctx.primCtx)} (goal : Pr (Term ctx.primCtx)) :
     Refinement ctx ctxTy ctxTerm goal where
   goals := structuralGoals goal
   prove := by

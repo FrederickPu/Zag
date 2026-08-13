@@ -1,11 +1,12 @@
 import Zag.Theory
+import Zag.Syntax
 
 namespace Zag
 
 namespace Peano
 
-abbrev NatTy : Ty := .prim "Nat"
-abbrev BoolTy : Ty := .prim "Bool"
+abbrev NatTy : Ty := .prim "Nat" []
+abbrev BoolTy : Ty := .prim "Bool" []
 
 class Types (primCtx : PrimitiveCtx) : Prop where
   natType : primCtx.get? "Nat" = some Nat
@@ -17,27 +18,19 @@ namespace Ty
 
 def ofNat (primCtx : PrimitiveCtx) [Peano.Types primCtx] (n : Nat) :
     Ty.type primCtx Peano.NatTy :=
-  cast (by
-    rw [Ty.type.eq_2, Peano.Types.natType]
-    rfl : Nat = Ty.type primCtx Peano.NatTy) n
+  cast (Ty.type_ground (Peano.Types.natType (primCtx := primCtx))).symm n
 
 def toNat (primCtx : PrimitiveCtx) [Peano.Types primCtx]
     (v : Ty.type primCtx Peano.NatTy) : Nat :=
-  cast (by
-    rw [Ty.type.eq_2, Peano.Types.natType]
-    rfl : Ty.type primCtx Peano.NatTy = Nat) v
+  cast (Ty.type_ground (Peano.Types.natType (primCtx := primCtx))) v
 
 def ofBool (primCtx : PrimitiveCtx) [Peano.Types primCtx] (b : Bool) :
     Ty.type primCtx Peano.BoolTy :=
-  cast (by
-    rw [Ty.type.eq_2, Peano.Types.boolType]
-    rfl : Bool = Ty.type primCtx Peano.BoolTy) b
+  cast (Ty.type_ground (Peano.Types.boolType (primCtx := primCtx))).symm b
 
 def toBool (primCtx : PrimitiveCtx) [Peano.Types primCtx]
     (v : Ty.type primCtx Peano.BoolTy) : Bool :=
-  cast (by
-    rw [Ty.type.eq_2, Peano.Types.boolType]
-    rfl : Ty.type primCtx Peano.BoolTy = Bool) v
+  cast (Ty.type_ground (Peano.Types.boolType (primCtx := primCtx))) v
 
 @[simp] theorem toBool_ofBool (primCtx : PrimitiveCtx) [Peano.Types primCtx] (b : Bool) :
     toBool primCtx (ofBool primCtx b) = b := by
@@ -164,11 +157,32 @@ def ite {primCtx : PrimitiveCtx} [Peano.Types primCtx] : Op primCtx :=
                   | some value => .done value
                   | none => .fail }
 
+/- The arithmetic that used to be supplied as primitive functions. A primitive function is now
+  just an operator with fixed operand and result types. -/
+def natBinary {primCtx : PrimitiveCtx} [Peano.Types primCtx] (f : Nat → Nat → Nat) :
+    Op primCtx :=
+  Op.ofVals [Peano.NatTy, Peano.NatTy] Peano.NatTy fun
+  | [lhsVal, rhsVal] => do
+      let lhs ← lhsVal.asNat?
+      let rhs ← rhsVal.asNat?
+      some (Val.nat (f lhs rhs))
+  | _ => none
+
+def natUnary {primCtx : PrimitiveCtx} [Peano.Types primCtx] (f : Nat → Nat) : Op primCtx :=
+  Op.ofVals [Peano.NatTy] Peano.NatTy fun
+  | [v] => do
+      let n ← v.asNat?
+      some (Val.nat (f n))
+  | _ => none
+
 end Op
 
 def Peano.opCtx (primCtx : PrimitiveCtx) [Peano.Types primCtx] : OpCtx primCtx :=
   [("eq", Op.eq), ("lt", Op.compare Val.primLt?), ("gt", Op.compare Val.primGt?),
-   ("ite", Op.ite)]
+   ("ite", Op.ite),
+   ("add", Op.natBinary Nat.add), ("sub", Op.natBinary Nat.sub),
+   ("mul", Op.natBinary Nat.mul), ("div", Op.natBinary Nat.div),
+   ("succ", Op.natUnary Nat.succ)]
 
 namespace Peano
 
@@ -193,7 +207,7 @@ def ite {primCtx : PrimitiveCtx} (cond thenTerm elseTerm : Term primCtx) : Term 
 
 def natLit? {primCtx : PrimitiveCtx} [Peano.Types primCtx] :
     (term : Term primCtx) → Option { n : Nat // term = Term.nat n }
-| .prim (.prim "Nat") val =>
+| .prim (.prim "Nat" []) val =>
     some ⟨Ty.toNat primCtx val, by simp [Term.nat, Ty.ofNat, Ty.toNat]⟩
 | _ => none
 
@@ -203,9 +217,9 @@ def natLit? {primCtx : PrimitiveCtx} [Peano.Types primCtx] :
 
 end Term
 
-def Pr.forallNat {primCtx : PrimitiveCtx} (boundIdx : Nat) (body : Pr (Term primCtx)) :
+def Pr.forallNat {primCtx : PrimitiveCtx} (name : String) (body : Pr (Term primCtx)) :
     Pr (Term primCtx) :=
-  Pr.forallTermOfType boundIdx Peano.NatTy body
+  Pr.forallTermOfType name Peano.NatTy body
 
 theorem Term.hasType.ite {ctx : Ctx} [Peano.Model ctx]
     {varCtx : VarCtx} {cond thenTerm elseTerm : Term ctx.primCtx} {ty : Ty}
@@ -228,30 +242,62 @@ theorem Term.hasType.ite {ctx : Ctx} [Peano.Model ctx]
     rw [Peano.Model.iteOp]
     simp [Op.ite, Op.iteShape?]
 
+/- Typing for a two-operand op. Arithmetic used to be a `Term.primFunc` with a `func` type, so
+  it was typed by `Term.hasType.app`; now that it is an ordinary op it is typed by
+  `Term.hasType.op` against `OpCtx.outTy?`, exactly like `eq`, `lt` and `ite`. -/
+theorem Term.hasType.binOp {ctx : Ctx} {varCtx : VarCtx} {name : String}
+    {a b : Term ctx.primCtx} {argTy outTy : Ty}
+    (hout : ctx.opCtx.outTy? name [argTy, argTy] = some outTy)
+    (ha : Term.hasType ctx varCtx a argTy)
+    (hb : Term.hasType ctx varCtx b argTy) :
+    Term.hasType ctx varCtx (.op name [a, b]) outTy := by
+  refine Term.hasType.op (tys := [argTy, argTy]) rfl ?_ hout
+  intro idx
+  match idx with
+  | ⟨0, _⟩ => simpa using ha
+  | ⟨1, _⟩ => simpa using hb
+  | ⟨n + 2, h⟩ =>
+      have : False := by
+        change n + 2 < 2 at h
+        omega
+      contradiction
+
+theorem Term.hasType.unOp {ctx : Ctx} {varCtx : VarCtx} {name : String}
+    {a : Term ctx.primCtx} {argTy outTy : Ty}
+    (hout : ctx.opCtx.outTy? name [argTy] = some outTy)
+    (ha : Term.hasType ctx varCtx a argTy) :
+    Term.hasType ctx varCtx (.op name [a]) outTy := by
+  refine Term.hasType.op (tys := [argTy]) rfl ?_ hout
+  intro idx
+  match idx with
+  | ⟨0, _⟩ => simpa using ha
+  | ⟨n + 1, h⟩ =>
+      have : False := by
+        change n + 1 < 1 at h
+        omega
+      contradiction
+
 theorem Term.evalGo_op_compare {ctx : Ctx} [Peano.Types ctx.primCtx]
-    {motives : List (Term.MotiveCtx ctx.primCtx)} {env : List (Val ctx.primCtx)}
-    {name : String} {a b : Term ctx.primCtx}
+    {env : Env ctx.primCtx} {name : String} {a b : Term ctx.primCtx}
     {cmp : Val ctx.primCtx → Val ctx.primCtx → Option Bool} {va vb : Val ctx.primCtx}
     (hop : ctx.opCtx.get? name = some (Op.compare cmp))
-    (ha : Term.evalGo ctx motives env a = some va)
-    (hb : Term.evalGo ctx motives env b = some vb) (hty : va.ty = vb.ty) :
-    Term.evalGo ctx motives env (.op name [a, b]) =
-      (cmp va vb).map Val.bool := by
+    (ha : Term.evalGo ctx env a = some va)
+    (hb : Term.evalGo ctx env b = some vb) (hty : va.ty = vb.ty) :
+    Term.evalGo ctx env (.op name [a, b]) = (cmp va vb).map Val.bool := by
   rw [Term.evalGo.eq_def]
   simp [hop, Op.compare, ha, hb, hty]
   cases cmp va vb <;> simp
 
 theorem Term.evalGo_ite {ctx : Ctx} [Peano.Model ctx]
-    (motives : List (Term.MotiveCtx ctx.primCtx)) (env : List (Val ctx.primCtx))
-    (cond thenTerm elseTerm : Term ctx.primCtx) :
-    Term.evalGo ctx motives env (Term.ite cond thenTerm elseTerm) = (do
-      let conditionVal ← Term.evalGo ctx motives env cond
+    (env : Env ctx.primCtx) (cond thenTerm elseTerm : Term ctx.primCtx) :
+    Term.evalGo ctx env (Term.ite cond thenTerm elseTerm) = (do
+      let conditionVal ← Term.evalGo ctx env cond
       let condition ← conditionVal.as? Peano.BoolTy
       if Ty.toBool ctx.primCtx condition then
-        Term.evalGo ctx motives env thenTerm
+        Term.evalGo ctx env thenTerm
       else
-        Term.evalGo ctx motives env elseTerm) := by
-  cases hcond : Term.evalGo ctx motives env cond with
+        Term.evalGo ctx env elseTerm) := by
+  cases hcond : Term.evalGo ctx env cond with
   | none =>
       rw [Term.evalGo.eq_def]
       simp [Term.ite, Peano.Model.iteOp, Op.ite, hcond]
@@ -293,37 +339,11 @@ instance : Peano.Types natCtx where
   natType := by rfl
   boolType := by rfl
 
-def natBinaryFunc (f : Nat → Nat → Nat) : PrimFunc natCtx where
-  args := ["Nat", "Nat"]
-  out := "Nat"
-  hprim := by simp_all
-  interp
-  | [lhsVal, rhsVal] => do
-      let lhs ← lhsVal.asNat?
-      let rhs ← rhsVal.asNat?
-      some (Val.nat (f lhs rhs))
-  | _ => none
-
-def succFunc : PrimFunc natCtx where
-  args := ["Nat"]
-  out := "Nat"
-  hprim := by simp_all
-  interp
-  | [v] => do
-      let n ← v.asNat?
-      some (Val.nat (n + 1))
-  | _ => none
-
-def natFuncCtx : PrimFuncCtx natCtx :=
-  [("add", natBinaryFunc Nat.add), ("sub", natBinaryFunc Nat.sub),
-   ("mul", natBinaryFunc Nat.mul), ("div", natBinaryFunc Nat.div), ("succ", succFunc)]
-
 def natOpCtx : OpCtx natCtx :=
   Peano.opCtx natCtx
 
 abbrev peanoCtx : Ctx where
   primCtx := natCtx
-  primFuncCtx := natFuncCtx
   opCtx := natOpCtx
 
 instance : Peano.Model peanoCtx where
@@ -335,5 +355,3 @@ instance : Peano.Model peanoCtx where
   iteOp := by rfl
 
 end Lib.Peano
-
-end Zag
