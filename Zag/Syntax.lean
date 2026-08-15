@@ -56,8 +56,8 @@ syntax "op" str "[" zagTerm,* "]" : zagTerm
 syntax "op" ident "[" zagTerm,* "]" : zagTerm
 syntax "call" str "[" zagTerm,* "]" : zagTerm
 syntax "call" ident "[" zagTerm,* "]" : zagTerm
-syntax "exit" str "[" zagTerm "]" : zagTerm
-syntax "exit" ident "[" zagTerm "]" : zagTerm
+syntax "exit" str zagTerm : zagTerm
+syntax "exit" ident zagTerm : zagTerm
 syntax "(" zagTerm ")" : zagTerm
 syntax ident : zagTerm
 
@@ -98,9 +98,9 @@ macro_rules
       `(Zag.Term.call $name [ $[(zagTerm% $args)],* ])
   | `(zagTerm% call $name:ident [ $args:zagTerm,* ]) =>
       `(Zag.Term.call (zagName% $name) [ $[(zagTerm% $args)],* ])
-  | `(zagTerm% exit $name:str [ $value:zagTerm ]) =>
+  | `(zagTerm% exit $name:str $value:zagTerm) =>
       `(Zag.Term.exit $name (zagTerm% $value))
-  | `(zagTerm% exit $name:ident [ $value:zagTerm ]) =>
+  | `(zagTerm% exit $name:ident $value:zagTerm) =>
       `(Zag.Term.exit (zagName% $name) (zagTerm% $value))
   | `(zagTerm% ($term:zagTerm)) => `(zagTerm% $term)
   | `(zagTerm% $name:ident) => `(Zag.Term.var (zagName% $name))

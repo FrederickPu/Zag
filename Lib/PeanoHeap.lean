@@ -1,4 +1,4 @@
-import Lib.Peano.Defs
+import Lib.Peano.Eval
 
 namespace Zag
 
@@ -16,21 +16,6 @@ structure Heap where
 deriving Repr, DecidableEq
 
 abbrev HeapArray := List Nat
-
-structure StateNat where
-  heap : Heap
-  value : Nat
-deriving Repr, DecidableEq
-
-structure StateBool where
-  heap : Heap
-  value : Bool
-deriving Repr, DecidableEq
-
-structure StatePtr where
-  heap : Heap
-  value : Ptr
-deriving Repr, DecidableEq
 
 namespace Heap
 
@@ -126,15 +111,32 @@ decreasing_by all_goals omega
 def pow2 (shift : Nat) : Nat :=
   2 ^ shift
 
+/-- `State(a)`: what a heap-transforming computation leaves behind -- the heap it produced
+  together with the value it returned.
+
+  The effect is declared once, parametrically, as an ordinary arity-1 primitive, and the payload
+  is a type *argument*. There is no `StateNat`/`StateBool`/`StatePtr` triplet to keep in step,
+  and a program returning a new payload type needs neither a new primitive nor new operators.
+
+  It is deliberately the *result* of a computation rather than `Heap -> Heap x a`: a block
+  sequences its effects through its instruction list, so the block itself is the `do` block.
+  `pure` and `bind` would need a lambda to write a continuation, and blocks have no lambda --
+  see `Test/Monad.lean` for a context whose monad is written that way instead. -/
+def statePrim : Primitive where
+  name := "State"
+  arity := 1
+  type := fun
+    | [payload] => Heap × payload
+    | _ => Empty
+  repr := fun _ => none
+
 abbrev heapCtx : PrimitiveCtx := .ofPrims [
   .of "Nat" Nat,
   .of "Bool" Bool,
   .of "Ptr" Ptr,
   .of "Heap" Heap,
   .of "Array" HeapArray,
-  .of "StateNat" StateNat,
-  .of "StateBool" StateBool,
-  .of "StatePtr" StatePtr
+  statePrim
 ]
 
 instance : Peano.Types heapCtx where
@@ -146,9 +148,7 @@ abbrev BoolTy : Ty := Peano.BoolTy
 abbrev PtrTy : Ty := .prim "Ptr" []
 abbrev HeapTy : Ty := .prim "Heap" []
 abbrev ArrayTy : Ty := .prim "Array" []
-abbrev StateNatTy : Ty := .prim "StateNat" []
-abbrev StateBoolTy : Ty := .prim "StateBool" []
-abbrev StatePtrTy : Ty := .prim "StatePtr" []
+abbrev StateTy (payload : Ty) : Ty := .prim "State" [payload]
 
 def ofPtr (ptr : Ptr) : Ty.type heapCtx PtrTy :=
   PrimitiveCtx.toPrimitiveValue heapCtx "Ptr" ptr (by rfl)
@@ -168,23 +168,22 @@ def ofArray (xs : HeapArray) : Ty.type heapCtx ArrayTy :=
 def toArray (raw : Ty.type heapCtx ArrayTy) : HeapArray :=
   cast (Ty.type_ground (primCtx := heapCtx) (name := "Array") (type := HeapArray) (by rfl)) raw
 
-def ofStateNat (state : StateNat) : Ty.type heapCtx StateNatTy :=
-  PrimitiveCtx.toPrimitiveValue heapCtx "StateNat" state (by rfl)
+theorem type_state (payload : Ty) :
+    Ty.type heapCtx (StateTy payload) = (Heap × Ty.type heapCtx payload) := by
+  rw [Ty.type_prim_of_find (primitive := statePrim) [payload] rfl, Ty.types_cons, Ty.types_nil]
+  rfl
 
-def toStateNat (raw : Ty.type heapCtx StateNatTy) : StateNat :=
-  cast (Ty.type_ground (primCtx := heapCtx) (name := "StateNat") (type := StateNat) (by rfl)) raw
+def ofState (payload : Ty) (state : Heap × Ty.type heapCtx payload) :
+    Ty.type heapCtx (StateTy payload) :=
+  cast (type_state payload).symm state
 
-def ofStateBool (state : StateBool) : Ty.type heapCtx StateBoolTy :=
-  PrimitiveCtx.toPrimitiveValue heapCtx "StateBool" state (by rfl)
+def toState (payload : Ty) (raw : Ty.type heapCtx (StateTy payload)) :
+    Heap × Ty.type heapCtx payload :=
+  cast (type_state payload) raw
 
-def toStateBool (raw : Ty.type heapCtx StateBoolTy) : StateBool :=
-  cast (Ty.type_ground (primCtx := heapCtx) (name := "StateBool") (type := StateBool) (by rfl)) raw
-
-def ofStatePtr (state : StatePtr) : Ty.type heapCtx StatePtrTy :=
-  PrimitiveCtx.toPrimitiveValue heapCtx "StatePtr" state (by rfl)
-
-def toStatePtr (raw : Ty.type heapCtx StatePtrTy) : StatePtr :=
-  cast (Ty.type_ground (primCtx := heapCtx) (name := "StatePtr") (type := StatePtr) (by rfl)) raw
+@[simp] theorem toState_ofState (payload : Ty) (state : Heap × Ty.type heapCtx payload) :
+    toState payload (ofState payload state) = state := by
+  simp [toState, ofState]
 
 def valPtr (ptr : Ptr) : Val heapCtx :=
   .mk PtrTy (ofPtr ptr)
@@ -195,14 +194,8 @@ def valHeap (heap : Heap) : Val heapCtx :=
 def valArray (xs : HeapArray) : Val heapCtx :=
   .mk ArrayTy (ofArray xs)
 
-def valStateNat (state : StateNat) : Val heapCtx :=
-  .mk StateNatTy (ofStateNat state)
-
-def valStateBool (state : StateBool) : Val heapCtx :=
-  .mk StateBoolTy (ofStateBool state)
-
-def valStatePtr (state : StatePtr) : Val heapCtx :=
-  .mk StatePtrTy (ofStatePtr state)
+def valState (payload : Ty) (state : Heap × Ty.type heapCtx payload) : Val heapCtx :=
+  .mk (StateTy payload) (ofState payload state)
 
 def asPtr? (value : Val heapCtx) : Option Ptr := do
   let raw ← value.as? PtrTy
@@ -216,17 +209,10 @@ def asArray? (value : Val heapCtx) : Option HeapArray := do
   let raw ← value.as? ArrayTy
   some (toArray raw)
 
-def asStateNat? (value : Val heapCtx) : Option StateNat := do
-  let raw ← value.as? StateNatTy
-  some (toStateNat raw)
-
-def asStateBool? (value : Val heapCtx) : Option StateBool := do
-  let raw ← value.as? StateBoolTy
-  some (toStateBool raw)
-
-def asStatePtr? (value : Val heapCtx) : Option StatePtr := do
-  let raw ← value.as? StatePtrTy
-  some (toStatePtr raw)
+def asState? (payload : Ty) (value : Val heapCtx) :
+    Option (Heap × Ty.type heapCtx payload) := do
+  let raw ← value.as? (StateTy payload)
+  some (toState payload raw)
 
 def termPtr (addr : Nat) : Term heapCtx :=
   .prim PtrTy (ofPtr ⟨addr⟩)
@@ -406,71 +392,45 @@ def arrayInsertSortedOp : Op heapCtx :=
       some (valArray (HeapArray.insertSorted value xs))
   | _ => none
 
-def mkStateNatOp : Op heapCtx :=
-  Op.ofVals [HeapTy, NatTy] StateNatTy fun
-  | [heapVal, valueVal] => do
-      let heap ← asHeap? heapVal
-      let value ← valueVal.asNat?
-      some (valStateNat { heap := heap, value := value })
-  | _ => none
+/-! ### the state operators
 
-def stateNatHeapOp : Op heapCtx :=
-  Op.ofVals [StateNatTy] HeapTy fun
-  | [stateVal] => do
-      let state ← asStateNat? stateVal
-      some (valHeap state.heap)
-  | _ => none
+  Three operators, parametric in the payload, replacing one `mk`/`heap`/`value` triple per
+  payload type. `Op.ofVals` cannot express them: they have no fixed signature, so their operand
+  and result types are *decoded* from the type they are applied to. -/
 
-def stateNatValueOp : Op heapCtx :=
-  Op.ofVals [StateNatTy] NatTy fun
-  | [stateVal] => do
-      let state ← asStateNat? stateVal
-      some (Val.nat state.value)
-  | _ => none
+@[simp] def stateShape? : (ty : Ty) → Option {payload : Ty // ty = StateTy payload}
+| .prim "State" [payload] => some ⟨payload, rfl⟩
+| _ => none
 
-def mkStateBoolOp : Op heapCtx :=
-  Op.ofVals [HeapTy, BoolTy] StateBoolTy fun
-  | [heapVal, valueVal] => do
-      let heap ← asHeap? heapVal
-      let value ← valueVal.asBool?
-      some (valStateBool { heap := heap, value := value })
-  | _ => none
+/-- Read one component out of a `State(a)`, at a result type computed from the payload. -/
+def stateProjection (output : Ty → Ty)
+    (run : (payload : Ty) → Heap × Ty.type heapCtx payload → Ty.type heapCtx (output payload)) :
+    Op.Signature heapCtx 1 where
+  Shape := Ty
+  inputs payload _ := StateTy payload
+  output := output
+  decode tys := (stateShape? (tys 0)).map Subtype.val
+  decode_inputs := by
+    intro tys payload hdecode
+    simp only [Option.map_eq_some_iff] at hdecode
+    obtain ⟨decoded, _, rfl⟩ := hdecode
+    funext idx
+    have hidx : idx = 0 := Subsingleton.elim _ _
+    subst hidx
+    exact decoded.property.symm
+  run payload args := run payload (toState payload (args 0))
 
-def stateBoolHeapOp : Op heapCtx :=
-  Op.ofVals [StateBoolTy] HeapTy fun
-  | [stateVal] => do
-      let state ← asStateBool? stateVal
-      some (valHeap state.heap)
-  | _ => none
+def mkStateOp : Op heapCtx :=
+  (Op.Signature.binary (shape := Ty) (fun _ => HeapTy) (fun payload => payload) StateTy
+    (fun heapTy payloadTy =>
+      if h : heapTy = HeapTy then some ⟨payloadTy, h.symm, rfl⟩ else none)
+    (fun payload heap value => ofState payload (toHeap heap, value))).toOp
 
-def stateBoolValueOp : Op heapCtx :=
-  Op.ofVals [StateBoolTy] BoolTy fun
-  | [stateVal] => do
-      let state ← asStateBool? stateVal
-      some (Val.bool state.value)
-  | _ => none
+def stateHeapOp : Op heapCtx :=
+  (stateProjection (fun _ => HeapTy) (fun _ state => ofHeap state.1)).toOp
 
-def mkStatePtrOp : Op heapCtx :=
-  Op.ofVals [HeapTy, PtrTy] StatePtrTy fun
-  | [heapVal, ptrVal] => do
-      let heap ← asHeap? heapVal
-      let ptr ← asPtr? ptrVal
-      some (valStatePtr { heap := heap, value := ptr })
-  | _ => none
-
-def statePtrHeapOp : Op heapCtx :=
-  Op.ofVals [StatePtrTy] HeapTy fun
-  | [stateVal] => do
-      let state ← asStatePtr? stateVal
-      some (valHeap state.heap)
-  | _ => none
-
-def statePtrValueOp : Op heapCtx :=
-  Op.ofVals [StatePtrTy] PtrTy fun
-  | [stateVal] => do
-      let state ← asStatePtr? stateVal
-      some (valPtr state.value)
-  | _ => none
+def stateValueOp : Op heapCtx :=
+  (stateProjection id (fun _ state => state.2)).toOp
 
 def heapOpCtx : OpCtx heapCtx :=
   Peano.opCtx heapCtx ++ [
@@ -510,20 +470,39 @@ def heapOpCtx : OpCtx heapCtx :=
     ("arrayFill", arrayFillOp),
     ("arraySort", arraySortOp),
     ("arrayInsertSorted", arrayInsertSortedOp),
-    ("mkStateNat", mkStateNatOp),
-    ("stateNatHeap", stateNatHeapOp),
-    ("stateNatValue", stateNatValueOp),
-    ("mkStateBool", mkStateBoolOp),
-    ("stateBoolHeap", stateBoolHeapOp),
-    ("stateBoolValue", stateBoolValueOp),
-    ("mkStatePtr", mkStatePtrOp),
-    ("statePtrHeap", statePtrHeapOp),
-    ("statePtrValue", statePtrValueOp)
+    ("mkState", mkStateOp),
+    ("stateHeap", stateHeapOp),
+    ("stateValue", stateValueOp)
   ]
 
 abbrev peanoHeapCtx : Ctx where
   primCtx := heapCtx
   opCtx := heapOpCtx
+
+/-- A program: the PeanoHeap primitives and operators, plus a checked list of blocks.
+
+  Deliberately an `abbrev`, so that `ctx.primCtx` reduces to `heapCtx`. The concretization rules
+  of `Zag/Eval.lean` are indexed on the primitive context of the terms they see, and a program's
+  own text is elaborated at `heapCtx`; if the two did not reduce alike, none of the rules would
+  fire on a term read out of a block body. -/
+abbrev mkCtx (blocks : BlockCtx.Raw heapCtx) (h : BlockCtx.Valid blocks) : Ctx where
+  primCtx := heapCtx
+  opCtx := heapOpCtx
+  blockCtx := { val := blocks, isValid := h }
+
+/-- Names are unique and every `call` names a declared block. Takes the block lists to unfold:
+  the program's own, plus any it is assembled from. -/
+syntax (name := validBlocksTactic) "valid_blocks"
+  " [" Lean.Parser.Tactic.simpLemma,* "]" : tactic
+
+macro_rules
+| `(tactic| valid_blocks [$blocks,*]) =>
+    `(tactic|
+      refine ⟨by decide, ?_⟩ <;>
+      set_option linter.unusedSimpArgs false in
+        simp [$blocks,*, Zag.Block.callNames, Zag.Term.callNames, Zag.Term.nat,
+          Zag.Term.bool, Zag.Term.ite, Zag.Lib.PeanoHeap.termHeap, Zag.Lib.PeanoHeap.termPtr,
+          Zag.Lib.PeanoHeap.termArray])
 
 instance : Peano.Model peanoHeapCtx where
   natType := by rfl
@@ -532,6 +511,25 @@ instance : Peano.Model peanoHeapCtx where
   ltOp := by rfl
   gtOp := by rfl
   iteOp := by rfl
+  addOp := by rfl
+  subOp := by rfl
+  mulOp := by rfl
+  divOp := by rfl
+  succOp := by rfl
+
+instance (blocks : BlockCtx.Raw heapCtx) (h : BlockCtx.Valid blocks) :
+    Peano.Model (mkCtx blocks h) where
+  natType := by rfl
+  boolType := by rfl
+  eqOp := by rfl
+  ltOp := by rfl
+  gtOp := by rfl
+  iteOp := by rfl
+  addOp := by rfl
+  subOp := by rfl
+  mulOp := by rfl
+  divOp := by rfl
+  succOp := by rfl
 
 end Lib.PeanoHeap
 

@@ -7,15 +7,15 @@ name = "Zag"
 
 [[lean_lib]]
 name = "Lib"
-roots = ["Lib.Peano.Defs", "Lib.PeanoHeap"]
+roots = ["Lib.Peano.Defs", "Lib.Peano.Eval", "Lib.PeanoHeap"]
 
 [[lean_lib]]
 name = "Meta"
-roots = ["Meta.Induction", "Meta.UnifyType"]
+roots = ["Meta.Induction", "Meta.UnifyType", "Meta.Eval"]
 
 [[lean_lib]]
 name = "Test"
-roots = ["Test.Block", "Test.Exit", "Test.Gauss", "Test.Monad", "Test.Autocorres.Examples", "Test.AutoCorresExamples"]
+roots = ["Test.Block", "Test.Exit", "Test.EvalState", "Test.Gauss", "Test.Heap", "Test.Monad", "Test.Autocorres.Examples", "Test.AutoCorresExamples"]
 
 [[lean_exe]]
 name = "zag"

@@ -90,6 +90,15 @@ theorem get?_append {α : Type _} (before after : Scope α) (name : String) :
   simp only [Scope.get?, List.reverse_cons, List.reverse_nil, List.nil_append, List.find?_cons]
   by_cases h : entryName = name <;> simp [h, eq_comm (a := name)]
 
+/- Lookup keeps the *last* match, so the tail of a scope shadows its head. This is the equation
+  that lets a literal scope be looked up by rewriting, with no `reverse` or `find?` left over. -/
+theorem get?_cons {α : Type _} (entry : String × α) (rest : Scope α) (name : String) :
+    Scope.get? (entry :: rest) name =
+      (Scope.get? rest name).or (if name = entry.1 then some entry.2 else none) := by
+  rw [show entry :: rest = [entry] ++ rest from rfl, get?_append]
+  cases entry
+  rw [get?_singleton]
+
 theorem get?_append_singleton {α : Type _} (before : Scope α) (name entryName : String)
     (value : α) :
     Scope.get? (before ++ [(entryName, value)]) name =
@@ -504,8 +513,15 @@ end BlockCtx
   blocks. Later fields may depend on the earlier contexts. -/
 structure Ctx where
   primCtx : PrimitiveCtx
+  /- The effect a program runs in. `Id` for a pure context; a state monad once there is a heap.
+    Failure is *not* part of it -- that is `OptionT`, layered on at evaluation, so that effects
+    performed before a stuck state still stand. -/
+  M : Type → Type := Id
+  [monad : Monad M]
   opCtx : OpCtx primCtx
   blockCtx : BlockCtx primCtx := .empty
+
+attribute [instance] Ctx.monad
 
 namespace Term
 

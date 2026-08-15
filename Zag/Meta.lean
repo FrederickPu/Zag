@@ -190,6 +190,7 @@ elab "normalize_refinement_goal" : tactic => do
   evalTactic (← `(tactic| try simp_all))
 
 syntax (name := applyRefinement) "applyRefinement " term : tactic
+syntax (name := applyRefinementReducing) "applyRefinement " term " reducing_by " tactic : tactic
 
 macro_rules
 | `(tactic| applyRefinement $refinement) =>
@@ -197,7 +198,14 @@ macro_rules
       refine Pr.Provable.ofProof ?_ <;>
       apply Refinement.sound ($refinement) <;>
       refinement_goals <;>
-      simp_all)
+      normalize_refinement_goal)
+| `(tactic| applyRefinement $refinement reducing_by $reducer:tactic) =>
+    `(tactic|
+      refine Pr.Provable.ofProof ?_ <;>
+      apply Refinement.sound ($refinement) <;>
+      $reducer:tactic <;>
+      refinement_goals <;>
+      normalize_refinement_goal)
 
 syntax (name := applyTactic) "applyTactic " term : tactic
 syntax (name := applyTacticReducing) "applyTactic " term " reducing_by " tactic : tactic

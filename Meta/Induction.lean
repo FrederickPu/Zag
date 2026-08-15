@@ -560,6 +560,32 @@ def natInductionWithPredicate {ctx : Ctx} [Peano.Model ctx]
     rw [hinst]
     exact natInductionChain hspec hne hqf hfresh hbase hstep target
 
+/-! ### reflected goals
+
+  `Pr.interp` unfolds a Zag proposition into the Lean statement it denotes; these two tactics
+  are the "open it up" and "close it with a Lean proof" halves of that. Both are stated with
+  fully qualified names because a macro's body is resolved where it is *used*. -/
+
+syntax (name := openReflectedProvable) "open_reflected_provable" : tactic
+
+macro_rules
+| `(tactic| open_reflected_provable) =>
+    `(tactic|
+      refine Zag.Pr.Provable.ofProof ?_;
+      simp [Zag.Pr.Induction.natStepGoal, Zag.Pr.forallNat, Zag.Pr.forallTermOfType,
+        Zag.Pr.interp, Zag.Pr.Induction.succEq, Zag.Pr.Induction.instantiate, Zag.Scope.get?,
+        Zag.VarCtx.subst, Zag.Ty.subst, Zag.Term.subst, Zag.Term.nat, Zag.Term.bool])
+
+syntax (name := exactReflected) "exact_reflected " term : tactic
+
+macro_rules
+| `(tactic| exact_reflected $proof) =>
+    `(tactic|
+      simpa [Zag.Pr.interp, Zag.Pr.Induction.instantiate, Zag.Pr.map,
+        Zag.Pr.Induction.Term.instantiateVar, Zag.Pr.Induction.Term.instantiateVarList,
+        Zag.Scope.get?, Zag.VarCtx.subst, Zag.Ty.subst, Zag.Term.subst, Zag.Term.nat,
+        Zag.Term.bool] using $proof)
+
 end Induction
 
 end Pr

@@ -191,6 +191,11 @@ class Model (ctx : Ctx) : Prop extends Types ctx.primCtx where
   ltOp : ctx.opCtx.get? "lt" = some (Op.compare Val.primLt?)
   gtOp : ctx.opCtx.get? "gt" = some (Op.compare Val.primGt?)
   iteOp : ctx.opCtx.get? "ite" = some Op.ite
+  addOp : ctx.opCtx.get? "add" = some (Op.natBinary Nat.add)
+  subOp : ctx.opCtx.get? "sub" = some (Op.natBinary Nat.sub)
+  mulOp : ctx.opCtx.get? "mul" = some (Op.natBinary Nat.mul)
+  divOp : ctx.opCtx.get? "div" = some (Op.natBinary Nat.div)
+  succOp : ctx.opCtx.get? "succ" = some (Op.natUnary Nat.succ)
 
 end Peano
 
@@ -351,5 +356,10 @@ instance : Peano.Model peanoCtx where
   ltOp := by rfl
   gtOp := by rfl
   iteOp := by rfl
+  addOp := by rfl
+  subOp := by rfl
+  mulOp := by rfl
+  divOp := by rfl
+  succOp := by rfl
 
 end Lib.Peano
