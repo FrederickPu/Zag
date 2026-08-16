@@ -282,38 +282,6 @@ theorem Term.hasType.unOp {ctx : Ctx} {varCtx : VarCtx} {name : String}
         omega
       contradiction
 
-theorem Term.evalGo_op_compare {ctx : Ctx} [Peano.Types ctx.primCtx]
-    {env : Env ctx.primCtx} {name : String} {a b : Term ctx.primCtx}
-    {cmp : Val ctx.primCtx → Val ctx.primCtx → Option Bool} {va vb : Val ctx.primCtx}
-    (hop : ctx.opCtx.get? name = some (Op.compare cmp))
-    (ha : Term.evalGo ctx env a = some va)
-    (hb : Term.evalGo ctx env b = some vb) (hty : va.ty = vb.ty) :
-    Term.evalGo ctx env (.op name [a, b]) = (cmp va vb).map Val.bool := by
-  rw [Term.evalGo_op]
-  simp [hop, Op.compare, ha, hb, hty]
-  cases cmp va vb <;> simp
-
-theorem Term.evalGo_ite {ctx : Ctx} [Peano.Model ctx]
-    (env : Env ctx.primCtx) (cond thenTerm elseTerm : Term ctx.primCtx) :
-    Term.evalGo ctx env (Term.ite cond thenTerm elseTerm) = (do
-      let conditionVal ← Term.evalGo ctx env cond
-      let condition ← conditionVal.as? Peano.BoolTy
-      if Ty.toBool ctx.primCtx condition then
-        Term.evalGo ctx env thenTerm
-      else
-        Term.evalGo ctx env elseTerm) := by
-  change Term.evalGo ctx env (.op "ite" [cond, thenTerm, elseTerm]) = _
-  rw [Term.evalGo_op]
-  rw [Peano.Model.iteOp]
-  cases hcond : Term.evalGo ctx env cond with
-  | none => simp [Op.ite, hcond]
-  | some value =>
-      cases hvalue : value.as? Peano.BoolTy with
-      | none => simp [Op.ite, hcond, hvalue]
-      | some condition =>
-          cases hcondition : Ty.toBool ctx.primCtx condition <;>
-            simp [Op.ite, hcond, hvalue, hcondition]
-
 syntax "nat(" term ")" : zagTerm
 syntax "bool(" term ")" : zagTerm
 syntax "primEq" zagTerm zagTerm : zagTerm

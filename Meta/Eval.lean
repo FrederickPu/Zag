@@ -2,56 +2,14 @@ import Lib.Peano.Eval
 import Zag.EvalState
 
 /-!
-# `concretize` -- proof automation for evaluating a term against a concretization context
+# Small-step evaluation tactics
 
-`concretize` discharges goals of the form
-
-```
-Term.eval ctx env t = some value
-Term.evalCall ctx name vargs = some value
-Block.run ctx env instrs result = some value
-```
-
-by rewriting with the evaluation calculus (`Zag/Eval.lean`, `Lib/Peano/Eval.lean`). The
-*concretization context* is `env`: it says what value each bound variable of `t` stands for.
-Those values may mention Lean variables, so what comes out is a symbolic expression rather than
-a literal -- with `x` and `y` bound to `Val.nat x` and `Val.nat y`, the term `op "add" [x, y]`
-concretizes to `Val.nat (x + y)`.
-
-Extra arguments are handed to `simp`. Two kinds are worth passing:
-
-* another block's specification (`Term.evalCall ctx name vargs = some ..`), which is how one
-  block's proof reuses another's;
-* an induction hypothesis, which is the same thing for a *recursive* call, and is the only way
-  such a call is ever discharged.
-
-Whatever arithmetic is left over belongs to the caller -- `concretize` evaluates the program, it
-does not do number theory.
+`evaluates` runs a closed `EvaluatesTo` goal with bounded fuel. `evaluates_call` proves block
+specifications stated as `EvaluatesCall`; recursive proofs splice an induction hypothesis with
+`EvaluatesFrom.call_then` when the machine reaches the recursive call.
 -/
 
 namespace Zag
-
-syntax (name := concretizeTactic) "concretize" (" [" Lean.Parser.Tactic.simpLemma,* "]")? :
-  tactic
-
-/- Two steps alternate until neither applies: `simp` with the evaluation calculus (all of which
-  is already `@[simp]`; what is added here is how to compute a scope lookup and an entry
-  environment), and stepping into a callee's body once a call has been reduced to its argument
-  values. The callee is found by `rfl`, not by rewriting, so the goal never mentions the program
-  text.
-
-  Rewriting comes first on purpose. A recursive call is discharged by an induction hypothesis,
-  which is a rewrite; stepping into the block instead would unfold one iteration too many and
-  leave the hypothesis with nothing to match. -/
-macro_rules
-| `(tactic| concretize) => `(tactic| concretize [])
-| `(tactic| concretize [$lemmas,*]) =>
-    `(tactic|
-      focus
-        repeat (first
-          | simp +arith [Scope.get?_cons, Scope.get?_append_singleton, Block.entryEnv,
-              $lemmas,*]
-          | refine Zag.Term.evalCall_of_run rfl rfl ?_))
 
 /-- Run the small-step machine until it stops, discharging `EvaluatesTo`.
 
@@ -65,6 +23,15 @@ macro_rules
 syntax (name := evaluatesTactic) "evaluates" num
   " [" Lean.Parser.Tactic.simpLemma,* "]" : tactic
 
+syntax (name := evaluatesCallTactic) "evaluates_call" num
+  " [" Lean.Parser.Tactic.simpLemma,* "]" : tactic
+
+syntax (name := evaluatesToAllTactic) "evaluates_to_all" num
+  " [" Lean.Parser.Tactic.simpLemma,* "]" : tactic
+
+syntax (name := evaluatesFromTactic) "evaluates_from" num
+  " [" Lean.Parser.Tactic.simpLemma,* "]" : tactic
+
 macro_rules
 | `(tactic| evaluates $fuel:num [$lemmas,*]) =>
     `(tactic|
@@ -76,5 +43,41 @@ macro_rules
           Zag.Scope.get?, Zag.Block.entryEnv, Zag.Peano.opCtx, Zag.Op.natBinary,
           Zag.Op.natUnary, Zag.Op.compare, Zag.Op.eq, Zag.Op.ite, Zag.Op.ofVals,
           Zag.Op.Body.eager, Zag.Term.nat, Zag.Term.bool, Zag.Term.ite, $lemmas,*])
+| `(tactic| evaluates_to_all $fuel:num [$lemmas,*]) =>
+    `(tactic|
+      first
+      | exact Zag.EvaluatesToAll.nil
+      | constructor
+        · evaluates $fuel [$lemmas,*]
+        · evaluates_to_all $fuel [$lemmas,*])
+| `(tactic| evaluates_from $fuel:num [$lemmas,*]) => do
+    let n := fuel.getNat
+    if n == 0 then
+      `(tactic| exact Zag.EvaluatesFrom.done)
+    else
+      let nextFuel := Lean.Syntax.mkNumLit (toString (n - 1))
+      `(tactic|
+        first
+        | exact Zag.EvaluatesFrom.done
+        | (apply Zag.EvaluatesFrom.step
+           · set_option linter.unusedSimpArgs false in
+               simp +arith [Zag.EvalState.step, Zag.EvalState.driveOp,
+                 Zag.EvalState.enterInstrs, Zag.EvalState.enterBlock, Zag.OpCtx.get?,
+                 Zag.BlockCtx.get?, Zag.BlockCtx.Raw.get?, Zag.Scope.get?, Zag.Block.entryEnv,
+                 Zag.Peano.opCtx, Zag.Op.natBinary, Zag.Op.natUnary, Zag.Op.compare,
+                 Zag.Op.eq, Zag.Op.ite, Zag.Op.ofVals, Zag.Op.Body.eager, Zag.Term.nat,
+                 Zag.Term.bool, Zag.Term.ite, $lemmas,*] <;> rfl
+           · evaluates_from $nextFuel [$lemmas,*]))
+| `(tactic| evaluates_call $fuel:num [$lemmas,*]) =>
+    `(tactic|
+      focus
+        refine Zag.EvaluatesCall.of_evaluatesFrom ?_
+        intro env base
+        set_option linter.unusedSimpArgs false in
+          simp +arith [Zag.EvalState.enterInstrs,
+            Zag.EvalState.enterBlock, Zag.BlockCtx.get?, Zag.BlockCtx.Raw.get?,
+            Zag.Scope.get?, Zag.Block.entryEnv, Zag.Term.nat, Zag.Term.bool, Zag.Term.ite,
+            $lemmas,*]
+        evaluates_from $fuel [$lemmas,*])
 
 end Zag

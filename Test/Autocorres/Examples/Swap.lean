@@ -15,12 +15,7 @@ abbrev swapBlocks : BlockCtx.Raw heapCtx :=
   ]
 
 theorem swapBlocksValid : BlockCtx.Valid swapBlocks := by
-  constructor
-  case left => decide
-  case right =>
-    set_option linter.unusedSimpArgs false in
-      simp [swapBlocks, Block.callNames, Term.callNames, Term.nat, Term.bool, Term.ite,
-        termHeap, termPtr, termArray]
+  valid_blocks [swapBlocks]
 
 abbrev swapCtx : Ctx := mkCtx swapBlocks swapBlocksValid
 

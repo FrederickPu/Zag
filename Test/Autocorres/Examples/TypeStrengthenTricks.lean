@@ -17,7 +17,7 @@ abbrev typeStrengthenBlocks : BlockCtx.Raw heapCtx :=
     stateUpdate(heap : Heap, ptr : Ptr, value : Nat) : Heap {
       ret op "store"[heap, ptr, value]
     },
-    exceptionParse(chars : Array, len : Nat) : StateNat {
+    exceptionParse(chars : Array, len : Nat) : State[Nat] {
       ret call str2long [chars, len]
     }
   ]
@@ -26,13 +26,7 @@ abbrev typeStrengthenProgramBlocks : BlockCtx.Raw heapCtx :=
   str2longBlocks ++ typeStrengthenBlocks
 
 theorem typeStrengthenProgramBlocksValid : BlockCtx.Valid typeStrengthenProgramBlocks := by
-  constructor
-  case left => decide
-  case right =>
-    set_option linter.unusedSimpArgs false in
-      simp [typeStrengthenProgramBlocks, str2longBlocks, typeStrengthenBlocks,
-        Block.callNames, Term.callNames, Term.nat, Term.bool, Term.ite, termHeap, termPtr,
-        termArray]
+  valid_blocks [typeStrengthenProgramBlocks, str2longBlocks, typeStrengthenBlocks]
 
 abbrev typeStrengthenCtx : Ctx :=
   mkCtx typeStrengthenProgramBlocks typeStrengthenProgramBlocksValid

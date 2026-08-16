@@ -429,13 +429,13 @@ structure SuccSpec (ctx : Ctx) [Peano.Types ctx.primCtx] (succName : String) : P
     Term.hasType ctx varCtx t Peano.NatTy →
     Term.hasType ctx varCtx (.op succName [t]) Peano.NatTy
   eval_succ : ∀ (env : Env ctx.primCtx) (t : Term ctx.primCtx) (m : Nat),
-    Term.eval ctx env t = some (Val.nat m) →
-    Term.eval ctx env (.op succName [t]) = some (Val.nat (m + 1))
+    EvaluatesTo ctx env t (Val.nat m) →
+    EvaluatesTo ctx env (.op succName [t]) (Val.nat (m + 1))
 
 theorem eval_natLit {ctx : Ctx} [Peano.Types ctx.primCtx] (env : Env ctx.primCtx) (n : Nat) :
-    Term.eval ctx env (Term.nat n) = some (Val.nat n) := by
-  rw [Term.eval]
-  simp [Term.nat]
+    EvaluatesTo ctx env (Term.nat n) (Val.nat n) := by
+  simpa [Term.nat] using
+    (EvaluatesTo.prim (ctx := ctx) (env := env) Peano.NatTy (Ty.ofNat ctx.primCtx n))
 
 theorem subst_natLit {primCtx : PrimitiveCtx} [Peano.Types primCtx]
     (ctxTerm : Scope (Term primCtx)) (n : Nat) :
@@ -481,21 +481,34 @@ theorem succEq_natLit {ctx : Ctx} [Peano.Model ctx] {succName : String}
   · intro env _
     simp only [Term.subst_op, List.map_cons, List.map_nil, hx, hy,
       Term.subst_prim, Term.bool]
-    have hsucc : Term.evalGo ctx env (.op succName [Term.nat k]) = some (Val.nat (k + 1)) :=
+    have hsucc : EvaluatesTo ctx env (.op succName [Term.nat k]) (Val.nat (k + 1)) :=
       hspec.eval_succ env (Term.nat k) k (eval_natLit env k)
-    have hlit : Term.evalGo ctx env (Term.nat (k + 1)) = some (Val.nat (k + 1)) :=
+    have hlit : EvaluatesTo ctx env (Term.nat (k + 1)) (Val.nat (k + 1)) :=
       eval_natLit env (k + 1)
-    have heq := Term.evalGo_op_compare (ctx := ctx) (env := env) (name := "eq")
-      (cmp := Val.primEq?) (a := .op succName [Term.nat k]) (b := Term.nat (k + 1))
-      (va := Val.nat (k + 1)) (vb := Val.nat (k + 1))
-      (by rw [Peano.Model.eqOp]; rfl) hsucc hlit rfl
-    have hprimEq : Val.primEq? (Val.nat (k + 1) : Val ctx.primCtx) (Val.nat (k + 1)) =
-        some true := by simp [Val.primEq?]
-    rw [Term.eval, Term.eval, heq, hprimEq]
-    change some (Val.bool (primCtx := ctx.primCtx) true) =
-      Term.evalGo ctx env (Term.prim Peano.BoolTy (Ty.ofBool ctx.primCtx true))
-    rw [Term.evalGo_prim]
-    rfl
+    have heqTrue : EvaluatesTo ctx env
+        (.op "eq" [.op succName [Term.nat k], Term.nat (k + 1)])
+        (Val.bool true) := by
+      refine EvaluatesTo.op_applyVals (Peano.Model.eqOp (ctx := ctx))
+        (EvaluatesToAll.cons hsucc (EvaluatesToAll.cons hlit EvaluatesToAll.nil)) ?_
+      simpa [Op.eq, Val.primEq?] using
+        (Op.applyVals_compare (primCtx := ctx.primCtx) Val.primEq?
+          (Val.nat (primCtx := ctx.primCtx) (k + 1)) (Val.nat (k + 1)) rfl)
+    have htrue : EvaluatesTo ctx env (Term.bool true) (Val.bool true) := by
+      simpa [Term.bool] using
+        (EvaluatesTo.prim (ctx := ctx) (env := env) Peano.BoolTy
+          (Ty.ofBool ctx.primCtx true))
+    intro v
+    constructor
+    · intro hv
+      have hvtrue : v = Val.bool (primCtx := ctx.primCtx) true :=
+        EvaluatesTo.unique hv heqTrue
+      subst v
+      exact htrue
+    · intro hv
+      have hvtrue : v = Val.bool (primCtx := ctx.primCtx) true :=
+        EvaluatesTo.unique hv htrue
+      subst v
+      exact heqTrue
 
 theorem natInductionChain {ctx : Ctx} [Peano.Model ctx] {ctxTy : Scope Ty}
     {ctxTerm : Scope (Term ctx.primCtx)} {body : Pr (Term ctx.primCtx)}

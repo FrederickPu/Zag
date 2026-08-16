@@ -29,12 +29,7 @@ abbrev isPrimeBlocks : BlockCtx.Raw heapCtx :=
   ]
 
 theorem isPrimeBlocksValid : BlockCtx.Valid isPrimeBlocks := by
-  constructor
-  case left => decide
-  case right =>
-    set_option linter.unusedSimpArgs false in
-      simp [isPrimeBlocks, Block.callNames, Term.callNames, Term.nat, Term.bool, Term.ite,
-        termHeap, termPtr, termArray]
+  valid_blocks [isPrimeBlocks]
 
 abbrev isPrimeCtx : Ctx := mkCtx isPrimeBlocks isPrimeBlocksValid
 

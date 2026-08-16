@@ -15,12 +15,7 @@ abbrev quicksortBlocks : BlockCtx.Raw heapCtx :=
   ]
 
 theorem quicksortBlocksValid : BlockCtx.Valid quicksortBlocks := by
-  constructor
-  case left => decide
-  case right =>
-    set_option linter.unusedSimpArgs false in
-      simp [quicksortBlocks, Block.callNames, Term.callNames, Term.nat, Term.bool, Term.ite,
-        termHeap, termPtr, termArray]
+  valid_blocks [quicksortBlocks]
 
 abbrev quicksortCtx : Ctx := mkCtx quicksortBlocks quicksortBlocksValid
 

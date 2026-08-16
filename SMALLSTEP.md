@@ -9,6 +9,41 @@ full-parallel build exhausts memory on this machine and reports spurious "failed
 
 ---
 
+## Global acceptance criteria
+
+Every step must satisfy all of these before it counts as done.
+
+1. **Builds clean.** `LEAN_NUM_THREADS=2 lake build Zag Lib Meta Test` exits 0 with no `error:`.
+2. **No `sorry`, no `axiom`, no `native_decide`.** `AGENTS.md` forbids all three.
+   Check: `grep -rn "sorry\|native_decide\|^axiom " --include=*.lean .` returns nothing.
+3. **Axiom set unchanged or smaller.** Every ported theorem depends on at most
+   `[propext, Classical.choice, Quot.sound]`. Anything in `Zag/EvalState.lean` should manage
+   `[propext, Quot.sound]` — no `Classical.choice`, since there is no fixpoint.
+4. **No proof is weakened.** A theorem that existed before must still exist, with a statement of
+   the same strength. Deleting a theorem, replacing a program with its expected result, or
+   turning a correctness statement into `rfl` all fail this, per `AGENTS.md`.
+5. **The regression anchors still hold.** These are concrete, checked numeric facts; they must
+   remain provable at every step, in whatever form the semantics currently takes:
+
+   | program | claim |
+   |---|---|
+   | `gauss 5` | `15` |
+   | `gcd 12 18` | `6` |
+   | `clamp 42` | `10` (early return via `exit`) |
+   | `plusLoop 7 100` | `107` |
+   | `factorial 5` | `120` |
+   | `multByAdd 6 7` | `42` |
+
+6. **A wrong claim must still fail.** Automation that proves a false statement is worse than no
+   automation. This must not close:
+
+   ```lean
+   example : EvaluatesTo plusCtx [] (.call "plusLoop" [Term.nat 1, Term.nat 1]) (Val.nat 3) := by
+     evaluates 300 [heapOpCtx, plusBlocks]
+   ```
+
+---
+
 ## Why big-step has to go
 
 `partial_fixpoint` cannot be parameterised over the context's monad. It needs
@@ -132,6 +167,19 @@ and the machine gets stuck there, so both sides are `none` and the equation stil
 Applying it needs all implicits given explicitly (`ctx`, `name`, `block`, `env`, `S`, `args`,
 `vargs`); elaboration will not infer them from the goal.
 
+
+**Acceptance.** `#print axioms Zag.EvalState.stepN_call` reports `[propext, Quot.sound]`, and
+this compiles:
+
+```lean
+example (x y : Nat) (env : Env heapCtx) (S : List (Frame heapCtx)) :
+    ∃ n, stepN plusCtx n ⟨.eval (.call "plusLoop" [Term.nat x, Term.nat y]), env, S⟩
+        = enterBlock "plusLoop" plusBlocks[1].2 [Val.nat x, Val.nat y] env S :=
+  stepN_call (ctx := plusCtx) (name := "plusLoop") (block := plusBlocks[1].2)
+    (env := env) (S := S) (args := [Term.nat x, Term.nat y])
+    (vargs := [Val.nat x, Val.nat y]) rfl (.cons ⟨1, rfl⟩ (.cons ⟨1, rfl⟩ .nil))
+```
+
 ### 2. `evaluates_call` tactic
 
 Today `concretize [ih]` works only because `ih` is an equation `simp` rewrites with. Under the
@@ -142,6 +190,28 @@ machine the proof is **run → apply hypothesis → run**, glued by `stepN_add`.
 3. continue stepping.
 
 This is real metaprogramming, not a larger simp set. It is the second-riskiest item after (1).
+
+
+**Acceptance.** All three compile, with no manual `stepN_add` plumbing in the proof:
+
+```lean
+-- no recursion
+example (x y : Nat) : EvaluatesCall plusCtx "plus" [Val.nat x, Val.nat y] (Val.nat (x + y)) := by
+  evaluates_call 300 [heapOpCtx, plusBlocks]
+
+-- recursion: the hypothesis is consumed mid-run
+example (x y : Nat) :
+    EvaluatesCall plusCtx "plusLoop" [Val.nat x, Val.nat y] (Val.nat (x + y)) := by
+  induction y generalizing x with
+  | zero      => evaluates_call 300 [heapOpCtx, plusBlocks]
+  | succ y ih => evaluates_call 300 [heapOpCtx, plusBlocks, ih]
+
+-- one block's spec reused by another
+example : EvaluatesCall plusCtx "plusMain" [] (Val.nat 0) := by
+  evaluates_call 600 [heapOpCtx, plusBlocks, plus_eval, plusLoop_eval]
+```
+
+and global criterion 6 (the false claim) still fails.
 
 ### 3. Port `Plus.lean`
 
@@ -159,6 +229,14 @@ theorem plusLoop_eval (x y : Nat) :
 test and is exactly what (1) and (2) unblock. Then do one heap example — `Suzuki` is simplest
 (one block, no recursion, and its heap is threaded explicitly so it is a *pure* program today).
 
+
+**Acceptance.** `Plus.lean` has an `EvaluatesCall` counterpart for every theorem it has today
+— `plus_eval`, `plusLoop_eval`, `plusMain_eval` — each proved by `evaluates_call`, none by
+`rfl`, and `#print axioms` on each reports at most `[propext, Classical.choice, Quot.sound]`.
+The reflected half (`plusSuccSpec` … `plusLoopProvable`) is untouched at this step; it still
+uses big-step and still compiles. One heap example — `Suzuki` — also has an `EvaluatesCall`
+spec, since its heap is threaded explicitly and it is therefore a pure program today.
+
 ### 4. Delete big-step — single pass
 
 Remove `Term.eval`, `Term.evalGo`, `Term.evalOutcome`, `Term.evalBlock`, `Term.evalInstrs`,
@@ -169,6 +247,16 @@ on `EvaluatesTo`/`EvaluatesCall`.
 
 `#eval` / `#guard` in `Test/Block.lean`, `Test/Gauss.lean`, `Test/Exit.lean`, `Test/Monad.lean`
 move onto `EvalState.run` with explicit fuel.
+
+
+**Acceptance.**
+
+- `plusLoop_eval 7 100` gives `Val.nat 107`, `factorial_eval 5` gives `Val.nat 120`,
+  `multByAdd_eval 6 7` gives `Val.nat 42` — stated as `EvaluatesCall`, proved, not `rfl`.
+- `plusLoopProvable` (the reflected `Pr.Provable` induction in `Plus.lean`) still holds.
+  This is the load-bearing one: it exercises `Term.eq`, `Pr.interp` and `Meta/Induction.lean`
+  together, so if the restatement of `Term.eq` is wrong it fails here.
+- `Test/Exit.lean`'s escaping-`exit` case is still stuck, not a value.
 
 ### 5. `Op.Body` cleanup
 
@@ -185,6 +273,10 @@ is a type check (`Op.ofVals`'s `vals.map Val.ty = argTys`, `Op.compare`'s `lhs.t
 defaults — but it is the hook for making those UB instead.
 
 Ops keep `next` and **cannot loop**: each operand is offered once.
+
+
+**Acceptance.** `grep -rn "Op.Body.fail\|\.fail" --include=*.lean Zag/ Lib/` returns nothing,
+`Ctx.WellTyped` still holds for every example context, and all six regression anchors still pass.
 
 ### 6. Instruction-level control flow
 
@@ -237,6 +329,22 @@ blocks in the instruction is simpler and avoids the question.
 `ite` stays a term op — its condition arrives as an operand value, so it never needs a
 heap read to decide which branch to take.
 
+
+**Acceptance.** A `while` written as a `Control` computes a real answer, `break`/`continue`
+work via `exit`, and typing rejects a malformed one:
+
+```lean
+-- sums 1..n with a while loop rather than a self-calling block
+example : EvaluatesCall loopCtx "sumTo" [Val.nat 5] (Val.nat 15) := by
+  evaluates_call 2000 [heapOpCtx, loopBlocks, whileControl]
+
+-- a condition block returning Nat instead of Bool must be rejected statically
+example : ¬ Ctx.WellTyped badLoopCtx := by decide
+```
+
+The second is the one that matters: it is what shows `accepts` is strong enough to make
+`Control.step`'s totality honest rather than vacuous.
+
 ### 7. `OptionT` and the heap
 
 ```lean
@@ -279,6 +387,15 @@ Then heap into `M`: `statePrim` and the `mkState`/`stateHeap`/`stateValue` tripl
 threading.
 
 ---
+
+**Acceptance.**
+
+- `example : OptionT Id α = Option α := rfl` still holds, and every pure example
+  (`gauss`, `plusLoop`, `factorial`, `multByAdd`, `gcd`) compiles **unchanged** from step 4.
+- The seven heap programs no longer take a `heap` parameter, and
+  `grep -rn "statePrim\|mkState\|stateHeap\|stateValue" --include=*.lean .` returns nothing.
+- A store followed by a stuck state retains the store — i.e. the `OptionT M` nesting, not
+  `StateT σ Option`. Worth an explicit test, since getting this backwards type-checks fine.
 
 ## Landmines
 

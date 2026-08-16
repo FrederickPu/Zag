@@ -17,12 +17,7 @@ abbrev renameBlocks : BlockCtx.Raw heapCtx :=
   ]
 
 theorem renameBlocksValid : BlockCtx.Valid renameBlocks := by
-  constructor
-  case left => decide
-  case right =>
-    set_option linter.unusedSimpArgs false in
-      simp [renameBlocks, Block.callNames, Term.callNames, Term.nat, Term.bool, Term.ite,
-        termHeap, termPtr, termArray]
+  valid_blocks [renameBlocks]
 
 abbrev renameCtx : Ctx := mkCtx renameBlocks renameBlocksValid
 

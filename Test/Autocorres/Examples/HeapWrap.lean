@@ -15,12 +15,7 @@ abbrev heapWrapBlocks : BlockCtx.Raw heapCtx :=
   ]
 
 theorem heapWrapBlocksValid : BlockCtx.Valid heapWrapBlocks := by
-  constructor
-  case left => decide
-  case right =>
-    set_option linter.unusedSimpArgs false in
-      simp [heapWrapBlocks, Block.callNames, Term.callNames, Term.nat, Term.bool,
-        Term.ite, termHeap, termPtr, termArray]
+  valid_blocks [heapWrapBlocks]
 
 abbrev heapWrapCtx : Ctx := mkCtx heapWrapBlocks heapWrapBlocksValid
 

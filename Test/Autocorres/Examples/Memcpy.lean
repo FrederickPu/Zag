@@ -18,12 +18,7 @@ abbrev memcpyBlocks : BlockCtx.Raw heapCtx :=
   ]
 
 theorem memcpyBlocksValid : BlockCtx.Valid memcpyBlocks := by
-  constructor
-  case left => decide
-  case right =>
-    set_option linter.unusedSimpArgs false in
-      simp [memcpyBlocks, Block.callNames, Term.callNames, Term.nat, Term.bool, Term.ite,
-        termHeap, termPtr, termArray]
+  valid_blocks [memcpyBlocks]
 
 abbrev memcpyCtx : Ctx := mkCtx memcpyBlocks memcpyBlocksValid
 

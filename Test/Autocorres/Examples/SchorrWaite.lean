@@ -23,12 +23,7 @@ abbrev schorrWaiteBlocks : BlockCtx.Raw heapCtx :=
   ]
 
 theorem schorrWaiteBlocksValid : BlockCtx.Valid schorrWaiteBlocks := by
-  constructor
-  case left => decide
-  case right =>
-    set_option linter.unusedSimpArgs false in
-      simp [schorrWaiteBlocks, Block.callNames, Term.callNames, Term.nat, Term.bool,
-        Term.ite, termHeap, termPtr, termArray]
+  valid_blocks [schorrWaiteBlocks]
 
 abbrev schorrWaiteCtx : Ctx := mkCtx schorrWaiteBlocks schorrWaiteBlocksValid
 

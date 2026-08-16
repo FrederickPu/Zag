@@ -15,7 +15,7 @@ roots = ["Meta.Induction", "Meta.UnifyType", "Meta.Eval"]
 
 [[lean_lib]]
 name = "Test"
-roots = ["Test.Block", "Test.Exit", "Test.EvalState", "Test.Gauss", "Test.Heap", "Test.Monad", "Test.Autocorres.Examples", "Test.AutoCorresExamples"]
+roots = ["Test.Block", "Test.Exit", "Test.EvalState", "Test.Gauss", "Test.Gauss.Rec", "Test.Gauss.SSA", "Test.Heap", "Test.Monad", "Test.Autocorres.Examples", "Test.AutoCorresExamples"]
 
 [[lean_exe]]
 name = "zag"

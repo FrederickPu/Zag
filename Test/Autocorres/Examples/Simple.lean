@@ -20,12 +20,7 @@ abbrev simpleBlocks : BlockCtx.Raw heapCtx :=
   ]
 
 theorem simpleBlocksValid : BlockCtx.Valid simpleBlocks := by
-  constructor
-  case left => decide
-  case right =>
-    set_option linter.unusedSimpArgs false in
-      simp [simpleBlocks, Block.callNames, Term.callNames, Term.nat, Term.bool, Term.ite,
-        termHeap, termPtr, termArray]
+  valid_blocks [simpleBlocks]
 
 abbrev simpleCtx : Ctx := mkCtx simpleBlocks simpleBlocksValid
 

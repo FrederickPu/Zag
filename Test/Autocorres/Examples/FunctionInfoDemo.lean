@@ -15,12 +15,7 @@ abbrev functionInfoBlocks : BlockCtx.Raw heapCtx :=
   ]
 
 theorem functionInfoBlocksValid : BlockCtx.Valid functionInfoBlocks := by
-  constructor
-  case left => decide
-  case right =>
-    set_option linter.unusedSimpArgs false in
-      simp [functionInfoBlocks, Block.callNames, Term.callNames, Term.nat, Term.bool,
-        Term.ite, termHeap, termPtr, termArray]
+  valid_blocks [functionInfoBlocks]
 
 abbrev functionInfoCtx : Ctx := mkCtx functionInfoBlocks functionInfoBlocksValid
 

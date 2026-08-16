@@ -26,12 +26,7 @@ abbrev binarySearchBlocks : BlockCtx.Raw heapCtx :=
   ]
 
 theorem binarySearchBlocksValid : BlockCtx.Valid binarySearchBlocks := by
-  constructor
-  case left => decide
-  case right =>
-    set_option linter.unusedSimpArgs false in
-      simp [binarySearchBlocks, Block.callNames, Term.callNames, Term.nat, Term.bool,
-        Term.ite, termHeap, termPtr, termArray]
+  valid_blocks [binarySearchBlocks]
 
 abbrev binarySearchCtx : Ctx := mkCtx binarySearchBlocks binarySearchBlocksValid
 

@@ -1,9 +1,10 @@
 import Lib.Peano.Defs
+import Zag.EvalState
 
 /-!
 Non-local exit.
 
-A call is the frame an unwind can target. `exit b [v]` unwinds to the *nearest enclosing call*
+A call is the frame an unwind can target. `exit b v` unwinds to the *nearest enclosing call*
 of the block named `b` and makes `v` that call's value:
 
 * naming the current block is an **early return** -- every later instruction, and the block's
@@ -11,8 +12,7 @@ of the block named `b` and makes `v` that call's value:
 * naming an enclosing block **breaks out of it**, which is what the old recursor stack allowed
   by calling an outer motive from an inner loop body.
 
-An exit that escapes every enclosing call is stuck, so `Term.eval` still returns `Option (Val)`
-and every value-level equation is unchanged.
+An exit that escapes every enclosing call is stuck, so `EvalState.result?` is `none`.
 -/
 
 namespace Zag.Test.Exit
@@ -27,7 +27,7 @@ abbrev clampBlocks : BlockCtx.Raw natCtx :=
   blocks% [
     clamp(n : Nat) : Nat {
       tooBig := primGt n nat(10);
-      guard := if tooBig { exit clamp [nat(10)] } else { nat(0) };
+      guard := if tooBig { exit clamp nat(10) } else { nat(0) };
       ret n
     }
   ]
@@ -40,7 +40,8 @@ abbrev clampCtx : Ctx where
     simp [clampBlocks, Block.callNames, Term.callNames, Term.nat, Term.ite]⟩
 
 def runClamp (n : Nat) : Option Nat :=
-  (Term.eval clampCtx [] (.call "clamp" [Term.nat n])).bind Val.asNat?
+  (EvalState.run clampCtx 500 (EvalState.start [] (.call "clamp" [Term.nat n]))).result?.bind
+    Val.asNat?
 
 /-- info: [some 0, some 3, some 9, some 10, some 10, some 10] -/
 #guard_msgs in
@@ -59,7 +60,7 @@ abbrev breakBlocks : BlockCtx.Raw natCtx :=
     },
     inner(n : Nat) : Nat {
       big := primGt n nat(5);
-      guard := if big { exit outer [nat(0)] } else { nat(0) };
+      guard := if big { exit outer nat(0) } else { nat(0) };
       ret n
     }
   ]
@@ -72,7 +73,8 @@ abbrev breakCtx : Ctx where
     simp [breakBlocks, Block.callNames, Term.callNames, Term.nat, Term.ite]⟩
 
 def runOuter (n : Nat) : Option Nat :=
-  (Term.eval breakCtx [] (.call "outer" [Term.nat n])).bind Val.asNat?
+  (EvalState.run breakCtx 500 (EvalState.start [] (.call "outer" [Term.nat n]))).result?.bind
+    Val.asNat?
 
 /-- info: [some 100, some 103, some 105, some 0, some 0] -/
 #guard_msgs in
@@ -82,6 +84,7 @@ def runOuter (n : Nat) : Option Nat :=
   evaluation is stuck -/
 /-- info: none -/
 #guard_msgs in
-#eval (Term.eval breakCtx [] (.call "inner" [Term.nat 9])).bind Val.asNat?
+#eval (EvalState.run breakCtx 500 (EvalState.start [] (.call "inner" [Term.nat 9]))).result?.bind
+  Val.asNat?
 
 end Zag.Test.Exit

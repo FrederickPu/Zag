@@ -6,16 +6,16 @@ open Zag Zag.Lib.PeanoHeap
 
 abbrev kmallocBlocks : BlockCtx.Raw heapCtx :=
   blocks% [
-    kmalloc(heap : Heap, size : Nat, align : Nat) : StatePtr {
+    kmalloc(heap : Heap, size : Nat, align : Nat) : State[Ptr] {
       rounded := op "add"[size, align];
       ptr := op "allocPtr"[heap, rounded];
       heapNext := op "allocHeap"[heap, rounded];
-      ret op "mkStatePtr"[heapNext, ptr]
+      ret op "mkState"[heapNext, ptr]
     },
     kfree(heap : Heap, ptr : Ptr, size : Nat) : Heap {
       ret op "freeHeap"[heap, ptr, size]
     },
-    sepKmalloc(heap : Heap, size : Nat, align : Nat) : StatePtr {
+    sepKmalloc(heap : Heap, size : Nat, align : Nat) : State[Ptr] {
       ret call kmalloc [heap, size, align]
     },
     sepFree(heap : Heap, ptr : Ptr, size : Nat) : Heap {
@@ -24,12 +24,7 @@ abbrev kmallocBlocks : BlockCtx.Raw heapCtx :=
   ]
 
 theorem kmallocBlocksValid : BlockCtx.Valid kmallocBlocks := by
-  constructor
-  case left => decide
-  case right =>
-    set_option linter.unusedSimpArgs false in
-      simp [kmallocBlocks, Block.callNames, Term.callNames, Term.nat, Term.bool, Term.ite,
-        termHeap, termPtr, termArray]
+  valid_blocks [kmallocBlocks]
 
 abbrev kmallocCtx : Ctx := mkCtx kmallocBlocks kmallocBlocksValid
 

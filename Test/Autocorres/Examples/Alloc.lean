@@ -13,10 +13,10 @@ abbrev allocBlocks : BlockCtx.Raw heapCtx :=
       ptr := op "allocPtr"[heap, size];
       ret op "allocHeap"[heap, size]
     },
-    alloc(heap : Heap, size : Nat) : StatePtr {
+    alloc(heap : Heap, size : Nat) : State[Ptr] {
       ptr := op "allocPtr"[heap, size];
       heapNext := op "allocHeap"[heap, size];
-      ret op "mkStatePtr"[heapNext, ptr]
+      ret op "mkState"[heapNext, ptr]
     },
     dealloc(heap : Heap, ptr : Ptr, size : Nat) : Heap {
       ret op "freeHeap"[heap, ptr, size]
@@ -24,12 +24,7 @@ abbrev allocBlocks : BlockCtx.Raw heapCtx :=
   ]
 
 theorem allocBlocksValid : BlockCtx.Valid allocBlocks := by
-  constructor
-  case left => decide
-  case right =>
-    set_option linter.unusedSimpArgs false in
-      simp [allocBlocks, Block.callNames, Term.callNames, Term.nat, Term.bool, Term.ite,
-        termHeap, termPtr, termArray]
+  valid_blocks [allocBlocks]
 
 abbrev allocCtx : Ctx := mkCtx allocBlocks allocBlocksValid
 

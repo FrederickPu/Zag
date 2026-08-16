@@ -13,12 +13,7 @@ abbrev traceDemoBlocks : BlockCtx.Raw heapCtx :=
   ]
 
 theorem traceDemoBlocksValid : BlockCtx.Valid traceDemoBlocks := by
-  constructor
-  case left => decide
-  case right =>
-    set_option linter.unusedSimpArgs false in
-      simp [traceDemoBlocks, Block.callNames, Term.callNames, Term.nat, Term.bool,
-        Term.ite, termHeap, termPtr, termArray]
+  valid_blocks [traceDemoBlocks]
 
 abbrev traceDemoCtx : Ctx := mkCtx traceDemoBlocks traceDemoBlocksValid
 

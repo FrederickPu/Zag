@@ -3,18 +3,18 @@ import Zag.Theory
 /-!
 # Small-step evaluation for the block IR
 
-`Term.evalOutcome` and friends are big-step: five mutually recursive functions defined by
+The old evaluator was big-step: five mutually recursive functions defined by
 `partial_fixpoint`, which is what forces the result type to carry a `⊥` and is why the effect
 type cannot be an arbitrary monad. This file writes the same semantics as a step relation over an explicit evaluation state instead.
 Each of those five definitions is one kind of pending work, so each becomes one frame:
 
 | big-step definition | frame |
 | --- | --- |
-| `Term.evalBodyOutcome` -- drive an `Op.Body` over operands | `Frame.opBody` |
-| `Term.evalListOutcome` -- evaluate an argument list | `Frame.callArgs` / `Frame.appArgs` |
-| `Term.evalInstrs` -- run instructions, extending the scope | `Frame.instrs` |
-| `Term.evalBlock` -- catch an exit aimed at this block | `Frame.call` |
-| `Term.evalOutcome` -- the driver | `Control` |
+| operator-body driver | `Frame.opBody` |
+| argument-list evaluator | `Frame.callArgs` / `Frame.appArgs` |
+| instruction runner | `Frame.instrs` |
+| block call catcher | `Frame.call` |
+| top-level driver | `Control` |
 
 `EvalState.step` is *structural*: no fixpoint, no `CCPO`, nothing to prove monotone. Non-termination is not
 a value here -- it is the absence of a fuel bound, which is a proposition about `EvalState.run`.
@@ -22,8 +22,8 @@ a value here -- it is the absence of a fuel bound, which is a proposition about 
 `Outcome` does not appear. What it was reifying -- "this evaluation is unwinding to a named
 frame" -- is `Control.exit`, and the frame it unwinds to is `Frame.call`.
 
-Evaluation is pure for now, matching the current operator semantics exactly so that it can be
-checked against `Term.eval`. Effects thread in at one place, `applyOperator`, whose result would
+Evaluation is pure for now, matching the current operator semantics exactly. Effects thread in at
+one place, `applyOperator`, whose result would
 become `M (Option (Val primCtx))`; `run`'s recursion is structural on fuel, so an arbitrary
 `Monad M` needs nothing further.
 -/
@@ -60,6 +60,18 @@ inductive Frame (primCtx : PrimitiveCtx) where
 /-- the frame an unwind can target: an `exit` naming `blockName` stops here -/
 | call (blockName : String) (env : Env primCtx)
 
+namespace Frame
+
+/-- A stack suffix made only of operator frames. Such a suffix cannot catch an `exit`; it can
+  only be consumed after the computation above it has returned a value. -/
+inductive OpBodies {primCtx : PrimitiveCtx} : List (Frame primCtx) → Prop where
+| nil : OpBodies []
+| cons {resume : Option (Val primCtx) → Op.Body primCtx} {rest : List (Term primCtx)}
+    {env : Env primCtx} {frames : List (Frame primCtx)} :
+    OpBodies frames → OpBodies (.opBody resume rest env :: frames)
+
+end Frame
+
 /-- The whole state of a running program: what it is doing, the scope it is doing it in, and
   the work still pending. The heap is deliberately *not* here -- it belongs to the monad. -/
 structure EvalState (primCtx : PrimitiveCtx) where
@@ -75,15 +87,18 @@ variable {primCtx : PrimitiveCtx}
 def start (env : Env primCtx) (term : Term primCtx) : EvalState primCtx :=
   { control := .eval term, env := env, stack := [] }
 
+/-- Add frames under the work already represented by `state`. -/
+def appendStack (state : EvalState primCtx) (base : List (Frame primCtx)) : EvalState primCtx :=
+  { state with stack := state.stack ++ base }
+
 /-- Evaluation has finished when it is handing a value back and nothing is waiting for it. -/
 def result? (state : EvalState primCtx) : Option (Val primCtx) :=
   match state.control, state.stack with
   | .ret value, [] => some value
   | _, _ => none
 
-/-- Feed operands to an operator body until it wants one evaluated, finishes, or fails.
-  This is `Term.evalBodyOutcome`'s loop, with the evaluation of an operand suspended as a
-  frame rather than performed by a recursive call. -/
+/-- Feed operands to an operator body until it wants one evaluated, finishes, or fails. Operand
+  evaluation is suspended as a frame rather than performed by a recursive call. -/
 def driveOp (body : Op.Body primCtx) (rest : List (Term primCtx)) (env : Env primCtx)
     (stack : List (Frame primCtx)) : Option (EvalState primCtx) :=
   match body, rest with
@@ -424,6 +439,12 @@ theorem stepN_add (fuel₁ fuel₂ : Nat) (state : EvalState ctx.primCtx) :
       | none => simp
       | some next => simpa using ih next
 
+theorem stepN_ret_empty_none {fuel : Nat} {value : Val ctx.primCtx}
+    {scope : Env ctx.primCtx} {state : EvalState ctx.primCtx}
+    (h : stepN ctx (fuel + 1) ⟨.ret value, scope, []⟩ = some state) : False := by
+  rw [stepN_succ] at h
+  simp [step] at h
+
 /-- `step_weaken`, lifted to a whole run. -/
 theorem stepN_weaken {fuel : Nat} {c c' : Control ctx.primCtx} {e e' : Env ctx.primCtx}
     {S S' : List (Frame ctx.primCtx)} (base : List (Frame ctx.primCtx))
@@ -469,6 +490,136 @@ theorem run_eq_of_stepN {fuel : Nat} {state next : EvalState ctx.primCtx}
       | none => rw [hstep] at h; simp at h
       | some s₁ => rw [hstep] at h; exact ih (by simpa using h)
 
+theorem result?_appendStack_ne_nil {state : EvalState ctx.primCtx}
+    {base : List (Frame ctx.primCtx)} (hne : base ≠ []) :
+    (appendStack state base).result? = none := by
+  cases state with
+  | mk control env stack =>
+      cases control <;> cases stack <;> simp [appendStack, result?, hne]
+
+theorem run_exit_opBodies_result?_none {fuel : Nat} {name : String}
+    {value : Val ctx.primCtx} {env : Env ctx.primCtx} {base : List (Frame ctx.primCtx)}
+    (hbase : Frame.OpBodies base) :
+    (run ctx fuel ⟨.exit name value, env, base⟩).result? = none := by
+  induction fuel generalizing base env with
+  | zero =>
+      cases base <;> simp [run, result?]
+  | succ fuel ih =>
+      rw [run_succ]
+      cases hbase with
+      | nil => simp [step, result?]
+      | cons hrest =>
+          simp [step]
+          exact ih hrest
+
+theorem driveOp_append_eq_none {body : Op.Body ctx.primCtx}
+    {terms : List (Term ctx.primCtx)} {env : Env ctx.primCtx}
+    {stack base : List (Frame ctx.primCtx)} :
+    driveOp body terms env (stack ++ base) = none ↔ driveOp body terms env stack = none := by
+  induction terms generalizing body with
+  | nil => cases body <;> simp [driveOp]
+  | cons term terms ih =>
+      cases body with
+      | fail => simp [driveOp]
+      | done value => simp [driveOp]
+      | next evaluate resume =>
+          cases evaluate <;> simp [driveOp, ih]
+
+theorem enterBlock_append_eq_none {name : String} {block : Block ctx.primCtx}
+    {vargs : List (Val ctx.primCtx)} {env : Env ctx.primCtx}
+    {stack base : List (Frame ctx.primCtx)} :
+    enterBlock name block vargs env (stack ++ base) = none ↔
+      enterBlock name block vargs env stack = none := by
+  unfold enterBlock
+  by_cases hlen : vargs.length = block.params.length <;> simp [hlen]
+
+set_option linter.unusedSimpArgs false in
+theorem step_appendStack_none_or_exit {state : EvalState ctx.primCtx}
+    {base : List (Frame ctx.primCtx)}
+    (hresult : state.result? = none) (hstep : step ctx state = none) :
+    step ctx (appendStack state base) = none ∨
+      ∃ name value env, state = ⟨.exit name value, env, []⟩ := by
+  cases state with
+  | mk control env stack =>
+      cases control with
+      | eval term =>
+          left
+          cases term with
+          | prim ty val => simp [appendStack, step] at hstep
+          | var name =>
+              cases hv : Scope.get? env name <;> simp [appendStack, step, hv] at hstep ⊢
+          | app fn args => simp [appendStack, step] at hstep
+          | op name args =>
+              simp [appendStack, step]
+              cases hop : ctx.opCtx.get? name with
+              | none => simp [hop]
+              | some oper =>
+                  simp [hop] at hstep ⊢
+                  by_cases hlen : args.length = oper.arity
+                  · have hdrive : driveOp oper.body args env stack = none := by
+                      simpa [step, hop, hlen] using hstep
+                    simp [hlen]
+                    exact (driveOp_append_eq_none (base := base)).mpr hdrive
+                  · simp [hlen]
+          | call name args =>
+              simp [appendStack, step]
+              cases hblock : ctx.blockCtx.get? name with
+              | none => simp [hblock]
+              | some block =>
+                  simp [hblock] at hstep ⊢
+                  cases args with
+                  | nil =>
+                      have henter : enterBlock name block [] env stack = none := by
+                        simpa [step, hblock] using hstep
+                      exact (enterBlock_append_eq_none (base := base)).mpr henter
+                  | cons arg rest => simp [step, hblock] at hstep
+          | exit blockName value => simp [appendStack, step] at hstep
+      | ret value =>
+          cases stack with
+          | nil => simp [result?] at hresult
+          | cons frame rest =>
+              left
+              cases frame with
+              | exitValue blockName frameEnv => simp [appendStack, step] at hstep
+              | opBody resume terms frameEnv =>
+                  simp [appendStack, step] at hstep ⊢
+                  exact (driveOp_append_eq_none (base := base)).mpr hstep
+              | callArgs name block done args callerEnv =>
+                  simp [appendStack, step] at hstep ⊢
+                  cases args with
+                  | nil => exact (enterBlock_append_eq_none (base := base)).mpr hstep
+                  | cons arg args => simp at hstep
+              | appFn args callerEnv =>
+                  simp [appendStack, step] at hstep ⊢
+                  cases args with
+                  | nil =>
+                      cases happ : Term.evalApp value [] <;> simp [happ] at hstep ⊢
+                  | cons arg args => simp at hstep
+              | appArgs fn done args callerEnv =>
+                  simp [appendStack, step] at hstep ⊢
+                  cases args with
+                  | nil =>
+                      cases happ : Term.evalApp fn (done ++ [value]) <;> simp [happ] at hstep ⊢
+                  | cons arg args => simp at hstep
+              | instrs name instrs result frameEnv => simp [appendStack, step] at hstep
+              | call blockName frameEnv => simp [appendStack, step] at hstep
+      | exit name value =>
+          cases stack with
+          | nil =>
+              right
+              exact ⟨name, value, env, rfl⟩
+          | cons frame rest =>
+              exfalso
+              cases frame with
+              | exitValue blockName frameEnv => simp [step] at hstep
+              | opBody resume terms frameEnv => simp [step] at hstep
+              | callArgs blockName block done terms frameEnv => simp [step] at hstep
+              | appFn terms frameEnv => simp [step] at hstep
+              | appArgs fn done terms frameEnv => simp [step] at hstep
+              | instrs instrName instrs result frameEnv => simp [step] at hstep
+              | call blockName frameEnv =>
+                  by_cases htarget : name = blockName <;> simp [step, htarget] at hstep
+
 
 
 end EvalState
@@ -499,6 +650,184 @@ def EvaluatesCall (ctx : Ctx) (name : String) (vargs : List (Val ctx.primCtx))
       EvalState.enterBlock name block vargs env base = some st ∧
       EvalState.stepN ctx fuel st = some ⟨.ret value, scope, base⟩
 
+/-- `state` eventually hands `value` to `base`, leaving the intermediate scope existential.
+
+  This is the compositional form used by proof automation: a proof can step to a call,
+  consume an `EvaluatesCall` hypothesis for that call, then keep stepping the continuation. -/
+def EvaluatesFrom (ctx : Ctx) (state : EvalState ctx.primCtx)
+    (value : Val ctx.primCtx) (base : List (Frame ctx.primCtx)) : Prop :=
+  ∃ fuel scope, EvalState.stepN ctx fuel state = some ⟨.ret value, scope, base⟩
+
+namespace EvaluatesFrom
+
+theorem done {ctx : Ctx} {value : Val ctx.primCtx} {scope : Env ctx.primCtx}
+    {base : List (Frame ctx.primCtx)} :
+    EvaluatesFrom ctx ⟨.ret value, scope, base⟩ value base :=
+  ⟨0, scope, rfl⟩
+
+theorem of_result? {ctx : Ctx} {state : EvalState ctx.primCtx}
+    {value : Val ctx.primCtx} (h : state.result? = some value) :
+    EvaluatesFrom ctx state value [] := by
+  cases state with
+  | mk control env stack =>
+      cases control <;> cases stack <;> simp [EvalState.result?] at h
+      subst h
+      exact done
+
+theorem ret_empty_eq {ctx : Ctx} {result value : Val ctx.primCtx}
+    {scope : Env ctx.primCtx}
+    (h : EvaluatesFrom ctx ⟨.ret result, scope, []⟩ value []) : value = result := by
+  obtain ⟨fuel, finalScope, hsteps⟩ := h
+  cases fuel with
+  | zero =>
+      simp only [EvalState.stepN_zero, Option.some.injEq, EvalState.mk.injEq,
+        Control.ret.injEq] at hsteps
+      exact hsteps.1.symm
+  | succ fuel =>
+      exact False.elim (EvalState.stepN_ret_empty_none (fuel := fuel)
+        (value := result) (scope := scope) hsteps)
+
+theorem step {ctx : Ctx} {state next : EvalState ctx.primCtx}
+    {value : Val ctx.primCtx} {base : List (Frame ctx.primCtx)}
+    (hstep : EvalState.step ctx state = some next)
+    (hnext : EvaluatesFrom ctx next value base) :
+    EvaluatesFrom ctx state value base := by
+  obtain ⟨fuel, scope, hnext⟩ := hnext
+  refine ⟨fuel + 1, scope, ?_⟩
+  rw [EvalState.stepN_succ, hstep]
+  exact hnext
+
+theorem trans_stepN {ctx : Ctx} {fuel₀ : Nat} {state mid : EvalState ctx.primCtx}
+    {value : Val ctx.primCtx} {base : List (Frame ctx.primCtx)}
+    (hprefix : EvalState.stepN ctx fuel₀ state = some mid)
+    (hmid : EvaluatesFrom ctx mid value base) :
+    EvaluatesFrom ctx state value base := by
+  obtain ⟨fuel₁, scope, hmid⟩ := hmid
+  refine ⟨fuel₀ + fuel₁, scope, ?_⟩
+  rw [EvalState.stepN_add, hprefix]
+  exact hmid
+
+theorem bind {ctx : Ctx} {state : EvalState ctx.primCtx}
+    {value finalValue : Val ctx.primCtx}
+    {base finalBase : List (Frame ctx.primCtx)}
+    (h : EvaluatesFrom ctx state value base)
+    (hcont : ∀ scope, EvaluatesFrom ctx ⟨.ret value, scope, base⟩ finalValue finalBase) :
+    EvaluatesFrom ctx state finalValue finalBase := by
+  obtain ⟨fuel₀, scope₀, h₀⟩ := h
+  obtain ⟨fuel₁, scope₁, h₁⟩ := hcont scope₀
+  refine ⟨fuel₀ + fuel₁, scope₁, ?_⟩
+  rw [EvalState.stepN_add, h₀]
+  exact h₁
+
+/-- If a run with only operator frames underneath eventually finishes, the computation above those
+  frames must first have produced a value for its empty-stack continuation. -/
+theorem exists_of_run_append_opBodies {ctx : Ctx} {state : EvalState ctx.primCtx}
+    {base : List (Frame ctx.primCtx)} {fuel : Nat} {final : Val ctx.primCtx}
+    (hbase : Frame.OpBodies base) (hne : base ≠ [])
+    (h : (EvalState.run ctx fuel (EvalState.appendStack state base)).result? = some final) :
+    ∃ value, EvaluatesFrom ctx state value [] := by
+  induction fuel generalizing state with
+  | zero =>
+      rw [EvalState.run_zero] at h
+      rw [EvalState.result?_appendStack_ne_nil (state := state) hne] at h
+      simp at h
+  | succ fuel ih =>
+      cases hresult : state.result? with
+      | some value => exact ⟨value, of_result? hresult⟩
+      | none =>
+          have hfull := h
+          rw [EvalState.run_succ] at h
+          cases hstep : EvalState.step ctx state with
+          | some next =>
+              have happ : EvalState.step ctx (EvalState.appendStack state base) =
+                  some (EvalState.appendStack next base) := by
+                cases state
+                cases next
+                simpa [EvalState.appendStack] using EvalState.step_weaken base hstep
+              rw [happ] at h
+              obtain ⟨value, hvalue⟩ := ih h
+              exact ⟨value, step hstep hvalue⟩
+          | none =>
+              obtain hnone | hexit :=
+                EvalState.step_appendStack_none_or_exit hresult hstep
+              · rw [hnone] at h
+                rw [EvalState.result?_appendStack_ne_nil (state := state) hne] at h
+                simp at h
+              · obtain ⟨name, value, env, hstate⟩ := hexit
+                subst state
+                have hnoneRun :
+                    (EvalState.run ctx (fuel + 1)
+                      (EvalState.appendStack ⟨.exit name value, env, []⟩ base)).result? =
+                      none := by
+                  simpa [EvalState.appendStack] using
+                    (EvalState.run_exit_opBodies_result?_none (ctx := ctx) (fuel := fuel + 1)
+                      (name := name) (value := value) (env := env) hbase)
+                rw [hnoneRun] at hfull
+                simp at hfull
+
+theorem drop_prefix {ctx : Ctx} {fuel₀ : Nat} {state mid : EvalState ctx.primCtx}
+    {value : Val ctx.primCtx}
+    (hprefix : EvalState.stepN ctx fuel₀ state = some mid)
+    (hfrom : EvaluatesFrom ctx state value []) :
+    EvaluatesFrom ctx mid value [] := by
+  obtain ⟨fuel, scope, hsteps⟩ := hfrom
+  by_cases hle : fuel₀ ≤ fuel
+  · let rest := fuel - fuel₀
+    have hfuel : fuel = fuel₀ + rest := by omega
+    refine ⟨rest, scope, ?_⟩
+    rw [hfuel, EvalState.stepN_add, hprefix] at hsteps
+    simpa using hsteps
+  · have hlt : fuel < fuel₀ := by omega
+    let rest := fuel₀ - fuel - 1
+    have hfuel₀ : fuel₀ = fuel + (rest + 1) := by omega
+    rw [hfuel₀, EvalState.stepN_add, hsteps] at hprefix
+    have hbad : EvalState.stepN ctx (rest + 1) ⟨.ret value, scope, []⟩ = some mid := by
+      simpa using hprefix
+    exact False.elim (EvalState.stepN_ret_empty_none (fuel := rest)
+      (value := value) (scope := scope) hbad)
+
+end EvaluatesFrom
+
+theorem EvaluatesFrom.of_evaluatesTo {ctx : Ctx} {env : Env ctx.primCtx}
+    {term : Term ctx.primCtx} {value : Val ctx.primCtx}
+    (h : EvaluatesTo ctx env term value) :
+    EvaluatesFrom ctx (EvalState.start env term) value [] := by
+  obtain ⟨fuel, hrun⟩ := h
+  obtain ⟨steps, hsteps⟩ := EvalState.exists_stepN_run fuel (EvalState.start env term)
+  cases hstate : EvalState.run ctx fuel (EvalState.start env term) with
+  | mk control scope stack =>
+      rw [hstate] at hsteps hrun
+      cases control <;> cases stack <;> simp [EvalState.result?] at hrun
+      subst hrun
+      exact ⟨steps, scope, hsteps⟩
+
+theorem EvaluatesTo.of_evaluatesFrom {ctx : Ctx} {env : Env ctx.primCtx}
+    {term : Term ctx.primCtx} {value : Val ctx.primCtx}
+    (h : EvaluatesFrom ctx (EvalState.start env term) value []) :
+    EvaluatesTo ctx env term value := by
+  obtain ⟨fuel, scope, hsteps⟩ := h
+  refine ⟨fuel, ?_⟩
+  have hrun := EvalState.run_eq_of_stepN hsteps
+  rw [hrun]
+  rfl
+
+namespace EvaluatesCall
+
+theorem of_evaluatesFrom {ctx : Ctx} {name : String} {vargs : List (Val ctx.primCtx)}
+    {value : Val ctx.primCtx}
+    (h : ∀ (env : Env ctx.primCtx) (base : List (Frame ctx.primCtx)),
+      ∃ block state,
+        ctx.blockCtx.get? name = some block ∧
+        EvalState.enterBlock name block vargs env base = some state ∧
+        EvaluatesFrom ctx state value base) :
+    EvaluatesCall ctx name vargs value := by
+  intro env base
+  obtain ⟨block, state, hblock, henter, hfrom⟩ := h env base
+  obtain ⟨fuel, scope, hsteps⟩ := hfrom
+  exact ⟨block, state, fuel, scope, hblock, henter, hsteps⟩
+
+end EvaluatesCall
+
 /-- Evaluation is deterministic, so the fuel is an artefact of the *proof*, not of the statement:
   a term has at most one value. This is what licenses reading `EvaluatesTo` as a function. -/
 theorem EvaluatesTo.unique {ctx : Ctx} {env : Env ctx.primCtx} {term : Term ctx.primCtx}
@@ -511,6 +840,41 @@ theorem EvaluatesTo.unique {ctx : Ctx} {env : Env ctx.primCtx} {term : Term ctx.
   rw [show fuel₂ + fuel₁ = fuel₁ + fuel₂ by omega] at e₂
   rw [e₁] at e₂
   exact Option.some.inj e₂
+
+def Term.Terminates (ctx : Ctx) (env : Env ctx.primCtx) (term : Term ctx.primCtx) : Prop :=
+  ∃ v, EvaluatesTo ctx env term v
+
+/- two terms are equal at a type when they evaluate alike under every environment matching the
+  scope they are stated in -/
+structure Term.eq (ctx : Ctx) (varCtx : VarCtx) (ty : Ty) (t₁ t₂ : Term ctx.primCtx) : Prop where
+  hasType₁ : hasType ctx varCtx t₁ ty
+  hasType₂ : hasType ctx varCtx t₂ ty
+  eq : ∀ env : Env ctx.primCtx, env.Models varCtx → ∀ v,
+    EvaluatesTo ctx env t₁ v ↔ EvaluatesTo ctx env t₂ v
+
+/- Zag propositions can only be assigned semantics under a fixed `Ctx` -/
+def Pr.interp (ctx : Ctx) :
+    (ctxTy : Scope Ty) → (ctxTerm : Scope (Term ctx.primCtx)) → Pr (Term ctx.primCtx) → Prop
+| ctxTy, ctxTerm, .eq varCtx ty x y =>
+  Term.eq ctx (VarCtx.subst ctxTy varCtx) (Ty.subst ctxTy ty)
+    (Term.subst ctxTerm x) (Term.subst ctxTerm y)
+| ctxTy, ctxTerm, .hasType varCtx t ty =>
+  Term.hasType ctx (VarCtx.subst ctxTy varCtx) (Term.subst ctxTerm t) (Ty.subst ctxTy ty)
+| ctxTy, ctxTerm, .and p q =>
+  Pr.interp ctx ctxTy ctxTerm p ∧ Pr.interp ctx ctxTy ctxTerm q
+| ctxTy, ctxTerm, .or p q =>
+  Pr.interp ctx ctxTy ctxTerm p ∨ Pr.interp ctx ctxTy ctxTerm q
+| ctxTy, ctxTerm, .implies p q =>
+  Pr.interp ctx ctxTy ctxTerm p → Pr.interp ctx ctxTy ctxTerm q
+| ctxTy, ctxTerm, .forallTy name p =>
+  ∀ (α : Ty), Pr.interp ctx (ctxTy ++ [(name, α)]) ctxTerm p
+| ctxTy, ctxTerm, .forallTerm name p =>
+  ∀ (x : Term ctx.primCtx), Pr.interp ctx ctxTy (ctxTerm ++ [(name, x)]) p
+
+/- metatheory (in this case lean) determines which Zag propositions are provable -/
+inductive Pr.Provable (ctx : Ctx)
+    (ctxTy : Scope Ty) (ctxTerm : Scope (Term ctx.primCtx)) (p : Pr (Term ctx.primCtx)) : Prop
+| ofProof (proof : Pr.interp ctx ctxTy ctxTerm p)
 
 
 /-- Evaluating a term is insensitive to work already pending beneath it -- weakening, lifted to
@@ -588,6 +952,93 @@ inductive EvaluatesToAll (ctx : Ctx) (env : Env ctx.primCtx) :
     EvaluatesTo ctx env term value → EvaluatesToAll ctx env terms values →
     EvaluatesToAll ctx env (term :: terms) (value :: values)
 
+namespace EvaluatesToAll
+
+theorem length_eq {ctx : Ctx} {env : Env ctx.primCtx}
+    {terms : List (Term ctx.primCtx)} {values : List (Val ctx.primCtx)}
+    (h : EvaluatesToAll ctx env terms values) : terms.length = values.length := by
+  induction h with
+  | nil => rfl
+  | cons _ _ ih => simp [ih]
+
+end EvaluatesToAll
+
+namespace EvaluatesFrom
+
+theorem driveOp {ctx : Ctx} {body : Op.Body ctx.primCtx}
+    {terms : List (Term ctx.primCtx)} {values : List (Val ctx.primCtx)}
+    {env : Env ctx.primCtx} {S : List (Frame ctx.primCtx)} {result : Val ctx.primCtx}
+    (hargs : EvaluatesToAll ctx env terms values)
+    (hbody : body.applyVals values = some result) :
+    ∃ state, EvalState.driveOp body terms env S = some state ∧
+      EvaluatesFrom ctx state result S := by
+  induction terms generalizing body values S with
+  | nil =>
+      cases hargs
+      cases body with
+      | fail => simp [Op.Body.applyVals] at hbody
+      | done value =>
+          have hvalue : value = result := by simpa [Op.Body.applyVals] using hbody
+          subst result
+          exact ⟨⟨.ret value, env, S⟩, by simp [EvalState.driveOp], EvaluatesFrom.done⟩
+      | next evaluate resume => simp [Op.Body.applyVals] at hbody
+  | cons term terms ih =>
+      cases hargs with
+      | cons hterm hterms =>
+          rename_i termValue termValues
+          cases body with
+          | fail => simp [Op.Body.applyVals] at hbody
+          | done value =>
+              have hvalue : value = result := by simpa [Op.Body.applyVals] using hbody
+              subst result
+              exact ⟨⟨.ret value, env, S⟩, by simp [EvalState.driveOp], EvaluatesFrom.done⟩
+          | next evaluate resume =>
+              cases evaluate with
+              | false =>
+                  have hbody' : (resume none).applyVals termValues = some result := by
+                    simpa [Op.Body.applyVals] using hbody
+                  obtain ⟨state, hdrive, hfrom⟩ :=
+                    ih (body := resume none) (values := termValues) (S := S) hterms hbody'
+                  exact ⟨state, by simpa [EvalState.driveOp] using hdrive, hfrom⟩
+              | true =>
+                  have hbody' : (resume (some termValue)).applyVals termValues = some result := by
+                    simpa [Op.Body.applyVals] using hbody
+                  obtain ⟨state, hdrive, hfrom⟩ :=
+                    ih (body := resume (some termValue)) (values := termValues) (S := S)
+                      hterms hbody'
+                  obtain ⟨fuel, scope, htermSteps⟩ :=
+                    EvaluatesTo.weaken hterm (.opBody resume terms env :: S)
+                  have hretStep : EvalState.step ctx
+                      ⟨.ret termValue, scope, .opBody resume terms env :: S⟩ = some state := by
+                    simpa [EvalState.step, hdrive]
+                  exact ⟨⟨.eval term, env, .opBody resume terms env :: S⟩,
+                    by simp [EvalState.driveOp],
+                    EvaluatesFrom.trans_stepN htermSteps (EvaluatesFrom.step hretStep hfrom)⟩
+
+end EvaluatesFrom
+
+theorem EvaluatesTo.op_applyVals {ctx : Ctx} {env : Env ctx.primCtx}
+    {name : String} {args : List (Term ctx.primCtx)} {values : List (Val ctx.primCtx)}
+    {oper : Op ctx.primCtx} {result : Val ctx.primCtx}
+    (hop : ctx.opCtx.get? name = some oper)
+    (hargs : EvaluatesToAll ctx env args values)
+    (happly : Op.applyVals oper values = some result) :
+    EvaluatesTo ctx env (.op name args) result := by
+  have hvaluesLen : values.length = oper.arity := by
+    unfold Op.applyVals at happly
+    by_cases hlen : values.length = oper.arity
+    · exact hlen
+    · simp [hlen] at happly
+  have hargsLen : args.length = oper.arity := by
+    rw [EvaluatesToAll.length_eq hargs, hvaluesLen]
+  have hbody : oper.body.applyVals values = some result := by
+    unfold Op.applyVals at happly
+    simpa [hvaluesLen] using happly
+  obtain ⟨state, hdrive, hfrom⟩ :=
+    EvaluatesFrom.driveOp (S := []) hargs hbody
+  exact EvaluatesTo.of_evaluatesFrom
+    (EvaluatesFrom.step (by simp [EvalState.step, EvalState.start, hop, hargsLen, hdrive]) hfrom)
+
 open EvalState in
 /-- The argument-collecting loop: from "about to evaluate `arg`, with `done` already collected
   and `rest` still to go", the machine reaches exactly the callee's entry state. Stated as an
@@ -646,5 +1097,35 @@ theorem EvalState.stepN_call {name : String} {block : Block ctx.primCtx}
       rw [stepN_add]
       simp only [stepN_succ, step, hblock, Option.bind_some, stepN_zero]
       simpa using hsteps
+
+theorem EvaluatesFrom.call_then {ctx : Ctx} {name : String}
+    {args : List (Term ctx.primCtx)} {vargs : List (Val ctx.primCtx)}
+    {value finalValue : Val ctx.primCtx}
+    {env : Env ctx.primCtx} {S finalBase : List (Frame ctx.primCtx)}
+    {block : Block ctx.primCtx}
+    (hcall : EvaluatesCall ctx name vargs value)
+    (hblock : ctx.blockCtx.get? name = some block)
+    (hargs : EvaluatesToAll ctx env args vargs)
+    (hcont : ∀ scope, EvaluatesFrom ctx ⟨.ret value, scope, S⟩ finalValue finalBase) :
+    EvaluatesFrom ctx ⟨.eval (.call name args), env, S⟩ finalValue finalBase := by
+  obtain ⟨n, hargsSteps⟩ := EvalState.stepN_call (ctx := ctx) (name := name)
+    (block := block) (env := env) (S := S) (args := args) (vargs := vargs) hblock hargs
+  obtain ⟨block', state, fuel, scope, hblock', henter, hsteps⟩ := hcall env S
+  have hbeq : block = block' := by simpa [hblock] using hblock'
+  subst block'
+  have hprefix : EvalState.stepN ctx n ⟨.eval (.call name args), env, S⟩ = some state := by
+    simpa [henter] using hargsSteps
+  exact EvaluatesFrom.trans_stepN hprefix (EvaluatesFrom.bind ⟨fuel, scope, hsteps⟩ hcont)
+
+theorem EvaluatesTo.call {ctx : Ctx} {name : String}
+    {args : List (Term ctx.primCtx)} {vargs : List (Val ctx.primCtx)}
+    {value : Val ctx.primCtx} {env : Env ctx.primCtx} {block : Block ctx.primCtx}
+    (hcall : EvaluatesCall ctx name vargs value)
+    (hblock : ctx.blockCtx.get? name = some block)
+    (hargs : EvaluatesToAll ctx env args vargs) :
+    EvaluatesTo ctx env (.call name args) value :=
+  EvaluatesTo.of_evaluatesFrom <|
+    EvaluatesFrom.call_then (S := []) (finalBase := []) (block := block)
+      (hcall := hcall) hblock hargs (fun _ => EvaluatesFrom.done)
 
 end Zag

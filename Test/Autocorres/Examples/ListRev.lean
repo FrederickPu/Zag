@@ -6,7 +6,7 @@ open Zag Zag.Lib.PeanoHeap
 
 abbrev listRevBlocks : BlockCtx.Raw heapCtx :=
   blocks% [
-    reverse(heap : Heap, head : Ptr) : StatePtr {
+    reverse(heap : Heap, head : Ptr) : State[Ptr] {
       ret call listReverse [heap, head]
     }
   ]
@@ -15,12 +15,7 @@ abbrev listRevProgramBlocks : BlockCtx.Raw heapCtx :=
   listBlocks ++ listRevBlocks
 
 theorem listRevProgramBlocksValid : BlockCtx.Valid listRevProgramBlocks := by
-  constructor
-  case left => decide
-  case right =>
-    set_option linter.unusedSimpArgs false in
-      simp [listRevProgramBlocks, listBlocks, listRevBlocks, Block.callNames,
-        Term.callNames, Term.nat, Term.bool, Term.ite, termHeap, termPtr, termArray]
+  valid_blocks [listRevProgramBlocks, listBlocks, listRevBlocks]
 
 abbrev listRevCtx : Ctx := mkCtx listRevProgramBlocks listRevProgramBlocksValid
 

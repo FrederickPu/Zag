@@ -16,12 +16,7 @@ abbrev wordAbsBlocks : BlockCtx.Raw heapCtx :=
   ]
 
 theorem wordAbsBlocksValid : BlockCtx.Valid wordAbsBlocks := by
-  constructor
-  case left => decide
-  case right =>
-    set_option linter.unusedSimpArgs false in
-      simp [wordAbsBlocks, Block.callNames, Term.callNames, Term.nat, Term.bool, Term.ite,
-        termHeap, termPtr, termArray]
+  valid_blocks [wordAbsBlocks]
 
 abbrev wordAbsCtx : Ctx := mkCtx wordAbsBlocks wordAbsBlocksValid
 

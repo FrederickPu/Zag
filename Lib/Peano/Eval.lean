@@ -1,14 +1,10 @@
-import Zag.Eval
+import Zag.EvalState
 import Lib.Peano.Defs
 
 /-!
-# Concretization rules for the Peano operators
+# Small-step Peano evaluation lemmas
 
-`Zag/Eval.lean` supplies one equation per *term* former. This file supplies one equation per
-Peano *operator*, so that concretizing a term against an environment is a single `simp` pass.
-
-Each equation is unconditional and its operator lookup comes from `Peano.Model`, so the rules
-are `@[simp]` and apply in any context that models Peano -- no per-program plumbing.
+These are relational facts over `EvaluatesTo`, not rewrite rules for the old big-step evaluator.
 -/
 
 namespace Zag
@@ -73,100 +69,6 @@ theorem eq_bool_of_asBool? {v : Val primCtx} {b : Bool} (h : v.asBool? = some b)
 
 end Val
 
-namespace Term
-
-variable {ctx : Ctx}
-
-/-- Every fixed-signature Peano operator over one `Nat` reads its operand with `asNat?`. -/
-theorem eval_natUnary [Peano.Types ctx.primCtx] {env : Env ctx.primCtx} {name : String}
-    {f : Nat → Nat} {a : Term ctx.primCtx}
-    (hop : ctx.opCtx.get? name = some (Op.natUnary (primCtx := ctx.primCtx) f)) :
-    Term.eval ctx env (.op name [a]) = (do
-      let m ← (← Term.eval ctx env a).asNat?
-      some (Val.nat (f m))) := by
-  rw [eval_op_ofVals (argTys := [Peano.NatTy]) (outTy := Peano.NatTy) hop rfl]
-  cases ha : Term.eval ctx env a with
-  | none => simp [ha]
-  | some va =>
-      cases hm : va.asNat? with
-      | none => simp [ha, hm, Val.asNat?_eq_none_iff.mp hm]
-      | some m =>
-          have hva : va = Val.nat m := Val.eq_nat_of_asNat? hm
-          subst hva
-          simp [ha]
-
-/-- Every fixed-signature Peano operator over two `Nat`s reads its operands with `asNat?`. -/
-theorem eval_natBinary [Peano.Types ctx.primCtx] {env : Env ctx.primCtx} {name : String}
-    {f : Nat → Nat → Nat} {a b : Term ctx.primCtx}
-    (hop : ctx.opCtx.get? name = some (Op.natBinary (primCtx := ctx.primCtx) f)) :
-    Term.eval ctx env (.op name [a, b]) = (do
-      let m ← (← Term.eval ctx env a).asNat?
-      let n ← (← Term.eval ctx env b).asNat?
-      some (Val.nat (f m n))) := by
-  rw [eval_op_ofVals (argTys := [Peano.NatTy, Peano.NatTy]) (outTy := Peano.NatTy) hop rfl]
-  cases ha : Term.eval ctx env a with
-  | none => simp [ha]
-  | some va =>
-      cases hb : Term.eval ctx env b with
-      | none => simp [ha, hb]
-      | some vb =>
-          cases hm : va.asNat? with
-          | none => simp [ha, hb, hm, Val.asNat?_eq_none_iff.mp hm]
-          | some m =>
-              have hva : va = Val.nat m := Val.eq_nat_of_asNat? hm
-              subst hva
-              cases hn : vb.asNat? with
-              | none => simp [ha, hb, hn, Val.asNat?_eq_none_iff.mp hn]
-              | some n =>
-                  have hvb : vb = Val.nat n := Val.eq_nat_of_asNat? hn
-                  subst hvb
-                  simp [ha, hb]
-
-/-- `eq`, `lt` and `gt` share one shape: evaluate both operands, compare when the types agree. -/
-theorem eval_compare [Peano.Types ctx.primCtx] {env : Env ctx.primCtx} {name : String}
-    {cmp : Val ctx.primCtx → Val ctx.primCtx → Option Bool} {a b : Term ctx.primCtx}
-    (hop : ctx.opCtx.get? name = some (Op.compare cmp)) :
-    Term.eval ctx env (.op name [a, b]) = (do
-      let va ← Term.eval ctx env a
-      let vb ← Term.eval ctx env b
-      if va.ty = vb.ty then (cmp va vb).map Val.bool else none) := by
-  cases ha : Term.eval ctx env a with
-  | none =>
-      rw [Term.eval, Term.evalGo_op, hop]
-      simp [Op.compare, show Term.evalGo ctx env a = none from ha]
-  | some va =>
-      cases hb : Term.eval ctx env b with
-      | none =>
-          rw [Term.eval, Term.evalGo_op, hop]
-          simp [Op.compare, show Term.evalGo ctx env a = some va from ha,
-            show Term.evalGo ctx env b = none from hb]
-      | some vb =>
-          by_cases hty : va.ty = vb.ty
-          case pos =>
-            rw [Term.eval,
-              Term.evalGo_op_compare hop (show Term.evalGo ctx env a = some va from ha)
-                (show Term.evalGo ctx env b = some vb from hb) hty]
-            simp [hty]
-          case neg =>
-            rw [Term.eval, Term.evalGo_op, hop]
-            simp [Op.compare, show Term.evalGo ctx env a = some va from ha,
-              show Term.evalGo ctx env b = some vb from hb, hty]
-
-/-- `ite` is the lazy operator: only the selected branch is evaluated, which is what lets a
-  block recurse through it without diverging. -/
-@[simp] theorem eval_ite [Peano.Model ctx] {env : Env ctx.primCtx}
-    (cond thenTerm elseTerm : Term ctx.primCtx) :
-    Term.eval ctx env (no_index (Term.ite cond thenTerm elseTerm)) = (do
-      let b ← (← Term.eval ctx env cond).asBool?
-      if b then Term.eval ctx env thenTerm else Term.eval ctx env elseTerm) := by
-  rw [Term.eval, Term.evalGo_ite]
-  cases hcond : Term.evalGo ctx env cond with
-  | none => simp [Term.eval, hcond]
-  | some value =>
-      cases hraw : value.as? Peano.BoolTy with
-      | none => simp [Term.eval, hcond, Val.asBool?, hraw]
-      | some raw => simp [Term.eval, hcond, Val.asBool?, hraw]
-
 /-! Comparing two `Nat` values is the case every program hits; state it so `simp` gets a `Bool`
   literal rather than a `primEq?` application. -/
 
@@ -185,71 +87,37 @@ theorem eval_compare [Peano.Types ctx.primCtx] {env : Env ctx.primCtx} {name : S
     Val.primGt? (Val.nat (primCtx := primCtx) m) (Val.nat n) = some (decide (n < m)) := by
   simp [Val.primGt?, Val.primLt?]
 
-@[simp] theorem eval_natLit [Peano.Types ctx.primCtx] (env : Env ctx.primCtx) (n : Nat) :
-    Term.eval ctx env (no_index (Term.nat n)) = some (Val.nat n) := by
-  simp [Term.nat]
+/-! ### small-step Peano operator specs -/
 
-@[simp] theorem eval_boolLit [Peano.Types ctx.primCtx] (env : Env ctx.primCtx) (b : Bool) :
-    Term.eval ctx env (no_index (Term.bool b)) = some (Val.bool b) := by
-  simp [Term.bool]
+theorem evaluates_natUnary {ctx : Ctx} [Peano.Types ctx.primCtx]
+    {env : Env ctx.primCtx} {name : String} {f : Nat → Nat} {a : Term ctx.primCtx}
+    {m : Nat} (hop : ctx.opCtx.get? name = some (Op.natUnary (primCtx := ctx.primCtx) f))
+    (ha : EvaluatesTo ctx env a (Val.nat m)) :
+    EvaluatesTo ctx env (.op name [a]) (Val.nat (f m)) := by
+  refine EvaluatesTo.op_applyVals hop (EvaluatesToAll.cons ha EvaluatesToAll.nil) ?_
+  simp [Op.applyVals, Op.natUnary, Op.ofVals, Op.Body.applyVals, Op.Body.eager]
 
-/-! ### the standard operators of a Peano model
+theorem evaluates_natBinary {ctx : Ctx} [Peano.Types ctx.primCtx]
+    {env : Env ctx.primCtx} {name : String} {f : Nat → Nat → Nat}
+    {a b : Term ctx.primCtx} {m n : Nat}
+    (hop : ctx.opCtx.get? name = some (Op.natBinary (primCtx := ctx.primCtx) f))
+    (ha : EvaluatesTo ctx env a (Val.nat m))
+    (hb : EvaluatesTo ctx env b (Val.nat n)) :
+    EvaluatesTo ctx env (.op name [a, b]) (Val.nat (f m n)) := by
+  refine EvaluatesTo.op_applyVals hop
+    (EvaluatesToAll.cons ha (EvaluatesToAll.cons hb EvaluatesToAll.nil)) ?_
+  simp [Op.applyVals, Op.natBinary, Op.ofVals, Op.Body.applyVals, Op.Body.eager]
 
-  Each is `@[simp]`, so a term built from them concretizes with no configuration. -/
-
-variable [Peano.Model ctx] {env : Env ctx.primCtx} {a b cond : Term ctx.primCtx}
-
-@[simp] theorem eval_add :
-    Term.eval ctx env (no_index (Term.op "add" [a, b])) = (do
-      let m ← (← Term.eval ctx env a).asNat?
-      let n ← (← Term.eval ctx env b).asNat?
-      some (Val.nat (m + n))) := eval_natBinary Peano.Model.addOp
-
-@[simp] theorem eval_sub :
-    Term.eval ctx env (no_index (Term.op "sub" [a, b])) = (do
-      let m ← (← Term.eval ctx env a).asNat?
-      let n ← (← Term.eval ctx env b).asNat?
-      some (Val.nat (m - n))) := eval_natBinary Peano.Model.subOp
-
-@[simp] theorem eval_mul :
-    Term.eval ctx env (no_index (Term.op "mul" [a, b])) = (do
-      let m ← (← Term.eval ctx env a).asNat?
-      let n ← (← Term.eval ctx env b).asNat?
-      some (Val.nat (m * n))) := eval_natBinary Peano.Model.mulOp
-
-@[simp] theorem eval_div :
-    Term.eval ctx env (no_index (Term.op "div" [a, b])) = (do
-      let m ← (← Term.eval ctx env a).asNat?
-      let n ← (← Term.eval ctx env b).asNat?
-      some (Val.nat (m / n))) := eval_natBinary Peano.Model.divOp
-
-@[simp] theorem eval_succ :
-    Term.eval ctx env (no_index (Term.op "succ" [a])) = (do
-      let m ← (← Term.eval ctx env a).asNat?
-      some (Val.nat (m + 1))) := eval_natUnary Peano.Model.succOp
-
-@[simp] theorem eval_eq :
-    Term.eval ctx env (no_index (Term.op "eq" [a, b])) = (do
-      let va ← Term.eval ctx env a
-      let vb ← Term.eval ctx env b
-      if va.ty = vb.ty then (Val.primEq? va vb).map Val.bool else none) :=
-  eval_compare Peano.Model.eqOp
-
-@[simp] theorem eval_lt :
-    Term.eval ctx env (no_index (Term.op "lt" [a, b])) = (do
-      let va ← Term.eval ctx env a
-      let vb ← Term.eval ctx env b
-      if va.ty = vb.ty then (Val.primLt? va vb).map Val.bool else none) :=
-  eval_compare Peano.Model.ltOp
-
-@[simp] theorem eval_gt :
-    Term.eval ctx env (no_index (Term.op "gt" [a, b])) = (do
-      let va ← Term.eval ctx env a
-      let vb ← Term.eval ctx env b
-      if va.ty = vb.ty then (Val.primGt? va vb).map Val.bool else none) :=
-  eval_compare Peano.Model.gtOp
-
-end Term
+theorem evaluates_eq_same_nat_true {ctx : Ctx} [Peano.Model ctx]
+    {env : Env ctx.primCtx} {a b : Term ctx.primCtx} {n : Nat}
+    (ha : EvaluatesTo ctx env a (Val.nat n))
+    (hb : EvaluatesTo ctx env b (Val.nat n)) :
+    EvaluatesTo ctx env (.op "eq" [a, b]) (Val.bool true) := by
+  refine EvaluatesTo.op_applyVals (Peano.Model.eqOp (ctx := ctx))
+    (EvaluatesToAll.cons ha (EvaluatesToAll.cons hb EvaluatesToAll.nil)) ?_
+  simpa [Op.eq, Val.primEq?] using
+    (Op.applyVals_compare (primCtx := ctx.primCtx) Val.primEq?
+      (Val.nat (primCtx := ctx.primCtx) n) (Val.nat n) rfl)
 
 /-! ### from evaluation to `Term.eq`
 
@@ -261,48 +129,166 @@ theorem term_eq_nat_of_eval {ctx : Ctx} [Peano.Types ctx.primCtx]
     (hlhs : Term.hasType ctx [] lhs Peano.NatTy)
     (hrhs : Term.hasType ctx [] rhs Peano.NatTy)
     (heval : ∀ env : Env ctx.primCtx, env.Models [] →
-      ∃ n : Nat, Term.eval ctx env lhs = some (Val.nat n) ∧
-        Term.eval ctx env rhs = some (Val.nat n)) :
+      ∃ n : Nat, EvaluatesTo ctx env lhs (Val.nat n) ∧
+        EvaluatesTo ctx env rhs (Val.nat n)) :
     Term.eq ctx [] Peano.NatTy lhs rhs := by
   refine Term.eq.mk hlhs hrhs ?_
-  intro env henv
+  intro env henv value
   obtain ⟨n, hl, hr⟩ := heval env henv
-  rw [hl, hr]
+  constructor
+  · intro hvalue
+    have hsame : value = Val.nat (primCtx := ctx.primCtx) n := EvaluatesTo.unique hvalue hl
+    subst value
+    exact hr
+  · intro hvalue
+    have hsame : value = Val.nat (primCtx := ctx.primCtx) n := EvaluatesTo.unique hvalue hr
+    subst value
+    exact hl
 
 /-! ### from a reflected equation back to evaluation
 
   `Pr.Induction`'s step goal hands the proof an equation `succ x = y` reflected into Zag. Both
   sides must be `Nat`-valued for the induction to say anything, and that is what this recovers. -/
 
+namespace Op.Body
+
+private def resume? {primCtx : PrimitiveCtx} :
+    Op.Body primCtx → Option (Val primCtx) → Op.Body primCtx
+| .next _ resume => resume
+| _ => fun _ => .fail
+
+end Op.Body
+
+private theorem evaluates_natUnary_result_nat {ctx : Ctx} [Peano.Model ctx]
+    {env : Env ctx.primCtx} {name : String} {arg : Term ctx.primCtx} {f : Nat → Nat}
+    (hop : ctx.opCtx.get? name = some (Op.natUnary (primCtx := ctx.primCtx) f))
+    {value : Val ctx.primCtx}
+    (h : EvaluatesTo ctx env (.op name [arg]) value) :
+    ∃ n : Nat, value = Val.nat (f n) := by
+  let resume := Op.Body.resume? (Op.natUnary (primCtx := ctx.primCtx) f).body
+  let base : List (Frame ctx.primCtx) := [Frame.opBody resume [] env]
+  have hfrom := EvaluatesFrom.of_evaluatesTo h
+  have hprefix : EvalState.stepN ctx 1 (EvalState.start env (.op name [arg])) =
+      some (EvalState.appendStack (EvalState.start env arg) base) := by
+    simp [EvalState.stepN_succ, EvalState.step, EvalState.start, EvalState.driveOp,
+      EvalState.appendStack, hop, base, resume, Op.Body.resume?, Op.natUnary, Op.ofVals,
+      Op.Body.eager]
+  have hfromArgState := EvaluatesFrom.drop_prefix hprefix hfrom
+  have hfromArgStateSaved := hfromArgState
+  obtain ⟨fuel, scope, hsteps⟩ := hfromArgState
+  have hrunArgState :
+      (EvalState.run ctx fuel (EvalState.appendStack (EvalState.start env arg) base)).result? =
+        some value := by
+    rw [EvalState.run_eq_of_stepN hsteps]
+    rfl
+  obtain ⟨argVal, hargFrom⟩ := EvaluatesFrom.exists_of_run_append_opBodies
+    (ctx := ctx) (state := EvalState.start env arg) (base := base)
+    (hbase := Frame.OpBodies.cons Frame.OpBodies.nil) (hne := by simp [base]) hrunArgState
+  have harg : EvaluatesTo ctx env arg argVal := EvaluatesTo.of_evaluatesFrom hargFrom
+  obtain ⟨argFuel, argScope, hargSteps⟩ := EvaluatesTo.weaken harg base
+  have hfromRetArg := EvaluatesFrom.drop_prefix hargSteps hfromArgStateSaved
+  cases hm : argVal.asNat? with
+  | none =>
+      obtain ⟨retFuel, retScope, hretSteps⟩ := hfromRetArg
+      cases retFuel with
+      | zero => simp [base] at hretSteps
+      | succ retFuel =>
+          rw [EvalState.stepN_succ] at hretSteps
+          simp [EvalState.step, EvalState.driveOp, base, resume, Op.Body.resume?, Op.natUnary,
+            Op.ofVals, Op.Body.eager, hm] at hretSteps
+  | some n =>
+      have hargNat : argVal = Val.nat n := Val.eq_nat_of_asNat? hm
+      subst argVal
+      have hstepRet : EvalState.step ctx ⟨.ret (Val.nat (primCtx := ctx.primCtx) n),
+          argScope, base⟩ = some ⟨.ret (Val.nat (f n)), env, []⟩ := by
+        simp [EvalState.step, EvalState.driveOp, base, resume, Op.Body.resume?, Op.natUnary,
+          Op.ofVals, Op.Body.eager]
+      have hfromResult := EvaluatesFrom.drop_prefix
+        (ctx := ctx) (fuel₀ := 1) (state := ⟨.ret (Val.nat (primCtx := ctx.primCtx) n),
+          argScope, base⟩) (mid := ⟨.ret (Val.nat (f n)), env, []⟩)
+        (by simp [EvalState.stepN_succ, hstepRet]) hfromRetArg
+      have hvalue := EvaluatesFrom.ret_empty_eq hfromResult
+      exact ⟨n, hvalue⟩
+
 theorem eval_nat_of_eq_natUnary_true {ctx : Ctx} [Peano.Model ctx]
     {env : Env ctx.primCtx} {name : String} {arg rhs : Term ctx.primCtx} {f : Nat → Nat}
     (hop : ctx.opCtx.get? name = some (Op.natUnary (primCtx := ctx.primCtx) f))
-    (h : Term.eval ctx env (.op "eq" [.op name [arg], rhs]) = some (Val.bool true)) :
-    ∃ n : Nat, Term.eval ctx env rhs = some (Val.nat n) := by
-  rw [Term.eval_eq, Term.eval_natUnary hop] at h
-  cases hrhs : Term.eval ctx env rhs with
-  | none => simp [hrhs] at h
-  | some rhsVal =>
-      by_cases hty : rhsVal.ty = Peano.NatTy
-      case pos =>
-        obtain ⟨n, hn⟩ := Val.exists_nat_of_ty hty
-        exact ⟨n, by rw [hn]⟩
-      case neg =>
-        cases harg : Term.eval ctx env arg with
-        | none => simp [harg] at h
-        | some argVal =>
-            cases hm : argVal.asNat? with
-            | none => simp [harg, hm] at h
-            | some m => simp [harg, hm, hrhs, Ne.symm hty] at h
+    (h : EvaluatesTo ctx env (.op "eq" [.op name [arg], rhs]) (Val.bool true)) :
+    ∃ n : Nat, EvaluatesTo ctx env rhs (Val.nat n) := by
+  let lhs := Term.op name [arg]
+  let firstResume := Op.Body.resume? (Op.eq (primCtx := ctx.primCtx)).body
+  let firstBase : List (Frame ctx.primCtx) := [Frame.opBody firstResume [rhs] env]
+  have hfrom := EvaluatesFrom.of_evaluatesTo h
+  have hprefix : EvalState.stepN ctx 1 (EvalState.start env (.op "eq" [lhs, rhs])) =
+      some (EvalState.appendStack (EvalState.start env lhs) firstBase) := by
+    simp [EvalState.stepN_succ, EvalState.step, EvalState.start, EvalState.driveOp,
+      EvalState.appendStack, Peano.Model.eqOp, firstBase, firstResume, lhs, Op.Body.resume?,
+      Op.eq, Op.compare]
+  have hfromLhsState := EvaluatesFrom.drop_prefix hprefix hfrom
+  have hfromLhsStateSaved := hfromLhsState
+  obtain ⟨lhsFuel, lhsScope, hlhsSteps⟩ := hfromLhsState
+  have hrunLhsState :
+      (EvalState.run ctx lhsFuel (EvalState.appendStack (EvalState.start env lhs) firstBase)).result? =
+        some (Val.bool true) := by
+    rw [EvalState.run_eq_of_stepN hlhsSteps]
+    rfl
+  obtain ⟨lhsVal, hlhsFrom⟩ := EvaluatesFrom.exists_of_run_append_opBodies
+    (ctx := ctx) (state := EvalState.start env lhs) (base := firstBase)
+    (hbase := Frame.OpBodies.cons Frame.OpBodies.nil) (hne := by simp [firstBase]) hrunLhsState
+  have hlhs : EvaluatesTo ctx env lhs lhsVal := EvaluatesTo.of_evaluatesFrom hlhsFrom
+  obtain ⟨m, hlhsVal⟩ := evaluates_natUnary_result_nat (ctx := ctx) (env := env)
+    (name := name) (arg := arg) (f := f) hop (value := lhsVal) hlhs
+  subst lhsVal
+  let secondResume := Op.Body.resume? (firstResume (some (Val.nat (primCtx := ctx.primCtx) (f m))))
+  let secondBase : List (Frame ctx.primCtx) := [Frame.opBody secondResume [] env]
+  obtain ⟨lhsEvalFuel, lhsEvalScope, hlhsEvalSteps⟩ := EvaluatesTo.weaken hlhs firstBase
+  have hfromRetLhs := EvaluatesFrom.drop_prefix hlhsEvalSteps hfromLhsStateSaved
+  have hstepLhsRet : EvalState.step ctx ⟨.ret (Val.nat (primCtx := ctx.primCtx) (f m)),
+      lhsEvalScope, firstBase⟩ = some (EvalState.appendStack (EvalState.start env rhs) secondBase) := by
+    simp [EvalState.step, EvalState.driveOp, EvalState.appendStack, firstBase, secondBase,
+      EvalState.start, firstResume, secondResume, Op.Body.resume?, Op.eq, Op.compare]
+  have hfromRhsState := EvaluatesFrom.drop_prefix
+    (ctx := ctx) (fuel₀ := 1) (state := ⟨.ret (Val.nat (primCtx := ctx.primCtx) (f m)),
+      lhsEvalScope, firstBase⟩) (mid := EvalState.appendStack (EvalState.start env rhs) secondBase)
+    (by simp [EvalState.stepN_succ, hstepLhsRet]) hfromRetLhs
+  have hfromRhsStateSaved := hfromRhsState
+  obtain ⟨rhsFuel, rhsScope, hrhsSteps⟩ := hfromRhsState
+  have hrunRhsState :
+      (EvalState.run ctx rhsFuel (EvalState.appendStack (EvalState.start env rhs) secondBase)).result? =
+        some (Val.bool true) := by
+    rw [EvalState.run_eq_of_stepN hrhsSteps]
+    rfl
+  obtain ⟨rhsVal, hrhsFrom⟩ := EvaluatesFrom.exists_of_run_append_opBodies
+    (ctx := ctx) (state := EvalState.start env rhs) (base := secondBase)
+    (hbase := Frame.OpBodies.cons Frame.OpBodies.nil) (hne := by simp [secondBase]) hrunRhsState
+  have hrhs : EvaluatesTo ctx env rhs rhsVal := EvaluatesTo.of_evaluatesFrom hrhsFrom
+  obtain ⟨rhsEvalFuel, rhsEvalScope, hrhsEvalSteps⟩ := EvaluatesTo.weaken hrhs secondBase
+  have hfromRetRhs := EvaluatesFrom.drop_prefix hrhsEvalSteps hfromRhsStateSaved
+  obtain ⟨retFuel, retScope, hretSteps⟩ := hfromRetRhs
+  cases retFuel with
+  | zero => simp [secondBase] at hretSteps
+  | succ retFuel =>
+      rw [EvalState.stepN_succ] at hretSteps
+      by_cases hty : (Val.nat (primCtx := ctx.primCtx) (f m)).ty = rhsVal.ty
+      · have hrhsTy : rhsVal.ty = Peano.NatTy := by simpa using hty.symm
+        obtain ⟨n, hn⟩ := Val.exists_nat_of_ty hrhsTy
+        exact ⟨n, by simpa [hn] using hrhs⟩
+      · simp [EvalState.step, EvalState.driveOp, secondBase, secondResume, firstResume,
+          Op.Body.resume?, Op.eq, Op.compare, show ¬ Peano.NatTy = rhsVal.ty by simpa using hty]
+          at hretSteps
 
 theorem eval_nat_of_reflected_natUnary_eq {ctx : Ctx} [Peano.Model ctx]
     {name : String} {f : Nat → Nat} {arg rhs : Term ctx.primCtx}
     (hop : ctx.opCtx.get? name = some (Op.natUnary (primCtx := ctx.primCtx) f))
     (heq : Term.eq ctx [] Peano.BoolTy (.op "eq" [.op name [arg], rhs]) (Term.bool true)) :
     ∀ env : Env ctx.primCtx, env.Models [] →
-      ∃ n : Nat, Term.eval ctx env rhs = some (Val.nat n) := by
+      ∃ n : Nat, EvaluatesTo ctx env rhs (Val.nat n) := by
   intro env henv
   refine eval_nat_of_eq_natUnary_true (arg := arg) hop ?_
-  simpa using heq.eq env henv
+  have htrue : EvaluatesTo ctx env (Term.bool true) (Val.bool true) := by
+    simpa [Term.bool] using
+      (EvaluatesTo.prim (ctx := ctx) (env := env) Peano.BoolTy
+        (Ty.ofBool ctx.primCtx true))
+  exact (heq.eq env henv (Val.bool true)).mpr htrue
 
 end Zag

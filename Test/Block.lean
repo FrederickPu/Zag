@@ -1,4 +1,5 @@
 import Lib.Peano.Defs
+import Zag.EvalState
 import Meta.UnifyType
 
 /-!
@@ -36,6 +37,11 @@ instance : Peano.Model sumToCtx where
   ltOp := by rfl
   gtOp := by rfl
   iteOp := by rfl
+  addOp := by rfl
+  subOp := by rfl
+  mulOp := by rfl
+  divOp := by rfl
+  succOp := by rfl
 
 def sumToBlock : Block natCtx := sumToBlocks[0].2
 
@@ -61,12 +67,16 @@ theorem sumToBlock_wellTyped : Block.WellTyped sumToCtx sumToBlock := by
 theorem sumToCtx_wellTyped : Ctx.WellTyped sumToCtx := by
   typecheck_ctx
 
+def runSumTo (n : Nat) : Option Nat :=
+  (EvalState.run sumToCtx 1000 (EvalState.start [] (.call "sumTo" [Term.nat n]))).result?.bind
+    Val.asNat?
+
 /-- info: some 10 -/
 #guard_msgs in
-#eval (Term.eval sumToCtx [] (.call "sumTo" [Term.nat 4])).bind Val.asNat?
+#eval runSumTo 4
 
 /-- info: some 55 -/
 #guard_msgs in
-#eval (Term.eval sumToCtx [] (.call "sumTo" [Term.nat 10])).bind Val.asNat?
+#eval runSumTo 10
 
 end Zag.Test.Block

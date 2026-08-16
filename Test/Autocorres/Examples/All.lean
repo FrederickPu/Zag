@@ -37,17 +37,11 @@ abbrev autocorresBlocks : BlockCtx.Raw heapCtx :=
   renameBlocks ++ functionInfoBlocks ++ typeStrengthenBlocks ++ wordAbsBlocks
 
 theorem autocorresBlocksValid : BlockCtx.Valid autocorresBlocks := by
-  constructor
-  case left => decide
-  case right =>
-    set_option linter.unusedSimpArgs false in
-      simp [autocorresBlocks, plusBlocks, multByAddBlocks, factorialBlocks, fibBlocks,
-        simpleBlocks, isPrimeBlocks, binarySearchBlocks, memcpyBlocks, memsetBlocks,
-        quicksortBlocks, swapBlocks, allocBlocks, kmallocBlocks, listBlocks, listRevBlocks,
-        schorrWaiteBlocks, heapWrapBlocks, conditionGuardBlocks, suzukiBlocks,
-        traceDemoBlocks, str2longBlocks, renameBlocks, functionInfoBlocks,
-        typeStrengthenBlocks, wordAbsBlocks, Block.callNames, Term.callNames, Term.nat,
-        Term.bool, Term.ite, termHeap, termPtr, termArray]
+  valid_blocks [autocorresBlocks, plusBlocks, multByAddBlocks, factorialBlocks, fibBlocks,
+    simpleBlocks, isPrimeBlocks, binarySearchBlocks, memcpyBlocks, memsetBlocks, quicksortBlocks,
+    swapBlocks, allocBlocks, kmallocBlocks, listBlocks, listRevBlocks, schorrWaiteBlocks,
+    heapWrapBlocks, conditionGuardBlocks, suzukiBlocks, traceDemoBlocks, str2longBlocks,
+    renameBlocks, functionInfoBlocks, typeStrengthenBlocks, wordAbsBlocks]
 
 abbrev autocorresCtx : Ctx := mkCtx autocorresBlocks autocorresBlocksValid
 
