@@ -59,16 +59,21 @@ def Op.applyVals {primCtx : PrimitiveCtx} (oper : Op primCtx) (vals : List (Val 
   simp [Op.applyVals, Signature.toOp, Signature.unary, Signature.eagerBody, Op.Body.eager,
     Signature.apply, Op.Body.applyVals]
 
+/- Apply a *primitive* function value. A block reference declines here: running a block needs the
+  machine, so `EvalState.step` intercepts it before this is reached. -/
 def Term.evalApp {primCtx : PrimitiveCtx} (fn : Val primCtx) (args : List (Val primCtx)) :
     Option (Val primCtx) :=
-  match h : fn.ty with
-  | .func argsTy outTy => do
-      let typedArgs ← valsAs? argsTy args
-      let funcVal := cast (congrArg (Ty.type primCtx) h) fn.val
-      let f := cast (Ty.type_func primCtx argsTy outTy) funcVal
-      let result ← f typedArgs
-      some (Val.mk outTy result)
-  | _ => none
+  match fn with
+  | .blockRef .. => none
+  | .mk fnTy fnVal =>
+      match fnTy, fnVal with
+      | .func argsTy outTy, fnVal => do
+          -- the match has already refined `fnVal`'s type; only `Ty.type`'s own equation is left
+          let typedArgs ← valsAs? argsTy args
+          let f := cast (Ty.type_func primCtx argsTy outTy) fnVal
+          let result ← f typedArgs
+          some (Val.mk outTy result)
+      | _, _ => none
 
 /- the environment a block is entered with: each parameter name bound to its argument -/
 def Block.entryEnv {primCtx : PrimitiveCtx} (block : Block primCtx)

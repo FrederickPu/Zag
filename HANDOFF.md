@@ -1,209 +1,203 @@
-# Handoff: Zag block-IR refactor
+# Handoff
 
-## Where things stand
+## State
 
-`lake build Zag Lib Meta Test` is **green**. `Lang/` and `Comparator/` are gone (SSA moved into
-Zag core; AutoCorres was deleted before this work started).
+`LEAN_NUM_THREADS=1 lake build Zag Lib Meta Test` is green, no `sorry`, no new axioms.
 
-### The new core
+Use `LEAN_NUM_THREADS=1`. Higher parallelism OOMs and reports *fake* errors — "failed to read
+`.olean`", `std::bad_alloc`. Rerun single-threaded before believing them.
 
-`Ty` is three constructors, `Term` is five ([Zag/Data.lean](Zag/Data.lean)):
-
-```lean
-inductive Ty where
-| var  : String → Ty
-| prim : String → List Ty → Ty      -- parametric type application
-| func : List Ty → Ty → Ty
-
-inductive Term (primCtx : PrimitiveCtx) where
-| prim (ty : Ty) : Ty.type primCtx ty → Term primCtx
-| var  : String → Term primCtx
-| app  : Term primCtx → List (Term primCtx) → Term primCtx
-| op   : String → List (Term primCtx) → Term primCtx    -- semantics from the context
-| call : String → List (Term primCtx) → Term primCtx    -- semantics from the program
-```
-
-Gone, and what replaced each:
-
-| removed | replacement |
-| --- | --- |
-| `Term.primFunc`, `PrimFunc`, `PrimFuncCtx`, `Ctx.primFuncCtx` | `Op.ofVals argTys outTy interp` — a primitive function is just an op |
-| `Ty.option`, `Ty.union`, `Ty.struct`, `Ty.m` | `Primitive` gained `arity` + `type : List Type → Type`; all four are ordinary context-supplied constructors |
-| `PrimitiveCtx.M` / `monad`, built-in `Op.pure` / `Op.bind` in `OpCtx.get?` | user-declared `m` primitive + user-registered ops (see [Test/Monad.lean](Test/Monad.lean)) |
-| `Term.mkStruct`, `Term.structProj` | ops, or avoided entirely — blocks take several named params, so loop state needs no product |
-| `Term.recurse` | a block calling itself |
-| `TermAbbrev*`, `TypeAbbrev*`, `Ty.abbrev` | blocks (term side); parametric prims (type side) |
-| de Bruijn indices everywhere | `Scope α = List (String × α)`, lookup = **last** binding wins (`Scope.get?`) |
-
-### The block IR
-
-```lean
-structure Instr (primCtx) where          -- an instruction is just a named term
-  name : String
-  value : Term primCtx
-
-structure Block (primCtx) where
-  params : VarCtx                        -- named binders (SSA `phi`)
-  instrs : List (Instr primCtx)
-  outTy  : Ty                            -- declared, so recursive calls type without inference
-  result : Term primCtx
-```
-
-`BlockCtx.Valid` = names unique ∧ every `call` names a declared block. Self- and
-forward-reference are *allowed* — that is the recursion.
-
-**The one subtle rule:** instructions evaluate eagerly, in order; an op picks which operands to
-evaluate (`Op.Body.next`). A recursive `call` in instruction position loops forever, so it must
-sit inside a lazy operand (e.g. `ite`'s branch). This is the `evalTag`-continuation story and is
-documented at the top of [Test/Block.lean](Test/Block.lean).
-
-### Non-local exit
-
-`Term.exit blockName value` unwinds to the **nearest enclosing call** of `blockName` and makes
-`value` that call's result. Naming the current block is an early return (later instructions and
-the block's `ret` term are skipped); naming an enclosing block breaks out of it — what the old
-recursor stack allowed by calling an outer motive from an inner loop body.
-
-Evaluation threads an `Outcome primCtx α = ok α | exit String (Val primCtx)`, which is the
-`retBlock` continuation list reified as data. The recursive core is `Term.evalOutcome` /
-`evalBlock` / `evalInstrs` / `evalListOutcome` / `evalBodyOutcome`; `Term.evalGo`, `evalList` and
-`evalBody` are **value-level views** (`.bind Outcome.ok?`) so an escaped unwind reads as stuck
-and every pre-existing value-level equation still holds unchanged. Use the `@[simp]` lemmas
-`Term.evalGo_prim` / `_var` / `_op` / `_exit` where proofs used to `rw [Term.evalGo.eq_def]`.
-
-Typing: `Term.hasType.exit` gives an exit **any** type (it never returns normally); its payload
-must match the target block's declared `outTy`. Consequence for `UnifyType`: `inferType?` returns
-`none` for `.exit`, so an exit in operand position can't be inferred — it can only be *checked*
-against an expected type.
-
-Worked examples: [Test/Exit.lean](Test/Exit.lean).
-
-### Typing
-
-`Term.hasType` has cases `prim | var | op | call | app`. `Block.instrsHaveType` threads the scope
-through instructions; `Block.WellTyped` and `Ctx.WellTyped` sit on top. `Term.eq` now quantifies
-over every `env` with `Env.Models varCtx` (was: `env.length = varCtx.length`).
-
-### Induction ([Meta/Induction.lean](Meta/Induction.lean), rewritten, green)
-
-The rule never mentioned `recurse` and still does not mention `call`:
-
-```
-P(0)   ∀ x y : Nat, succ x = y → P(x) → P(y)
---------------------------------------------
-              ∀ n : Nat, P(n)
-```
-
-`natInductionChain` / `natInductionWithPredicate` are proved (axioms: `propext`,
-`Classical.choice`, `Quot.sound` only). Because variables are named, the entire de Bruijn
-`weakenTermAt` / `weaken` / `interp_weaken_*` layer is **deleted** and replaced by three
-substitution lemmas plus a freshness side condition:
-
-- `interp_instantiate` — binding `(name, t)` ≡ substituting `name := t`
-- `interp_shadowed` — a binding for an unmentioned name is invisible
-- `interp_instantiate_rename` — renaming the hole to a fresh `yName` and binding it ≡ instantiating
-
-`SuccSpec` is now stated against `Term.op succName [t]` (not `Term.app (.primFunc ...)`) and is
-generalised over `env` (needed because `Term.eq` quantifies over all models).
-
-## What is left
-
-### 1. `Meta/UnifyType.lean` — NOT ported (still the old de Bruijn version, does not compile)
-
-This is the `has_type` tactic. It should get **simpler**, not harder:
-
-- `Ty.primitiveNames` / `Term.primitiveNames`: mechanical, and `Ty.prim` now carries args.
-- `inferType?`: drop `primFunc` / `mkStruct` / `structProj` / `recurse` cases; add
-  ```lean
-  | .call name args => (ctx.blockCtx.get? name).map Block.outTy
-  ```
-  (no operand inference needed for the result type — `outTy` is declared).
-- `primFuncMatch?` — **delete**, primitive functions are ops now and go through `OpCtx.outTy?`.
-- `varMatch?` — collapses to a `Scope.get? varCtx name = some ty` decidable check; all the
-  index-shifting lemmas (`varMatch?_eq_none` etc.) shrink accordingly.
-- `Ty.subst_nil` mutual block: three cases now (`var` / `prim` / `func`).
-- The `recurse` case of `unifyTypeHasTypeGoals` and its soundness/completeness branches — delete;
-  add a `call` case that checks `args` against `block.params` types.
-- `reduce_unify_type`'s simp set references `Lib.Peano.natFuncCtx`, `natBinaryFunc`, `succFunc`,
-  `PrimFunc.ty`, `PrimFunc.outTy` — all gone. Replace with `Lib.Peano.natOpCtx`, `Peano.opCtx`,
-  `Op.natBinary`, `Op.natUnary`, `Op.ofVals`.
-
-Also add a **block well-typedness checker** alongside it (the user asked for this explicitly):
-a decision procedure producing `Block.WellTyped` / `Ctx.WellTyped` for a whole `BlockCtx`, so
-programs don't need the hand-written derivations currently in `Test/Block.lean` and
-`Test/Gauss.lean`.
-
-### 2. Finish the induction tactic
-
-`Meta/Induction.lean` currently stops at `natInductionWithPredicate` (the rule). The *tactic*
-wrapper that finds `P` is not written yet. Plan (replaces old `findRecurseInPr` /
-`abstractInitInPr` / `simpleInduction`):
-
-```lean
--- Term has no DecidableEq (a `prim` carries an opaque Lean value), so compare only the
--- shapes an induction target can take. The old code did the same via `sameKnownTerm?`.
-def sameTarget [Peano.Types primCtx] (a b : Term primCtx) : Bool  -- nat literals / vars
-theorem sameTarget_eq : sameTarget a b = true → a = b
-
-def Term.abstract (name : String) (target : Term primCtx) : Term primCtx → Term primCtx
-def abstract (name) (target) : Pr (Term primCtx) → Pr (Term primCtx)
-theorem instantiate_abstract :
-  name ∉ varNames p → instantiate name target (abstract name target p) = p
-
-def findCallArg? (blockName : String) : Pr (Term primCtx) → Option (Term primCtx)
-def blockInduction (blockName succName) (hspec) : Tactic? ...
-```
-
-`findCallArg?` walks the goal for `.call blockName args` and returns `args.head?` — that is the
-induction target, in place of the old "initial state of the `recurse` node".
-
-### 3. Test files
-
-`Test/Gauss/Rec.lean`, `Test/Gauss/SSA.lean`, `Test/Gauss/Simple.lean`, `Test/Peano.lean`,
-`Lib/Peano.lean` are **still on disk, unported, and not in the lakefile**. They were left rather
-than deleted because they hold real proof content (`Test/Gauss/Rec.lean` is the ~365-line Gauss
-correctness proof by induction). Port them once UnifyType and the induction tactic are back:
-
-- The Gauss *program* is already ported to blocks in [Test/Gauss.lean](Test/Gauss.lean) with
-  typing derivations and `#guard` evaluation checks against `sumTo` and `n*(n+1)/2`. What is
-  missing is the **inductive correctness proof**, which needs the tactic from (2).
-- `Lib/Peano.lean` supplies the `SuccSpec` instance. Rewrite `succ_spec` against the new
-  `SuccSpec` shape (op, env-generalised). The `succ` op already exists as
-  `Op.natUnary Nat.succ` in `Peano.opCtx`.
-- `Test/Gauss/SSA.lean` is subsumed: its struct-state loop is exactly `Test/Gauss.lean`'s
-  `loop(i, acc)`. Delete rather than port, once you're satisfied nothing is lost.
-- `Test/Gauss/Simple.lean` imports a `Lang.Simple` that never existed in this tree — it was dead
-  before the refactor.
-
-## Landmines
-
-- **`ret` is a keyword token** (block syntax), so it cannot be used as a Lean structure-field name
-  or bare identifier in any file importing `Zag.Syntax`. That is why `Block.result` is not called
-  `Block.ret`. Same care applies to any new DSL keyword.
-- Antiquotations can't be named after tokens: `$ret` fails to parse. Watch for this when
-  extending [Zag/Syntax.lean](Zag/Syntax.lean).
-- `Ty.type` is WF-recursive and `Type`-valued, so it does **not** reduce definitionally. Use
-  `Ty.type_var` / `Ty.type_prim` / `Ty.type_func` / `Ty.type_prim_of_find` / `Ty.type_ground`.
-  Anything whose *type* mentions it (e.g. a `Term.prim` holding a Lean function) is
-  `noncomputable`, so it can't be `#eval`ed — prove instead.
-- `Term.evalGo` is `partial_fixpoint`: `#eval` / `#guard` work, `decide` / `rfl` do not.
-- `BlockCtx.Valid` by `by decide` gets stuck on `Block.callNames`. The working idiom is
-  ```lean
-  ⟨blocks, by refine ⟨by decide, ?_⟩
-              simp [blocks, Block.callNames, Term.callNames, Term.nat, Term.ite]⟩
-  ```
-- Declare context-carrying definitions as `abbrev`, not `def`, or instance search fails on
-  `ctx.primCtx` (e.g. `Peano.Types sumToCtx.primCtx`).
-- Prefer `#guard` over `native_decide` — `AGENTS.md` forbids adding axioms, and `native_decide`
-  pulls in `ofReduceBool`.
-
-## Pre-existing breakage (not caused by this refactor)
-
-`Meta/Induction.lean` and `Meta/UnifyType.lean` were **already stale at HEAD** (missing `.abbrev`
-cases from commit `17dbad1`), and `Lib/Peano/Defs.lean` used `zagTerm` syntax without importing
-`Zag.Syntax` — that import was added.
+| file | contents |
+|---|---|
+| `Zag/Machine.lean` | `Action`, `Sink`, `Frame`, `EvalState`, the drivers, `step`, `run`, `stepN`. No proofs. |
+| `Zag/Weakening.lean` | `*_weaken`, `*_append_eq_none`, stuck-state analysis |
+| `Zag/EvalState.lean` | `EvaluatesTo` / `EvaluatesCall` / `EvaluatesFrom` and the calculus |
+| `Zag/Loop.lean` | `BodySweep`, `sweep_run`, `control_loop` |
+| `Lib/Peano/Eval.lean` | `whileControl`, `whileControlCtx`, `while_invariant` |
+| `Meta/Eval.lean` | `evaluates_call`, `tail_induction`, `while_induction` |
 
 ---
 
-The small-step migration that supersedes the evaluator described above is planned in
-[SMALLSTEP.md](SMALLSTEP.md).
+# Next task: continuation-passing `while`
+
+## Why
+
+Today's `whileControl n` runs **one body block per loop variable** and sweeps them in sequence,
+because a block returns a single value. That forces `while` / `while2` / `while3` as separate
+`ControlCtx` entries, forces `BodySweep` into the proof rule, and makes a simultaneous update
+like `(x, y) := (y, x % y)` inexpressible at any ordering.
+
+Blocks are values now (`Val.blockRef`), so the body can take a **continuation** as a parameter
+and call it with the whole next state at once. That deletes all three workarounds.
+
+## Shape
+
+```
+while [cond, body, a₁, …, aₙ]
+```
+
+One argument list — the blocks are ordinary terms that evaluate to block references, so
+`Instr.Source.control` loses its separate `blocks : List String` field. `Control.roles`, the
+role-index lookups in `driveControl`, `blockNames[0]?` / `hcondRole` in the loop rule, and
+`checkRoleBlocks?` in the typechecker all go with it.
+
+`body` takes the loop variables **plus a continuation** as its last parameter:
+
+```
+gcdBody(x : Nat, y : Nat, k : func[Nat, Nat] => Nat) : Nat {
+  ret apply k [y, op "mod"[x, y]]
+}
+```
+
+Both continuation arguments are evaluated in the body's scope, so this is simultaneous
+assignment. A body that *doesn't* call its continuation returns the loop's answer directly —
+which is early exit, for free.
+
+## Typing
+
+`consControl` already infers the types of every instruction argument and calls `ctrl.out argTys`,
+so the whole coherence check is `whileControl.out` — the control stating its own typing rule.
+With `Ts = [T₁ … Tₙ]` the init-arg types:
+
+```
+R  = T₁                      the loop answers with its first variable, unchanged
+K  = func Ts R               the continuation
+cond : func Ts Bool
+body : func (Ts ++ [K]) R
+──────────────────────────────
+while [cond, body, a₁…aₙ] : R
+```
+
+`out` receives `[condTy, bodyTy, T₁ … Tₙ]` and requires `condArgs = Ts`, `boolTy = Peano.BoolTy`,
+`bodyArgs = Ts ++ [.func Ts R]`, and `initTys.head? = some R`. `Ty` has `DecidableEq`, so
+`typecheck_ctx` still discharges by `decide`.
+
+`R = T₁` is what makes an immediate exit well-typed: the condition failing on the first test is
+not a special case, the loop just answers with its state. So order the state to put the answer
+first — `gcd` is `(x, y)`, `fibLinear` is `(a, remaining, b)`. That constraint already exists;
+`whileControl` exits with `args.head?` today.
+
+## The two genuinely new pieces
+
+```lean
+| loopRef (control : String) (captured : List (Val primCtx))
+          (argTys : List Ty) (outTy : Ty)
+```
+
+The continuation. It cannot be a `blockRef` (the loop is not a block) or a `Ty.func` value (that
+is a pure Lean function). `captured` is `[condRef, bodyRef]`, which makes **`Val` recursive** — a
+nested inductive Lean accepts, but it touches `Val.ty`, `Val.as?`, `Val.raw` and every `cases v`.
+`applyValue` grows a third branch that restarts the control.
+
+`Control.Yield.call role args` becomes `Yield.apply (fn : Val) (args : List Val)`, which hands
+off to `applyValue`.
+
+## Consequence: it returns, it does not jump
+
+```
+loop(args) = if cond(args) then body(args, loop) else args.head
+```
+
+Applying the continuation **returns**, so the answer travels back out through every iteration and
+the stack grows one turn per iteration. Correct, and fine in a total fuel-based model — but
+`Frame.control` stops being a fixed point an invariant sits at. `control_loop` becomes an
+induction where each turn *wraps* the next rather than replacing it; `BodySweep` and `sweep_run`
+are deleted.
+
+A genuine jump would need an unwinding `Action`. That was rejected: `EvalState.step` reads only
+the top frame, and any rule that makes a step depend on a frame further down makes `step_weaken`
+false.
+
+## Order of work
+
+1. `Instr.Source.control` reshape + `blocks%` syntax.
+2. `Val.loopRef`, the `applyValue` branch, `Yield.apply`.
+3. `whileControl` — one definition, no arity — and `whileControl.out`.
+4. `control_loop` as a wrapping induction; delete `BodySweep`, `sweep_run`, `while_bodies`, and
+   the `while2` / `while3` entries.
+5. Reconvert, then extend.
+
+## What step 5 unblocks
+
+Already loops, to be reconverted: `plusLoop`, `multByAddLoop`, Gauss's `loop`,
+`Test/While.lean`'s `countDown` and `halve`.
+
+Currently recursive, blocked only by the sweep, and expressible under the new design:
+
+| loop | file | was blocked by |
+|---|---|---|
+| `gcdLoop(x, y)` | `Simple.lean` | simultaneous swap `(x, y) := (y, x % y)` |
+| `fibLinearLoop(remaining, a, b)` | `FibProof.lean` | simultaneous `(a, b) := (b, a + b)` |
+| `markLoop(heap, current)` | `SchorrWaite.lean` | `current'` must read the pre-`store` heap |
+| `isPrimeLoop(n, div)` | `IsPrime.lean` | early exit carrying a value |
+| `binarySearchLoop(xs, needle, low, high)` | `BinarySearch.lean` | early exit carrying a value |
+
+Keep at least one recursive loop so `tail_induction` stays exercised — `factorial` and `fib` are
+not loops at all (they operate after the call / recurse twice), so they cover it.
+
+---
+
+# Also outstanding
+
+- **`Term.Terminates`, `Term.eq`, `Pr.interp`, `Pr.Provable` are misfiled** in
+  `Zag/EvalState.lean`. They are proposition semantics, not evaluation. They cannot fold into
+  `Zag/Theory.lean` because `Term.eq` needs `EvaluatesTo`, so a `Zag/Pr.lean` has to sit *after*
+  `Zag/EvalState.lean`; `Zag.lean`, `Meta/Induction.lean` and `Meta/UnifyType.lean` need the
+  import. ~40 lines.
+- **Decide whether `Term.call` survives.** `call f args` and `app (var f) args` reach the same
+  state when `f` is not locally bound, but `call` ignores the environment and `app` does not, so
+  they are different intents (`Test/Apply.lean` pins both). Dropping `call` means
+  `Block.callNames` / `BlockCtx.Valid` can no longer check that referenced blocks exist — a
+  `.var` is indistinguishable from a local variable — and that check moves entirely into
+  `Ctx.WellTyped`.
+- **A block handed to a higher-order operator fails.** `Op` bodies are pure, so `Val.raw` of a
+  block reference is the function that always declines. Fixing it needs an `Op.Body` outcome that
+  asks the machine to apply a value and resume — the coroutine shape `Op.Body.next` already has.
+  Prerequisite for `Test/Monad.lean`'s `bind` taking a block.
+- **The control typing rule does not constrain driven blocks' result types.** `Control` carries no
+  per-role signature; `out` is its only typing field. The new design fixes this for `while`,
+  since `out` sees the block types directly.
+- **`Ctx.M` is unused.** Controls are pure. Effects were meant to live there, arriving with moving
+  the heap out of values and into the monad.
+- **`Action.stuck`** exists only so `enterInstrs` can be total. Removing it means `enterInstrs`
+  returns `Option`, which pushes partiality into `enterInstrs_stack` and every proof using it —
+  worse metatheory to save one constructor.
+
+---
+
+# Landmines
+
+- **`do` on `Option` does not reduce under `simp`.** `Option.bind_some` is `x >>= some = x`, not
+  what you want, and `Option.some_bind` does not exist. Write explicit `match`es in anything the
+  evaluation tactics must compute through. Do not "tidy" `driveControl`, the control `step` cases,
+  or `whileControl.next` back into `do`.
+- **`EvalState.step` only ever reads the *top* frame.** That is what makes `step_weaken` true and
+  the whole compositional layer possible. Any rule that makes a step depend on a frame further
+  down makes weakening false, because appending `base` could introduce the matching frame.
+  Unwinding is fine: it consumes one top frame per step.
+- **Never tag `Val.nat` / `Val.bool` with `@[eval_step]`.** `Val.mk_ofNat` / `mk_ofBool` are
+  `@[simp]` and fold *into* them, so an unfolding tag makes `simp [eval_step, …]` loop. Symptom is
+  `maximum recursion depth` in an unrelated file. Same for passing an op context explicitly
+  alongside the tagged `Peano.opCtx`.
+- **`eval_step` and `eval_fold` must stay separate simp sets.** A fold rule and its unfold rule in
+  one `simp` call loop.
+- **Unfolding `step` in a proof means unfolding `evalStep`, `resumeFrame` and `unwindFrame` too.**
+  All are `@[eval_step]`, so the tactics are fine; explicit `simp only [step, …]` sites are not.
+- **A reducible `Ctx` unfolds to a literal before `simp` looks up rules** (2773 DiscrTree keys, no
+  matches). `mkCtx` must stay an `abbrev`; specs are stated at the `heapCtx` flavour.
+- **`omega` reads the local context.** A leftover-goal count smaller than expected is usually
+  this, not a bug.
+- **`while`, `for` and `switch` are Lean keywords.** `blocks%`'s control name is `rawIdent`,
+  matched with an *untyped* antiquotation (`$control`, not `$control:rawIdent`).
+- **Two adjacent `term`s in a tactic syntax parse as an application.** Hence
+  `while_induction [..] I stopping_at N`.
+- **`(f :: rest) ++ base` is not syntactically a `cons`** — match arms need `List.cons_append`.
+- **`obtain ⟨rfl, rfl, rfl⟩ := by simpa using h` silently closes the main goal.** Use
+  `simp only [Option.some.injEq, EvalState.mk.injEq] at h` first.
+- **Doc comments cannot attach to `attribute` or `#guard`.** Use `/- … -/` or `--`.
+- **Declaring `theorem EvaluatesFrom.foo` opens that namespace inside the proof**, so `step`
+  resolves to `EvaluatesFrom.step` and silently makes no progress. Qualify as `EvalState.step`.
+- **The sweep's leftover goal has no stable case tag.** `case init` is reliable; close the
+  invariant step with `all_goals`. (Moot once `BodySweep` is deleted.)
+- `Zag/Data.lean` and `Zag/Theory.lean` are deliberately import-free; their `@[eval_step]` tags
+  live in `Zag/Machine.lean`. Do not add `import Lean` to them.

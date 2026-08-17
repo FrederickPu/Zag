@@ -13,6 +13,17 @@ block% sumTo(n : Nat) : Nat {
   ret op "ite"[done, raw(Term.nat 0), op "add"[call "sumTo"[op "sub"[n, raw(Term.nat 1)]], n]]
 }
 ```
+
+An instruction may also be a *control* rather than a term, which is how a loop is written: the
+control is named, the blocks it drives are listed positionally against its roles, and the
+parenthesised terms are the initial phi values.
+
+```
+block% countDown(start : Nat) : Nat {
+  final := while [countDownCond, countDownBody] (start);
+  ret final
+}
+```
 -/
 
 namespace Zag
@@ -20,6 +31,7 @@ namespace Zag
 declare_syntax_cat zagTy
 declare_syntax_cat zagTerm
 declare_syntax_cat zagParam
+declare_syntax_cat zagBlockRef
 declare_syntax_cat zagInstr
 declare_syntax_cat zagBlock
 
@@ -28,6 +40,7 @@ syntax "term%" "{" zagTerm "}" : term
 syntax "zagTerm%" zagTerm : term
 syntax "zagName%" ident : term
 syntax "params%" "(" zagParam,* ")" : term
+syntax "zagBlockRef%" zagBlockRef : term
 syntax "instrs%" "{" zagInstr* "}" : term
 syntax "block%" zagBlock : term
 syntax "blocks%" "[" zagBlock,* "]" : term
@@ -64,7 +77,17 @@ syntax ident : zagTerm
 /-! ### blocks -/
 
 syntax ident " : " zagTy : zagParam
+
+/-- A block named positionally against a control's roles. -/
+syntax ident : zagBlockRef
+syntax str : zagBlockRef
+
 syntax ident " := " zagTerm ";" : zagInstr
+/-- A control instruction: `final := while [cond, body] (start);`. The control is named by
+  `rawIdent` rather than `ident` so that `while`, `for` and `switch` -- all Lean keywords -- can
+  be written bare; nothing here knows which controls exist, so a new entry in `ControlCtx` needs
+  no parser change. -/
+syntax ident " := " rawIdent "[" zagBlockRef,* "]" "(" zagTerm,* ")" ";" : zagInstr
 syntax ident "(" zagParam,* ")" " : " zagTy "{" zagInstr* "ret" zagTerm "}" : zagBlock
 
 macro_rules
@@ -113,11 +136,18 @@ macro_rules
             `(term| ((zagName% $name), ty% { $ty }))
         | _ => Lean.Macro.throwErrorAt param "invalid block parameter"
       `(([ $[$entries],* ] : Zag.VarCtx))
+  | `(zagBlockRef% $name:ident) => `(zagName% $name)
+  | `(zagBlockRef% $name:str) => `(($name : String))
   | `(instrs% { $instrs:zagInstr* }) => do
       let entries ← instrs.mapM fun instr =>
         match instr with
         | `(zagInstr| $name:ident := $value:zagTerm ;) =>
-            `(term| ({ name := zagName% $name, value := term% { $value } } : Zag.Instr _))
+            `(term| (Zag.Instr.ofTerm (zagName% $name) (term% { $value }) : Zag.Instr _))
+        | `(zagInstr| $name:ident := $control [ $blocks:zagBlockRef,* ] ( $args:zagTerm,* ) ;) =>
+            `(term| ({ name := zagName% $name
+                       source := Zag.Instr.Source.control (zagName% $control)
+                         [ $[(zagBlockRef% $blocks)],* ] [ $[(term% { $args })],* ] }
+                     : Zag.Instr _))
         | _ => Lean.Macro.throwErrorAt instr "invalid instruction"
       `([ $[$entries],* ])
   | `(block% $name:ident ( $params:zagParam,* ) : $outTy:zagTy
