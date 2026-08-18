@@ -49,6 +49,11 @@ end Refinement
 abbrev PropRefinement (goal : Prop) :=
   Refinement (fun proposition : Prop => proposition) goal
 
+/-- A family of proposition refinements whose parameters are selected before their dependent
+  proof obligations are generated. -/
+abbrev WPRefinement (Params : Type u) (post : Params → Prop) :=
+  (params : Params) → PropRefinement (post params)
+
 namespace PropRefinement
 
 /-- The ordinary natural-number induction rule as a proof-carrying refinement. -/

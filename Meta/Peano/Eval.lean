@@ -11,64 +11,48 @@ the public invariant obligations.
 
 namespace Zag
 
-/-- Prove a Peano `while` call from an indexed invariant and its stopping iteration. -/
+/-- Apply and normalize the Peano while WP rule, leaving arithmetic obligations visible. -/
+syntax (name := applyPeanoWhileWPRefinementTactic)
+  "apply_peano_while_wp" (ppSpace num)?
+  " [" Lean.Parser.Tactic.simpLemma,* "]" ppSpace term " stopping_at " term
+  (" returning " term)? : tactic
+
+/-- Compatibility alias that also attempts to close the normalized arithmetic obligations. -/
 syntax (name := whileInductionTactic) "while_induction" (ppSpace num)?
   " [" Lean.Parser.Tactic.simpLemma,* "]" ppSpace term " stopping_at " term
   (" returning " term)? : tactic
 
-/-- Run the same Peano while refinement while leaving its semantic obligations visible. -/
+/-- Compatibility alias leaving the normalized arithmetic obligations visible. -/
 syntax (name := whileInductionQTactic) "while_induction?" (ppSpace num)?
   " [" Lean.Parser.Tactic.simpLemma,* "]" ppSpace term " stopping_at " term
   (" returning " term)? : tactic
 
 macro_rules
 | `(tactic| while_induction $[$bound?]? [$lemmas,*] $I stopping_at $N
-      $[returning $result?]?) => do
-    let loopResult ← match result? with
-      | some result => pure result
-      | none => `(term| ?loopResult)
+      $[returning $result?]?) =>
     `(tactic|
-      (while_induction? $[$bound?]? [$lemmas,*] $I stopping_at $N returning $loopResult
-       all_goals
-         (try set_option linter.unusedSimpArgs false in simp +arith [$lemmas,*])
-       all_goals
-         (try simp only [List.cons.injEq, and_true, eval_finish])
-       all_goals (try omega)))
+      (while_induction? $[$bound?]? [$lemmas,*] $I stopping_at $N
+         $[returning $result?]?
+       auto_eval_refinement_goals [$lemmas,*]))
 | `(tactic| while_induction? $[$bound?]? [$lemmas,*] $I stopping_at $N
+      $[returning $result?]?) =>
+    `(tactic|
+      apply_peano_while_wp $[$bound?]? [$lemmas,*] $I stopping_at $N
+        $[returning $result?]?)
+| `(tactic| apply_peano_while_wp $[$bound?]? [$lemmas,*] $I stopping_at $N
       $[returning $result?]?) => do
     let loopResult ← match result? with
       | some result => pure result
       | none => `(term| ?loopResult)
     `(tactic|
       (evaluates_call $[$bound?]? [$lemmas,*] finalizing_at_op "while" with
-        (apply_eval_refinement $[$bound?]? [$lemmas,*]
-            (Zag.Peano.whileInduction (I := $I) (N := $N) (loopResult := $loopResult) rfl
-              (by evaluates_to_all $[$bound?]? [$lemmas,*]) rfl
-              (by
-                intros
-                subst_vars
-                try set_option linter.unusedSimpArgs false in simp +arith [$lemmas,*]))
-            naming [init, step.condition, step.preservation, termination] with
-          (case' condition =>
-             intro iter args hlt hinv
-             try subst hinv
-             evaluates_call? $[$bound?]? [$lemmas,*]
-             prefix_refinement_goals step
-           case' preservation =>
-             intro iter args hlt hinv hnext
-             try subst hinv
-             evaluates_call? $[$bound?]? [$lemmas,*]
-             use_apply? $[$bound?]? [$lemmas,*] hnext
-             prefix_refinement_goals step
-           case' termination =>
-             intro args hinv
-             try subst hinv
-             refine ⟨?condFalse, ?head⟩
-             case' condFalse => evaluates_call? $[$bound?]? [$lemmas,*]
-             prefix_refinement_goals termination))
-       all_goals
-         (try simp only [List.nil_append, List.set_cons_zero, List.set_cons_succ,
-           List.cons.injEq, and_true, List.head?_cons, Option.some.injEq, decide_eq_true_eq,
-           eval_finish])))
+        (apply_eval_wp_refinement $[$bound?]? [$lemmas,*]
+            (Zag.Peano.whileInduction rfl
+              (by evaluates_to_all $[$bound?]? [$lemmas,*]) rfl)
+            selecting
+              ({ invariant := $I, stoppingAt := $N, result := $loopResult } :
+                Zag.Peano.WhileInductionParams _)
+            naming [typed, init, step.condition, step.preservation, termination]
+         process_eval_wp_goals $[$bound?]? [$lemmas,*])))
 
 end Zag

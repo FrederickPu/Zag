@@ -48,6 +48,12 @@ syntax (name := applyRefinementRule) "apply_refinement " term : tactic
 syntax (name := applyNamedRefinementRule)
   "apply_refinement " term " naming" " [" ident,* "]" : tactic
 
+/-- Instantiate and apply exactly one parameterized weakest-precondition refinement. -/
+syntax (name := applyWPRefinementRule)
+  "apply_wp_refinement " term " selecting " term : tactic
+syntax (name := applyNamedWPRefinementRule)
+  "apply_wp_refinement " term " selecting " term " naming" " [" ident,* "]" : tactic
+
 macro_rules
 | `(tactic| apply_refinement $refinement) =>
     `(tactic|
@@ -58,5 +64,9 @@ macro_rules
       (apply Refinement.sound ($refinement)
        refinement_goals
        name_refinement_goals [$names,*]))
+| `(tactic| apply_wp_refinement $refinement selecting $params) =>
+    `(tactic| apply_refinement (($refinement) $params))
+| `(tactic| apply_wp_refinement $refinement selecting $params naming [$names,*]) =>
+    `(tactic| apply_refinement (($refinement) $params) naming [$names,*])
 
 end Zag
