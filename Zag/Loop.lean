@@ -7,7 +7,7 @@ import Zag.Refinement
 An operator can ask the machine to apply a value and resume its body with the answer. In
 particular, applying an `opRef` restarts the named operator on its captured values followed by the
 new arguments. This file gives that machine action a compositional specification and records how
-the answer returns through either kind of operator frame.
+the answer returns through its operator frame.
 -/
 
 namespace Zag
@@ -15,22 +15,23 @@ namespace Zag
 namespace EvalState
 
 /- Feeding a collected value list reaches the continuation built from exactly those values. -/
-theorem driveOpVals_collect {ctx : Ctx} (finish : List (Val ctx.primCtx) → Op.Body ctx.primCtx)
+theorem driveOp_collect {ctx : Ctx} (finish : List (Val ctx.primCtx) → Op.Body ctx.primCtx)
     (vals acc : List (Val ctx.primCtx)) {remaining : Nat} {env : Env ctx.primCtx}
     {stack : List (Frame ctx.primCtx)} (hlen : vals.length = remaining) :
-    driveOpVals (Op.Body.collect finish remaining acc) vals env stack =
-      driveOpVals (finish (acc ++ vals)) [] env stack := by
+    driveOp (Op.Body.collect finish remaining acc) (Op.Arg.ofVals vals) env stack =
+      driveOp (finish (acc ++ vals)) [] env stack := by
   induction vals generalizing remaining acc with
   | nil =>
       simp at hlen
       subst remaining
-      simp [Op.Body.collect]
+      simp [Op.Body.collect, Op.Arg.ofVals]
   | cons value vals ih =>
       cases remaining with
       | zero => simp at hlen
       | succ remaining =>
           have hlen' : vals.length = remaining := by simpa using hlen
-          rw [Op.Body.collect, driveOpVals]
+          rw [Op.Body.collect]
+          simp only [Op.Arg.ofVals, List.map_cons, driveOp]
           simpa [List.append_assoc] using ih (remaining := remaining) (acc := acc ++ [value]) hlen'
 
 end EvalState
@@ -77,13 +78,14 @@ theorem opRef {ctx : Ctx} {name : String} {captured args : List (Val ctx.primCtx
     (hop : ctx.opCtx.get? name = some oper)
     (hbody : oper.body name (captured.length + args.length) = some body)
     (hrun : ∀ (env : Env ctx.primCtx) (base : List (Frame ctx.primCtx)),
-      ∃ state, EvalState.driveOpVals body (captured ++ args) env base = some state ∧
+      ∃ state, EvalState.driveOp body (Op.Arg.ofVals (captured ++ args)) env base = some state ∧
         EvaluatesFrom ctx state value base) :
     EvaluatesApply ctx (.opRef name captured argTys outTy) args value := by
   apply of_applyValue
   intro env base
   obtain ⟨state, hdrive, hfrom⟩ := hrun env base
-  exact ⟨state, by simp [EvalState.applyValue, hop, hbody, hdrive], hfrom⟩
+  refine ⟨state, ?_, hfrom⟩
+  simpa [EvalState.applyValue, hop, hbody, Op.Arg.ofVals, List.map_append] using hdrive
 
 /-- Finite induction for a continuation-passing loop. A running iteration receives the semantic
 specification of every invariant-preserving next application as its continuation hypothesis.
@@ -135,7 +137,8 @@ theorem driveOp_collect {ctx : Ctx}
       EvalState.driveOp (finish (acc ++ values)) [] env stack = some state ∧
         EvaluatesFrom ctx state result base) :
     ∃ state,
-      EvalState.driveOp (Op.Body.collect finish values.length acc) terms env stack = some state ∧
+      EvalState.driveOp (Op.Body.collect finish values.length acc) (Op.Arg.ofTerms terms) env stack =
+        some state ∧
         EvaluatesFrom ctx state result base := by
   induction hargs generalizing acc stack with
   | nil => simpa [Op.Body.collect] using hfinish
@@ -146,13 +149,13 @@ theorem driveOp_collect {ctx : Ctx}
         | some value => Op.Body.collect finish values.length (acc ++ [value])
         | none => .fail
       obtain ⟨fuel, scope, hsteps⟩ :=
-        EvaluatesTo.weaken hterm (.opBody resume terms env :: stack)
+        EvaluatesTo.weaken hterm (.opBody resume (Op.Arg.ofTerms terms) env :: stack)
       have hret : EvalState.step ctx
-          ⟨.ret value, scope, .opBody resume terms env :: stack⟩ = some state := by
+          ⟨.ret value, scope, .opBody resume (Op.Arg.ofTerms terms) env :: stack⟩ = some state := by
         simpa [EvalState.step, EvalState.resumeFrame, resume] using hdrive
-      refine ⟨⟨.eval term, env, .opBody resume terms env :: stack⟩, ?_,
+      refine ⟨⟨.eval term, env, .opBody resume (Op.Arg.ofTerms terms) env :: stack⟩, ?_,
         EvaluatesFrom.trans_stepN hsteps (EvaluatesFrom.step hret hfrom)⟩
-      simp [EvalState.driveOp, Op.Body.collect, resume]
+      simp [EvalState.driveOp, Op.Body.collect, Op.Arg.ofTerms, resume]
       funext input
       cases input <;> rfl
 
@@ -165,12 +168,12 @@ theorem apply_then {ctx : Ctx} {fn : Val ctx.primCtx} {args : List (Val ctx.prim
     EvaluatesFrom ctx ⟨.apply fn args, env, stack⟩ final base :=
   EvaluatesFrom.bind (happly env stack) hcont
 
-/-- An application made by a term-driven operator returns through its `opBody` frame and resumes
-the suspended body. -/
+/-- An application made by an operator returns through its `opBody` frame and resumes the
+suspended body. -/
 theorem apply_opBody {ctx : Ctx} {fn : Val ctx.primCtx} {args : List (Val ctx.primCtx)}
     {value final : Val ctx.primCtx} {env frameEnv : Env ctx.primCtx}
     {resume : Option (Val ctx.primCtx) → Op.Body ctx.primCtx}
-    {rest : List (Term ctx.primCtx)} {stack base : List (Frame ctx.primCtx)}
+    {rest : List (Op.Arg ctx.primCtx)} {stack base : List (Frame ctx.primCtx)}
     {state : EvalState ctx.primCtx}
     (happly : EvaluatesApply ctx fn args value)
     (hdrive : EvalState.driveOp (resume (some value)) rest frameEnv stack = some state)
@@ -182,28 +185,10 @@ theorem apply_opBody {ctx : Ctx} {fn : Val ctx.primCtx} {args : List (Val ctx.pr
   exact EvaluatesFrom.step
     (by simp [EvalState.step, EvalState.resumeFrame, hdrive]) hfrom
 
-/-- An application made by a value-driven operator returns through its `opBodyVals` frame and
-resumes the suspended body. This is the frame used after applying an `opRef`. -/
-theorem apply_opBodyVals {ctx : Ctx} {fn : Val ctx.primCtx}
-    {args : List (Val ctx.primCtx)} {value final : Val ctx.primCtx}
-    {env frameEnv : Env ctx.primCtx}
-    {resume : Option (Val ctx.primCtx) → Op.Body ctx.primCtx}
-    {rest : List (Val ctx.primCtx)} {stack base : List (Frame ctx.primCtx)}
-    {state : EvalState ctx.primCtx}
-    (happly : EvaluatesApply ctx fn args value)
-    (hdrive : EvalState.driveOpVals (resume (some value)) rest frameEnv stack = some state)
-    (hfrom : EvaluatesFrom ctx state final base) :
-    EvaluatesFrom ctx
-      ⟨.apply fn args, env, .opBodyVals resume rest frameEnv :: stack⟩ final base := by
-  apply EvaluatesFrom.apply_then happly
-  intro scope
-  exact EvaluatesFrom.step
-    (by simp [EvalState.step, EvalState.resumeFrame, hdrive]) hfrom
-
 /-- Execute an `.apply` node reached by `driveOp`, including the return through the frame that the
 driver installs. -/
 theorem driveOp_apply {ctx : Ctx} {fn : Val ctx.primCtx} {args : List (Val ctx.primCtx)}
-    {resume : Val ctx.primCtx → Op.Body ctx.primCtx} {operands : List (Term ctx.primCtx)}
+    {resume : Val ctx.primCtx → Op.Body ctx.primCtx} {operands : List (Op.Arg ctx.primCtx)}
     {value final : Val ctx.primCtx}
     {env : Env ctx.primCtx} {stack base : List (Frame ctx.primCtx)}
     {state : EvalState ctx.primCtx}
@@ -220,27 +205,6 @@ theorem driveOp_apply {ctx : Ctx} {fn : Val ctx.primCtx} {args : List (Val ctx.p
     funext input
     cases input <;> rfl
   · exact EvaluatesFrom.apply_opBody happly (by simpa [k] using hdrive) hfrom
-
-/-- Execute an `.apply` node reached by `driveOpVals`. This is the composition rule used when a
-restarted operator calls another continuation and then returns its answer. -/
-theorem driveOpVals_apply {ctx : Ctx} {fn : Val ctx.primCtx}
-    {args : List (Val ctx.primCtx)} {resume : Val ctx.primCtx → Op.Body ctx.primCtx}
-    {operands : List (Val ctx.primCtx)} {value final : Val ctx.primCtx}
-    {env : Env ctx.primCtx} {stack base : List (Frame ctx.primCtx)}
-    {state : EvalState ctx.primCtx}
-    (happly : EvaluatesApply ctx fn args value)
-    (hdrive : EvalState.driveOpVals (resume value) operands env stack = some state)
-    (hfrom : EvaluatesFrom ctx state final base) :
-    ∃ start, EvalState.driveOpVals (.apply fn args resume) operands env stack = some start ∧
-      EvaluatesFrom ctx start final base := by
-  let k : Option (Val ctx.primCtx) → Op.Body ctx.primCtx := fun
-    | some result => resume result
-    | none => .fail
-  refine ⟨⟨.apply fn args, env, .opBodyVals k operands env :: stack⟩, ?_, ?_⟩
-  · simp [EvalState.driveOpVals, k]
-    funext input
-    cases input <;> rfl
-  · exact EvaluatesFrom.apply_opBodyVals happly (by simpa [k] using hdrive) hfrom
 
 end EvaluatesFrom
 
@@ -276,5 +240,52 @@ theorem EvaluatesTo.op_collect {ctx : Ctx} {env : Env ctx.primCtx}
   exact EvaluatesTo.of_evaluatesFrom
     (EvaluatesFrom.step (by
       simp [EvalState.step, EvalState.evalStep, EvalState.start, hop, hargsLen, hbody, hdrive]) hfrom)
+
+/-- A collected term operator can reuse the specification of applying the corresponding operator
+reference once the driver has exhausted its inputs. -/
+theorem EvaluatesTo.op_collect_of_opRef {ctx : Ctx} {env : Env ctx.primCtx}
+    {name : String} {terms : List (Term ctx.primCtx)}
+    {captured args : List (Val ctx.primCtx)} {argTys : List Ty} {outTy : Ty}
+    {oper : Op ctx.primCtx} {finish : List (Val ctx.primCtx) → Op.Body ctx.primCtx}
+    {result : Val ctx.primCtx}
+    (hop : ctx.opCtx.get? name = some oper)
+    (hbody : oper.body name (captured.length + args.length) =
+      some (Op.Body.collect finish (captured.length + args.length) []))
+    (hargs : EvaluatesToAll ctx env terms (captured ++ args))
+    (happly : EvaluatesApply ctx (.opRef name captured argTys outTy) args result) :
+    EvaluatesTo ctx env (.op name terms) result := by
+  apply EvaluatesTo.op_collect (finish := finish) hop (by simpa using hbody) hargs
+  have href := happly env []
+  cases hdrive : EvalState.driveOp
+      (Op.Body.collect finish (captured.length + args.length) [])
+      (Op.Arg.ofVals (captured ++ args)) env [] with
+  | none =>
+      obtain ⟨fuel, scope, hsteps⟩ := href
+      have hdrive' : EvalState.driveOp
+          (Op.Body.collect finish (captured.length + args.length) [])
+          (Op.Arg.ofVals captured ++ Op.Arg.ofVals args) env [] = none := by
+        simpa [Op.Arg.ofVals, List.map_append] using hdrive
+      cases fuel with
+      | zero => simp at hsteps
+      | succ fuel =>
+          rw [EvalState.stepN_succ] at hsteps
+          simp [EvalState.step, EvalState.applyValue, hop, hbody, hdrive'] at hsteps
+  | some state =>
+      have hdrive' : EvalState.driveOp
+          (Op.Body.collect finish (captured.length + args.length) [])
+          (Op.Arg.ofVals captured ++ Op.Arg.ofVals args) env [] = some state := by
+        simpa [Op.Arg.ofVals, List.map_append] using hdrive
+      have hstep : EvalState.step ctx
+          ⟨.apply (.opRef name captured argTys outTy) args, env, []⟩ = some state := by
+        simp [EvalState.step, EvalState.applyValue, hop, hbody, hdrive']
+      have hfrom := EvaluatesFrom.drop_prefix
+        (ctx := ctx) (fuel₀ := 1)
+        (state := ⟨.apply (.opRef name captured argTys outTy) args, env, []⟩)
+        (mid := state) (by simp [EvalState.stepN_succ, hstep]) href
+      have hfinish : EvalState.driveOp (finish (captured ++ args)) [] env [] =
+          some state := by
+        rw [EvalState.driveOp_collect finish (captured ++ args) [] (by simp)] at hdrive
+        simpa using hdrive
+      exact ⟨state, hfinish, hfrom⟩
 
 end Zag

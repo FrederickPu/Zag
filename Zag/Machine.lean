@@ -18,6 +18,7 @@ namespace Zag
 /- Tagged here, not at the definitions: `Zag/Data.lean` is import-free on purpose. -/
 attribute [eval_step]
   Scope.get? OpCtx.get? BlockCtx.get? BlockCtx.Raw.get? Op.ofVals Op.Body.eager Block.entryEnv
+  Op.Arg.ofTerms Op.Arg.ofVals
 
 
 
@@ -46,10 +47,7 @@ inductive Frame (primCtx : PrimitiveCtx) where
     (env : Env primCtx)
 /-- driving an operator. Not an `args` frame: an operator chooses *whether* to evaluate each
   operand, so it is a coroutine, not a collector -/
-| opBody (resume : Option (Val primCtx) → Op.Body primCtx) (rest : List (Term primCtx))
-    (env : Env primCtx)
-/-- resuming an operator whose remaining inputs are already values, as when applying an `opRef` -/
-| opBodyVals (resume : Option (Val primCtx) → Op.Body primCtx) (rest : List (Val primCtx))
+| opBody (resume : Option (Val primCtx) → Op.Body primCtx) (rest : List (Op.Arg primCtx))
     (env : Env primCtx)
 /-- running a block body: bind the incoming value to `name`, then carry on -/
 | instrs (name : String) (rest : List (Instr primCtx)) (result : Term primCtx)
@@ -63,17 +61,13 @@ namespace Frame
   only be consumed after the computation above it has returned a value. -/
 inductive OpBodies {primCtx : PrimitiveCtx} : List (Frame primCtx) → Prop where
 | nil : OpBodies []
-| cons {resume : Option (Val primCtx) → Op.Body primCtx} {rest : List (Term primCtx)}
+| cons {resume : Option (Val primCtx) → Op.Body primCtx} {rest : List (Op.Arg primCtx)}
     {env : Env primCtx} {frames : List (Frame primCtx)} :
     OpBodies frames → OpBodies (.opBody resume rest env :: frames)
-| consVals {resume : Option (Val primCtx) → Op.Body primCtx} {rest : List (Val primCtx)}
-    {env : Env primCtx} {frames : List (Frame primCtx)} :
-    OpBodies frames → OpBodies (.opBodyVals resume rest env :: frames)
 
 end Frame
 
-/-- What it is doing, the scope, and the work still pending. The heap is deliberately not here:
-  it belongs to the monad. -/
+/-- What it is doing, the scope, and the work still pending. -/
 structure EvalState (primCtx : PrimitiveCtx) where
   control : Action primCtx
   env : Env primCtx
@@ -97,37 +91,22 @@ def result? (state : EvalState primCtx) : Option (Val primCtx) :=
   | .ret value, [] => some value
   | _, _ => none
 
-/-- Feed operands to an operator until it wants one evaluated, finishes, or fails. -/
-@[eval_step] def driveOp (body : Op.Body primCtx) (rest : List (Term primCtx)) (env : Env primCtx)
+/-- Feed terms or already-produced values to an operator until it suspends, finishes, or fails. -/
+@[eval_step] def driveOp (body : Op.Body primCtx) (rest : List (Op.Arg primCtx)) (env : Env primCtx)
     (stack : List (Frame primCtx)) : Option (EvalState primCtx) :=
   match body, rest with
   | .fail, _ => none
   | .done value, _ => some { control := .ret value, env := env, stack := stack }
   | .next _ _, [] => none
-  | .next true resume, operand :: rest =>
+  | .next true resume, .inl operand :: rest =>
       some { control := .eval operand, env := env, stack := .opBody resume rest env :: stack }
+  | .next true resume, .inr value :: rest => driveOp (resume (some value)) rest env stack
   | .next false resume, _ :: rest => driveOp (resume none) rest env stack
   | .apply fn args resume, _ =>
       let k := fun
         | some value => resume value
         | none => .fail
       some ⟨Action.apply fn args, env, .opBody k rest env :: stack⟩
-termination_by rest
-
-/-- Feed already-evaluated operands to an operator continuation. -/
-@[eval_step] def driveOpVals (body : Op.Body primCtx) (rest : List (Val primCtx))
-    (env : Env primCtx) (stack : List (Frame primCtx)) : Option (EvalState primCtx) :=
-  match body, rest with
-  | .fail, _ => none
-  | .done value, _ => some { control := .ret value, env := env, stack := stack }
-  | .next _ _, [] => none
-  | .next true resume, value :: rest => driveOpVals (resume (some value)) rest env stack
-  | .next false resume, _ :: rest => driveOpVals (resume none) rest env stack
-  | .apply fn args resume, _ =>
-      let k := fun
-        | some value => resume value
-        | none => .fail
-      some ⟨Action.apply fn args, env, .opBodyVals k rest env :: stack⟩
 termination_by rest
 
 /-- Begin a block body: the instructions in order, then the returned term. -/
@@ -164,7 +143,7 @@ termination_by rest
       | some oper =>
           match oper.body name (captured.length + vargs.length) with
           | none => none
-          | some body => driveOpVals body (captured ++ vargs) env stack
+          | some body => driveOp body (Op.Arg.ofVals (captured ++ vargs)) env stack
   | .mk fnTy fnVal =>
       match Term.evalApp (Val.mk fnTy fnVal) vargs with
       | none => none
@@ -195,7 +174,7 @@ termination_by rest
       | none => none
       | some oper =>
           match oper.body name args.length with
-          | some body => driveOp body args env stack
+          | some body => driveOp body (Op.Arg.ofTerms args) env stack
           | none => none
   | .call name args =>
       match ctx.blockCtx.get? name with
@@ -218,7 +197,6 @@ termination_by rest
     (stack : List (Frame ctx.primCtx)) : Option (EvalState ctx.primCtx) :=
   match frame with
   | .opBody k rest env => driveOp (k (some value)) rest env stack
-  | .opBodyVals k rest env => driveOpVals (k (some value)) rest env stack
   | .args sink done rest env =>
       match rest with
       | arg :: rest =>
@@ -264,9 +242,7 @@ termination_by rest
 | { control := .exit blockName value, env, stack := frame :: stack } =>
     unwindFrame frame blockName value env stack
 
-/-- Run at most `fuel` steps, stopping early if evaluation gets stuck or finishes. Total, and
-  structurally recursive on `fuel` -- which is what lets the effect type be any monad once
-  `applyOperator` becomes `M`-valued. -/
+/-- Run at most `fuel` steps, stopping early if evaluation gets stuck or finishes. -/
 def run (ctx : Ctx) : Nat → EvalState ctx.primCtx → EvalState ctx.primCtx
 | 0, state => state
 | fuel + 1, state =>

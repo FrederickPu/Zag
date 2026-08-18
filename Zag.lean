@@ -4,10 +4,7 @@ import Zag.Data
 import Zag.Theory
 import Zag.Machine
 import Zag.Weakening
-import Zag.Machine
-import Zag.Weakening
 import Zag.EvalState
-import Zag.Loop
 import Zag.Loop
 import Zag.Syntax
 import Zag.Meta

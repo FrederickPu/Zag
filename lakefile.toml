@@ -1,6 +1,6 @@
 name = "Zag"
 version = "0.1.0"
-defaultTargets = ["zag"]
+defaultTargets = ["Zag", "Lib", "Meta", "Test", "zag"]
 
 [[lean_lib]]
 name = "Zag"
@@ -15,7 +15,7 @@ roots = ["Meta.Induction", "Meta.UnifyType", "Meta.Eval", "Meta.Peano.Eval"]
 
 [[lean_lib]]
 name = "Test"
-roots = ["Test.Apply", "Test.Block", "Test.Exit", "Test.EvalState", "Test.Gauss", "Test.Gauss.Rec", "Test.Gauss.SSA", "Test.Heap", "Test.Induction", "Test.Monad", "Test.While", "Test.Autocorres.Examples", "Test.AutoCorresExamples"]
+roots = ["Test.Apply", "Test.Block", "Test.Exit", "Test.EvalState", "Test.Gauss", "Test.Gauss.Rec", "Test.Gauss.SSA", "Test.Heap", "Test.Induction", "Test.Monad", "Test.Peano", "Test.While", "Test.Autocorres.Examples", "Test.AutoCorresExamples"]
 
 [[lean_exe]]
 name = "zag"

@@ -202,11 +202,14 @@ macro_rules
 | `(tactic| evaluates $[$bound?]? [$lemmas,*]) => do
     let fuel := Lean.Syntax.mkNumLit (toString (boundOf bound?))
     `(tactic|
-      refine ⟨$fuel, ?_⟩ <;>
-      set_option linter.unusedSimpArgs false in
-        simp +arith [eval_step, Zag.EvalState.run,
-          Zag.EvalState.start, Zag.EvalState.result?, $lemmas,*] <;>
-        try rfl)
+      (focus
+         rw [Zag.EvaluatesTo.iff_run]
+         refine ⟨$fuel, ?_⟩
+       all_goals
+         set_option linter.unusedSimpArgs false in
+           simp +arith [eval_step, Zag.EvalState.run,
+             Zag.EvalState.start, Zag.EvalState.result?, $lemmas,*] <;>
+           try rfl))
 | `(tactic| evaluates_to_all $[$bound?]? [$lemmas,*]) =>
     `(tactic|
       first

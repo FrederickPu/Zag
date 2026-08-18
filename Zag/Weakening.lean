@@ -28,7 +28,7 @@ variable {ctx : Ctx}
   recursive block needs -- the hypothesis speaks about a run from an empty stack, but gets used
   part-way through a run, where the caller's frames are still pending. -/
 
-theorem driveOp_weaken {body : Op.Body primCtx} {rest : List (Term primCtx)}
+theorem driveOp_weaken {body : Op.Body primCtx} {rest : List (Op.Arg primCtx)}
     {env : Env primCtx} {S : List (Frame primCtx)} {c' : Action primCtx} {e' : Env primCtx}
     {S' : List (Frame primCtx)} (base : List (Frame primCtx))
     (h : driveOp body rest env S = some ⟨c', e', S'⟩) :
@@ -41,27 +41,13 @@ theorem driveOp_weaken {body : Op.Body primCtx} {rest : List (Term primCtx)}
       | done value => simp [driveOp] at h ⊢; simp [← h.1, ← h.2.1, ← h.2.2]
       | next evaluate resume =>
           cases evaluate with
-          | true => simp [driveOp] at h ⊢; simp [← h.1, ← h.2.1, ← h.2.2]
           | false => rw [driveOp] at h ⊢; exact ih h
+          | true =>
+              cases operand with
+              | inl term => simp [driveOp] at h ⊢; simp [← h.1, ← h.2.1, ← h.2.2]
+              | inr value => rw [driveOp] at h ⊢; exact ih h
       | apply fn args resume =>
           simp [driveOp] at h ⊢
-          simp [← h.1, ← h.2.1, ← h.2.2]
-
-theorem driveOpVals_weaken {body : Op.Body primCtx} {rest : List (Val primCtx)}
-    {env : Env primCtx} {S : List (Frame primCtx)} {c' : Action primCtx} {e' : Env primCtx}
-    {S' : List (Frame primCtx)} (base : List (Frame primCtx))
-    (h : driveOpVals body rest env S = some ⟨c', e', S'⟩) :
-    driveOpVals body rest env (S ++ base) = some ⟨c', e', S' ++ base⟩ := by
-  induction rest generalizing body with
-  | nil => cases body <;> simp [driveOpVals] at h ⊢ <;> simp [← h.1, ← h.2.1, ← h.2.2]
-  | cons value rest ih =>
-      cases body with
-      | fail => simp [driveOpVals] at h
-      | done result => simp [driveOpVals] at h ⊢; simp [← h.1, ← h.2.1, ← h.2.2]
-      | next evaluate resume =>
-          cases evaluate <;> rw [driveOpVals] at h ⊢ <;> exact ih h
-      | apply fn args resume =>
-          simp [driveOpVals] at h ⊢
           simp [← h.1, ← h.2.1, ← h.2.2]
 
 /-- Where entering a block body lands does not depend on what was already on the stack. -/
@@ -117,7 +103,7 @@ theorem applyValue_weaken {ctx : Ctx} {fn : Val ctx.primCtx} {vargs : List (Val 
           | none => simp [hbody] at h
           | some body =>
               simp only [hbody] at h ⊢
-              exact driveOpVals_weaken base h
+              exact driveOp_weaken base h
   | mk fnTy fnVal =>
       simp only [applyValue] at h ⊢
       cases hap : Term.evalApp (Val.mk fnTy fnVal) vargs with
@@ -231,9 +217,6 @@ theorem step_weaken {c c' : Action ctx.primCtx} {e e' : Env ctx.primCtx}
   | .ret v, .opBody resume r env' :: rest =>
       simp only [List.cons_append]
       exact driveOp_weaken base h
-  | .ret v, .opBodyVals resume r env' :: rest =>
-      simp only [List.cons_append]
-      exact driveOpVals_weaken base h
   | .ret v, .args sink done r env' :: rest =>
       simp only [step, EvalState.evalStep, EvalState.resumeFrame, EvalState.unwindFrame, List.cons_append] at h ⊢
       cases r with
@@ -269,9 +252,6 @@ theorem step_weaken {c c' : Action ctx.primCtx} {e e' : Env ctx.primCtx}
       simp only [step, EvalState.evalStep, EvalState.resumeFrame, EvalState.unwindFrame, List.cons_append, Option.some.injEq, EvalState.mk.injEq] at h ⊢
       obtain ⟨rfl, rfl, rfl⟩ := h; first | rfl | simp
   | .exit b v, .opBody _ _ _ :: rest =>
-      simp only [step, EvalState.evalStep, EvalState.resumeFrame, EvalState.unwindFrame, List.cons_append, Option.some.injEq, EvalState.mk.injEq] at h ⊢
-      obtain ⟨rfl, rfl, rfl⟩ := h; first | rfl | simp
-  | .exit b v, .opBodyVals _ _ _ :: rest =>
       simp only [step, EvalState.evalStep, EvalState.resumeFrame, EvalState.unwindFrame, List.cons_append, Option.some.injEq, EvalState.mk.injEq] at h ⊢
       obtain ⟨rfl, rfl, rfl⟩ := h; first | rfl | simp
   | .exit b v, .instrs _ _ _ _ :: rest =>
@@ -368,37 +348,20 @@ theorem run_exit_opBodies_result?_none {fuel : Nat} {name : String}
       | cons hrest =>
           simp [step, EvalState.evalStep, EvalState.resumeFrame, EvalState.unwindFrame]
           exact ih hrest
-      | consVals hrest =>
-          simp [step, EvalState.evalStep, EvalState.resumeFrame, EvalState.unwindFrame]
-          exact ih hrest
 
 theorem driveOp_append_eq_none {body : Op.Body ctx.primCtx}
-    {terms : List (Term ctx.primCtx)} {env : Env ctx.primCtx}
+    {operands : List (Op.Arg ctx.primCtx)} {env : Env ctx.primCtx}
     {stack base : List (Frame ctx.primCtx)} :
-    driveOp body terms env (stack ++ base) = none ↔ driveOp body terms env stack = none := by
-  induction terms generalizing body with
+    driveOp body operands env (stack ++ base) = none ↔ driveOp body operands env stack = none := by
+  induction operands generalizing body with
   | nil => cases body <;> simp [driveOp]
-  | cons term terms ih =>
+  | cons operand operands ih =>
       cases body with
       | fail => simp [driveOp]
       | done value => simp [driveOp]
       | next evaluate resume =>
-          cases evaluate <;> simp [driveOp, ih]
+          cases evaluate <;> cases operand <;> simp [driveOp, ih]
       | apply fn args resume => simp [driveOp]
-
-theorem driveOpVals_append_eq_none {body : Op.Body ctx.primCtx}
-    {values : List (Val ctx.primCtx)} {env : Env ctx.primCtx}
-    {stack base : List (Frame ctx.primCtx)} :
-    driveOpVals body values env (stack ++ base) = none ↔
-      driveOpVals body values env stack = none := by
-  induction values generalizing body with
-  | nil => cases body <;> simp [driveOpVals]
-  | cons value values ih =>
-      cases body with
-      | fail => simp [driveOpVals]
-      | done result => simp [driveOpVals]
-      | next evaluate resume => cases evaluate <;> simp [driveOpVals, ih]
-      | apply fn args resume => simp [driveOpVals]
 
 theorem enterBlock_append_eq_none {name : String} {block : Block ctx.primCtx}
     {vargs : List (Val ctx.primCtx)} {env : Env ctx.primCtx}
@@ -428,7 +391,7 @@ theorem applyValue_append_eq_none {ctx : Ctx} {fn : Val ctx.primCtx}
           | none => simp [hbody]
           | some body =>
               simp only [hbody]
-              exact driveOpVals_append_eq_none (base := base)
+              exact driveOp_append_eq_none (base := base)
   | mk fnTy fnVal =>
       simp only [applyValue]
       cases Term.evalApp (Val.mk fnTy fnVal) vargs <;> simp
@@ -464,7 +427,7 @@ theorem step_appendStack_none_or_exit {state : EvalState ctx.primCtx}
                   cases hbody : oper.body name args.length with
                   | none => simp [hbody]
                   | some body =>
-                      have hdrive : driveOp body args env stack = none := by
+                      have hdrive : driveOp body (Op.Arg.ofTerms args) env stack = none := by
                         simpa [step, EvalState.evalStep, EvalState.resumeFrame,
                           EvalState.unwindFrame, hop, hbody] using hstep
                       simp [hbody]
@@ -491,9 +454,6 @@ theorem step_appendStack_none_or_exit {state : EvalState ctx.primCtx}
               | opBody resume terms frameEnv =>
                   simp [appendStack, step, EvalState.evalStep, EvalState.resumeFrame, EvalState.unwindFrame] at hstep ⊢
                   exact (driveOp_append_eq_none (base := base)).mpr hstep
-              | opBodyVals resume values frameEnv =>
-                  simp [appendStack, step, EvalState.evalStep, EvalState.resumeFrame, EvalState.unwindFrame] at hstep ⊢
-                  exact (driveOpVals_append_eq_none (base := base)).mpr hstep
               | args sink done terms frameEnv =>
                   cases terms with
                   | cons arg terms => simp [appendStack, step, EvalState.evalStep, EvalState.resumeFrame, EvalState.unwindFrame] at hstep
@@ -524,7 +484,6 @@ theorem step_appendStack_none_or_exit {state : EvalState ctx.primCtx}
               cases frame with
               | args sink done terms frameEnv => simp [step, EvalState.evalStep, EvalState.resumeFrame, EvalState.unwindFrame] at hstep
               | opBody resume terms frameEnv => simp [step, EvalState.evalStep, EvalState.resumeFrame, EvalState.unwindFrame] at hstep
-              | opBodyVals resume values frameEnv => simp [step, EvalState.evalStep, EvalState.resumeFrame, EvalState.unwindFrame] at hstep
               | instrs instrName instrs result frameEnv => simp [step, EvalState.evalStep, EvalState.resumeFrame, EvalState.unwindFrame] at hstep
               | call blockName frameEnv =>
                   by_cases htarget : name = blockName <;> simp [step, EvalState.evalStep, EvalState.resumeFrame, EvalState.unwindFrame, htarget] at hstep

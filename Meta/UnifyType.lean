@@ -3,62 +3,9 @@ import Lib.Peano.Defs
 
 namespace Zag
 
-namespace Ty
-
-def primitiveNames : Ty → List String
-| .var _ => []
-| .prim name args => name :: args.flatMap primitiveNames
-| .func args result => args.flatMap primitiveNames ++ result.primitiveNames
-
-end Ty
-
-namespace Term
-
-def primitiveNames {primCtx : PrimitiveCtx} : Term primCtx → List String
-| .prim ty _ => ty.primitiveNames
-| .var _ => []
-| .app f args => f.primitiveNames ++ args.flatMap primitiveNames
-| .op _ args => args.flatMap primitiveNames
-| .call _ args => args.flatMap primitiveNames
-| .exit _ value => value.primitiveNames
-
-end Term
-
 namespace Pr
 
-def primitiveNames {primCtx : PrimitiveCtx} : Pr (Term primCtx) → List String
-| .eq varCtx ty lhs rhs =>
-    varCtx.flatMap (fun entry => entry.2.primitiveNames) ++ ty.primitiveNames ++
-      lhs.primitiveNames ++ rhs.primitiveNames
-| .hasType varCtx term ty =>
-    varCtx.flatMap (fun entry => entry.2.primitiveNames) ++ term.primitiveNames ++
-      ty.primitiveNames
-| .and p q => p.primitiveNames ++ q.primitiveNames
-| .or p q => p.primitiveNames ++ q.primitiveNames
-| .implies p q => p.primitiveNames ++ q.primitiveNames
-| .forallTy _ p => p.primitiveNames
-| .forallTerm _ p => p.primitiveNames
-
 namespace TypeUnification
-
-def primitiveTypesDeclared (primCtx : PrimitiveCtx) (names : List String) : Prop :=
-  ∀ name, name ∈ names → name ∈ primCtx.prims.map Primitive.name
-
-def statePrimitiveNames {primCtx : PrimitiveCtx}
-    (ctxTy : Scope Ty) (ctxTerm : Scope (Term primCtx)) (goal : Pr (Term primCtx)) : List String :=
-  ctxTy.flatMap (fun entry => entry.2.primitiveNames) ++
-    ctxTerm.flatMap (fun entry => entry.2.primitiveNames) ++ goal.primitiveNames
-
-/- Faithful context assumptions for reflected type unification.
-
-  Primitive functions, built-in products, and built-in monads are gone. The only context-level
-  name invariant this checker relies on is that mentioned primitive type constructors are
-  declared. Operators and blocks are checked through their context lookups. -/
-structure UnifyTypePrecondition (ctx : Ctx)
-    (ctxTy : Scope Ty) (ctxTerm : Scope (Term ctx.primCtx))
-    (goal : Pr (Term ctx.primCtx)) : Prop where
-  primitiveCtxNames : (ctx.primCtx.prims.map Primitive.name).Nodup
-  primitiveNames : primitiveTypesDeclared ctx.primCtx (statePrimitiveNames ctxTy ctxTerm goal)
 
 structure TypedArgs (ctx : Ctx) (varCtx : VarCtx)
     (args : List (Term ctx.primCtx)) where

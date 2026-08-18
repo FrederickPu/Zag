@@ -507,6 +507,17 @@ inductive Term (primCtx : PrimitiveCtx) where
   breaks out of it, which is what the old recursor stack allowed by calling an outer motive. -/
 | exit : String → Term primCtx → Term primCtx
 
+/-- An operator input is either a surface term still to evaluate or an already-produced value. -/
+abbrev Op.Arg (primCtx : PrimitiveCtx) := Term primCtx ⊕ Val primCtx
+
+abbrev Op.Arg.ofTerms {primCtx : PrimitiveCtx}
+    (terms : List (Term primCtx)) : List (Op.Arg primCtx) :=
+  terms.map Sum.inl
+
+abbrev Op.Arg.ofVals {primCtx : PrimitiveCtx}
+    (values : List (Val primCtx)) : List (Op.Arg primCtx) :=
+  values.map Sum.inr
+
 /- One instruction names the value of its term for the remainder of its block. -/
 structure Instr (primCtx : PrimitiveCtx) where
   name : String
@@ -584,15 +595,8 @@ end BlockCtx
   blocks. Later fields may depend on the earlier contexts. -/
 structure Ctx where
   primCtx : PrimitiveCtx
-  /- The effect a program runs in. `Id` for a pure context; a state monad once there is a heap.
-    Failure is *not* part of it -- that is `OptionT`, layered on at evaluation, so that effects
-    performed before a stuck state still stand. -/
-  M : Type → Type := Id
-  [monad : Monad M]
   opCtx : OpCtx primCtx
   blockCtx : BlockCtx primCtx := .empty
-
-attribute [instance] Ctx.monad
 
 namespace Term
 

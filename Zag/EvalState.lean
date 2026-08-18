@@ -14,12 +14,19 @@ hypothesis has to match the machine part-way through a run -- see `EvaluatesCall
 
 namespace Zag
 
+/-- `state` eventually hands `value` to `base`, leaving the intermediate scope existential.
+
+  This is the compositional form used by proof automation: a proof can step to a call,
+  consume an `EvaluatesCall` hypothesis for that call, then keep stepping the continuation. -/
+def EvaluatesFrom (ctx : Ctx) (state : EvalState ctx.primCtx)
+    (value : Val ctx.primCtx) (base : List (Frame ctx.primCtx)) : Prop :=
+  ∃ fuel scope, EvalState.stepN ctx fuel state = some ⟨.ret value, scope, base⟩
+
 /-- `term` evaluates to `value` in `env`: some finite number of steps reaches a state that is
   handing `value` back with nothing pending. -/
 def EvaluatesTo (ctx : Ctx) (env : Env ctx.primCtx) (term : Term ctx.primCtx)
     (value : Val ctx.primCtx) : Prop :=
-  ∃ fuel, (EvalState.run ctx fuel (EvalState.start env term)).result? = some value
-
+  EvaluatesFrom ctx (EvalState.start env term) value []
 
 /-- Calling `name` on argument *values* produces `value`.
 
@@ -39,14 +46,6 @@ def EvaluatesCall (ctx : Ctx) (name : String) (vargs : List (Val ctx.primCtx))
       ctx.blockCtx.get? name = some block ∧
       EvalState.enterBlock name block vargs env base = some st ∧
       EvalState.stepN ctx fuel st = some ⟨.ret value, scope, base⟩
-
-/-- `state` eventually hands `value` to `base`, leaving the intermediate scope existential.
-
-  This is the compositional form used by proof automation: a proof can step to a call,
-  consume an `EvaluatesCall` hypothesis for that call, then keep stepping the continuation. -/
-def EvaluatesFrom (ctx : Ctx) (state : EvalState ctx.primCtx)
-    (value : Val ctx.primCtx) (base : List (Frame ctx.primCtx)) : Prop :=
-  ∃ fuel scope, EvalState.stepN ctx fuel state = some ⟨.ret value, scope, base⟩
 
 namespace EvaluatesFrom
 
@@ -182,24 +181,40 @@ theorem EvaluatesFrom.of_evaluatesTo {ctx : Ctx} {env : Env ctx.primCtx}
     {term : Term ctx.primCtx} {value : Val ctx.primCtx}
     (h : EvaluatesTo ctx env term value) :
     EvaluatesFrom ctx (EvalState.start env term) value [] := by
-  obtain ⟨fuel, hrun⟩ := h
-  obtain ⟨steps, hsteps⟩ := EvalState.exists_stepN_run fuel (EvalState.start env term)
-  cases hstate : EvalState.run ctx fuel (EvalState.start env term) with
-  | mk control scope stack =>
-      rw [hstate] at hsteps hrun
-      cases control <;> cases stack <;> simp [EvalState.result?] at hrun
-      subst hrun
-      exact ⟨steps, scope, hsteps⟩
+  simpa [EvaluatesTo] using h
 
 theorem EvaluatesTo.of_evaluatesFrom {ctx : Ctx} {env : Env ctx.primCtx}
     {term : Term ctx.primCtx} {value : Val ctx.primCtx}
     (h : EvaluatesFrom ctx (EvalState.start env term) value []) :
     EvaluatesTo ctx env term value := by
-  obtain ⟨fuel, scope, hsteps⟩ := h
-  refine ⟨fuel, ?_⟩
-  have hrun := EvalState.run_eq_of_stepN hsteps
-  rw [hrun]
-  rfl
+  simpa [EvaluatesTo] using h
+
+/-- A successful bounded execution supplies the exact step witness used by `EvaluatesTo`.
+  This is the bridge used when evaluation must compute and infer the result value. -/
+theorem EvaluatesTo.of_run {ctx : Ctx} {env : Env ctx.primCtx}
+    {term : Term ctx.primCtx} {value : Val ctx.primCtx} {fuel : Nat}
+    (h : (EvalState.run ctx fuel (EvalState.start env term)).result? = some value) :
+    EvaluatesTo ctx env term value := by
+  obtain ⟨steps, hsteps⟩ := EvalState.exists_stepN_run fuel (EvalState.start env term)
+  cases hstate : EvalState.run ctx fuel (EvalState.start env term) with
+  | mk control scope stack =>
+      rw [hstate] at hsteps h
+      cases control <;> cases stack <;> simp [EvalState.result?] at h
+      subst h
+      exact ⟨steps, scope, hsteps⟩
+
+theorem EvaluatesTo.iff_run {ctx : Ctx} {env : Env ctx.primCtx}
+    {term : Term ctx.primCtx} {value : Val ctx.primCtx} :
+    EvaluatesTo ctx env term value ↔
+      ∃ fuel, (EvalState.run ctx fuel (EvalState.start env term)).result? = some value := by
+  constructor
+  · intro h
+    obtain ⟨fuel, scope, hsteps⟩ := EvaluatesFrom.of_evaluatesTo h
+    refine ⟨fuel, ?_⟩
+    rw [EvalState.run_eq_of_stepN hsteps]
+    rfl
+  · rintro ⟨fuel, h⟩
+    exact EvaluatesTo.of_run h
 
 namespace EvaluatesCall
 
@@ -223,13 +238,11 @@ end EvaluatesCall
 theorem EvaluatesTo.unique {ctx : Ctx} {env : Env ctx.primCtx} {term : Term ctx.primCtx}
     {v₁ v₂ : Val ctx.primCtx}
     (h₁ : EvaluatesTo ctx env term v₁) (h₂ : EvaluatesTo ctx env term v₂) : v₁ = v₂ := by
-  obtain ⟨fuel₁, h₁⟩ := h₁
-  obtain ⟨fuel₂, h₂⟩ := h₂
-  have e₁ := EvalState.run_le (extra := fuel₂) h₁
-  have e₂ := EvalState.run_le (extra := fuel₁) h₂
-  rw [show fuel₂ + fuel₁ = fuel₁ + fuel₂ by omega] at e₂
-  rw [e₁] at e₂
-  exact Option.some.inj e₂
+  have h₁' := EvaluatesFrom.of_evaluatesTo h₁
+  have h₂' := EvaluatesFrom.of_evaluatesTo h₂
+  obtain ⟨fuel₁, scope₁, hsteps₁⟩ := h₁'
+  have htail := EvaluatesFrom.drop_prefix hsteps₁ h₂'
+  exact (EvaluatesFrom.ret_empty_eq htail).symm
 
 def Term.Terminates (ctx : Ctx) (env : Env ctx.primCtx) (term : Term ctx.primCtx) : Prop :=
   ∃ v, EvaluatesTo ctx env term v
@@ -276,39 +289,23 @@ theorem EvaluatesTo.weaken {ctx : Ctx} {env : Env ctx.primCtx} {term : Term ctx.
     (base : List (Frame ctx.primCtx)) :
     ∃ fuel scope, EvalState.stepN ctx fuel ⟨.eval term, env, base⟩ =
       some ⟨.ret value, scope, base⟩ := by
-  obtain ⟨fuel, hrun⟩ := h
-  obtain ⟨k, hk⟩ := EvalState.exists_stepN_run fuel (EvalState.start env term)
-  cases hfin : EvalState.run ctx fuel (EvalState.start env term) with
-  | mk fc fe fs =>
-      rw [hfin] at hk hrun
-      refine ⟨k, fe, ?_⟩
-      unfold EvalState.result? at hrun
-      split at hrun
-      case h_2 => simp at hrun
-      case h_1 v hc hs =>
-          simp only [Option.some.injEq] at hrun
-          subst hrun
-          simp only at hc hs
-          subst hc
-          subst hs
-          have hw := EvalState.stepN_weaken (fuel := k) (base := base) hk
-          simpa using hw
+  obtain ⟨fuel, scope, hsteps⟩ := EvaluatesFrom.of_evaluatesTo h
+  refine ⟨fuel, scope, ?_⟩
+  simpa [EvalState.start, EvalState.appendStack] using
+    (EvalState.stepN_weaken (base := base) hsteps)
 
 
 /-! ### the calculus, on the machine
 
-  These replace the corresponding equations of `Zag/Eval.lean`, which are stated against the
-  big-step evaluator. That evaluator cannot survive: parameterising it over the context's monad
-  needs `partial_fixpoint` to recurse under that monad's `bind`, which needs a `CCPO` on its
-  result type -- and the *pure* instance, `Id`, is exactly the one that has none, since
-  `Id Empty = Empty` has no least element. Small-step has no fixpoint and so no such obligation.
+  These replace the corresponding equations of the old big-step evaluator. Small-step exposes
+  the intermediate states needed by the compositional proof rules below.
 
   Each rule here is proved by stepping the machine, so it is `propext, Quot.sound` only, where
   the big-step versions inherit `Classical.choice` from the fixpoint. -/
 
 theorem EvaluatesTo.prim (ty : Ty) (val : Ty.type ctx.primCtx ty) :
     EvaluatesTo ctx env (.prim ty val) (Val.mk ty val) :=
-  ⟨1, rfl⟩
+  ⟨1, env, rfl⟩
 
 /-- A name resolves to a local binding if there is one, and otherwise to the block of that name
   as a value -- which is why this needs `name` not to be a block. The `←` direction holds
@@ -317,26 +314,29 @@ theorem EvaluatesTo.var_iff {name : String} {v : Val ctx.primCtx}
     (hblock : ctx.blockCtx.get? name = none) :
     EvaluatesTo ctx env (.var name) v ↔ Scope.get? env name = some v := by
   constructor
-  · rintro ⟨fuel, hrun⟩
+  · intro h
     cases hv : Scope.get? env name with
     | none =>
         have hstuck : EvalState.step ctx (EvalState.start env (.var name)) = none := by
           simp [EvalState.step, EvalState.evalStep, EvalState.resumeFrame, EvalState.unwindFrame, EvalState.start, hv, hblock]
-        rw [EvalState.run_stuck hstuck] at hrun
-        simp [EvalState.start, EvalState.result?] at hrun
+        obtain ⟨fuel, scope, hsteps⟩ := EvaluatesFrom.of_evaluatesTo h
+        cases fuel with
+        | zero => simp [EvalState.start] at hsteps
+        | succ fuel => rw [EvalState.stepN_succ, hstuck] at hsteps; simp at hsteps
     | some w =>
         have hstep : EvalState.step ctx (EvalState.start env (.var name))
             = some ⟨.ret w, env, []⟩ := by simp [EvalState.step, EvalState.evalStep, EvalState.resumeFrame, EvalState.unwindFrame, EvalState.start, hv]
-        cases fuel with
-        | zero => simp [EvalState.start, EvalState.result?] at hrun
-        | succ fuel =>
-            simp only [EvalState.run_succ, hstep] at hrun
-            have : EvalState.step ctx ⟨Action.ret w, env, []⟩ = none := by simp [EvalState.step, EvalState.evalStep, EvalState.resumeFrame, EvalState.unwindFrame]
-            rw [EvalState.run_stuck this] at hrun
-            simp [EvalState.result?] at hrun
-            simp [hrun]
+        have hw : EvaluatesTo ctx env (.var name) w :=
+          EvaluatesTo.of_evaluatesFrom (EvaluatesFrom.step hstep
+            (EvaluatesFrom.done (ctx := ctx) (value := w) (scope := env) (base := [])))
+        have heq : v = w := EvaluatesTo.unique h hw
+        simpa [heq] using hv
   · intro hv
-    exact ⟨1, by simp [EvalState.run, EvalState.step, EvalState.evalStep, EvalState.resumeFrame, EvalState.unwindFrame, EvalState.start, EvalState.result?, hv]⟩
+    apply EvaluatesTo.of_evaluatesFrom
+    exact EvaluatesFrom.step (by
+      simp [EvalState.step, EvalState.evalStep, EvalState.resumeFrame,
+        EvalState.unwindFrame, EvalState.start, hv])
+      (EvaluatesFrom.done (ctx := ctx) (value := v) (scope := env) (base := []))
 
 /-- A block named where a value is expected evaluates to a reference to it. This is what makes
   `call f [x]` and `app (var f) [x]` agree. -/
@@ -344,9 +344,14 @@ theorem EvaluatesTo.var_block {ctx : Ctx} {env : Env ctx.primCtx} {name : String
     {block : Block ctx.primCtx}
     (hlocal : Scope.get? env name = none) (hblock : ctx.blockCtx.get? name = some block) :
     EvaluatesTo ctx env (.var name)
-      (.blockRef name (block.params.map Prod.snd) block.outTy) :=
-  ⟨1, by simp [EvalState.run, EvalState.step, EvalState.evalStep, EvalState.resumeFrame, EvalState.unwindFrame, EvalState.start, EvalState.result?,
-    hlocal, hblock]⟩
+      (.blockRef name (block.params.map Prod.snd) block.outTy) := by
+  apply EvaluatesTo.of_evaluatesFrom
+  exact EvaluatesFrom.step (by
+    simp [EvalState.step, EvalState.evalStep, EvalState.resumeFrame,
+      EvalState.unwindFrame, EvalState.start, hlocal, hblock])
+    (EvaluatesFrom.done (ctx := ctx)
+      (value := .blockRef name (block.params.map Prod.snd) block.outTy)
+      (scope := env) (base := []))
 
 /-- Every term of a list evaluates, pointwise, to the corresponding value. -/
 inductive EvaluatesToAll (ctx : Ctx) (env : Env ctx.primCtx) :
@@ -374,7 +379,7 @@ theorem driveOp {ctx : Ctx} {body : Op.Body ctx.primCtx}
     {env : Env ctx.primCtx} {S : List (Frame ctx.primCtx)} {result : Val ctx.primCtx}
     (hargs : EvaluatesToAll ctx env terms values)
     (hbody : body.applyVals values = some result) :
-    ∃ state, EvalState.driveOp body terms env S = some state ∧
+    ∃ state, EvalState.driveOp body (Op.Arg.ofTerms terms) env S = some state ∧
       EvaluatesFrom ctx state result S := by
   induction terms generalizing body values S with
   | nil =>
@@ -404,7 +409,7 @@ theorem driveOp {ctx : Ctx} {body : Op.Body ctx.primCtx}
                     simpa [Op.Body.applyVals] using hbody
                   obtain ⟨state, hdrive, hfrom⟩ :=
                     ih (body := resume none) (values := termValues) (S := S) hterms hbody'
-                  exact ⟨state, by simpa [EvalState.driveOp] using hdrive, hfrom⟩
+                  exact ⟨state, by simpa [EvalState.driveOp, Op.Arg.ofTerms] using hdrive, hfrom⟩
               | true =>
                   have hbody' : (resume (some termValue)).applyVals termValues = some result := by
                     simpa [Op.Body.applyVals] using hbody
@@ -412,12 +417,13 @@ theorem driveOp {ctx : Ctx} {body : Op.Body ctx.primCtx}
                     ih (body := resume (some termValue)) (values := termValues) (S := S)
                       hterms hbody'
                   obtain ⟨fuel, scope, htermSteps⟩ :=
-                    EvaluatesTo.weaken hterm (.opBody resume terms env :: S)
+                    EvaluatesTo.weaken hterm (.opBody resume (Op.Arg.ofTerms terms) env :: S)
                   have hretStep : EvalState.step ctx
-                      ⟨.ret termValue, scope, .opBody resume terms env :: S⟩ = some state := by
+                      ⟨.ret termValue, scope, .opBody resume (Op.Arg.ofTerms terms) env :: S⟩ =
+                        some state := by
                     simpa [EvalState.step, hdrive]
-                  exact ⟨⟨.eval term, env, .opBody resume terms env :: S⟩,
-                    by simp [EvalState.driveOp],
+                  exact ⟨⟨.eval term, env, .opBody resume (Op.Arg.ofTerms terms) env :: S⟩,
+                    by simp [EvalState.driveOp, Op.Arg.ofTerms],
                     EvaluatesFrom.trans_stepN htermSteps (EvaluatesFrom.step hretStep hfrom)⟩
           | apply fn args resume => simp [Op.Body.applyVals] at hbody
 
