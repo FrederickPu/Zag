@@ -1,124 +1,37 @@
-import Lean.Elab.Tactic
 import Zag.Meta.Language
+import Zag.Meta.Refinement
 
 namespace Zag
 
-structure Refinement (ctx : Ctx) (ctxTy : Scope Ty) (ctxTerm : Scope (Term ctx.primCtx))
-    {E : Type} [Language ctx.primCtx E] (goal : Pr E) where
-  goals : List (Pr E)
-  prove : (∀ subgoal, subgoal ∈ goals → Language.Provable ctx ctxTy ctxTerm subgoal) →
-    Language.Provable ctx ctxTy ctxTerm goal
+abbrev PrRefinement (ctx : Ctx) (ctxTy : Scope Ty) (ctxTerm : Scope (Term ctx.primCtx))
+    {E : Type} [Language ctx.primCtx E] (goal : Pr E) :=
+  Refinement (Language.Provable ctx ctxTy ctxTerm) goal
 
-abbrev Tactic (ctx : Ctx) (ctxTy : Scope Ty) (ctxTerm : Scope (Term ctx.primCtx))
+abbrev PrTactic (ctx : Ctx) (ctxTy : Scope Ty) (ctxTerm : Scope (Term ctx.primCtx))
     (E : Type) [Language ctx.primCtx E] :=
-  (goal : Pr E) → Refinement ctx ctxTy ctxTerm goal
+  Tactic (Language.Provable ctx ctxTy ctxTerm : Pr E → Prop)
 
-abbrev Tactic? (ctx : Ctx) (ctxTy : Scope Ty) (ctxTerm : Scope (Term ctx.primCtx))
+abbrev PrTactic? (ctx : Ctx) (ctxTy : Scope Ty) (ctxTerm : Scope (Term ctx.primCtx))
     (E : Type) [Language ctx.primCtx E] :=
-  (goal : Pr E) → Option (Refinement ctx ctxTy ctxTerm goal)
+  Tactic? (Language.Provable ctx ctxTy ctxTerm : Pr E → Prop)
 
-namespace Refinement
+namespace PrRefinement
 
 variable {ctx : Ctx} {ctxTy : Scope Ty} {ctxTerm : Scope (Term ctx.primCtx)}
   {E : Type} [Language ctx.primCtx E]
 
-def lift {goal : Pr E} (proof : Language.Provable ctx ctxTy ctxTerm goal) :
-    Refinement ctx ctxTy ctxTerm goal where
-  goals := []
-  prove := fun _ => proof
-
-def stuck (goal : Pr E) : Refinement ctx ctxTy ctxTerm goal where
-  goals := [goal]
-  prove := fun proveSubgoals => proveSubgoals goal (by simp)
-
-theorem toProvable {goal : Pr E} (refinement : Refinement ctx ctxTy ctxTerm goal)
-    (closed : refinement.goals = []) : Language.Provable ctx ctxTy ctxTerm goal := by
-  apply refinement.prove
-  intro subgoal hsubgoal
-  rw [closed] at hsubgoal
-  cases hsubgoal
-
-inductive InterpretsGoals (ctx : Ctx) (ctxTy : Scope Ty) (ctxTerm : Scope (Term ctx.primCtx)) :
-    List (Pr (Term ctx.primCtx)) → Prop where
-  | nil : InterpretsGoals ctx ctxTy ctxTerm []
-  | cons {goal : Pr (Term ctx.primCtx)} {rest : List (Pr (Term ctx.primCtx))} :
-      Pr.interp ctx ctxTy ctxTerm goal → InterpretsGoals ctx ctxTy ctxTerm rest →
-      InterpretsGoals ctx ctxTy ctxTerm (goal :: rest)
-
-theorem InterpretsGoals.get {goals : List (Pr (Term ctx.primCtx))}
-    (interps : InterpretsGoals ctx ctxTy ctxTerm goals) {goal : Pr (Term ctx.primCtx)}
-    (hgoal : goal ∈ goals) : Pr.interp ctx ctxTy ctxTerm goal := by
-  induction interps with
-  | nil => simp at hgoal
-  | cons head _ ih =>
-      simp only [List.mem_cons] at hgoal
-      cases hgoal with
-      | inl h => exact h ▸ head
-      | inr h => exact ih h
-
 theorem sound {goal : Pr (Term ctx.primCtx)}
-    (refinement : Refinement ctx ctxTy ctxTerm goal)
-    (subgoals : InterpretsGoals ctx ctxTy ctxTerm refinement.goals) :
+    (refinement : PrRefinement ctx ctxTy ctxTerm goal)
+    (subgoals : Refinement.InterpretsGoals
+      (Language.Provable ctx ctxTy ctxTerm) refinement.goals) :
     Pr.interp ctx ctxTy ctxTerm goal := by
   have proof := refinement.prove fun subgoal hsubgoal => by
-    simp only [Language.Provable_term]
-    exact .ofProof (subgoals.get hsubgoal)
+    exact subgoals.get hsubgoal
   simp only [Language.Provable_term] at proof
   cases proof with
   | ofProof result => exact result
 
-def refine {goal : Pr E} (refinement : Refinement ctx ctxTy ctxTerm goal)
-    (next : ∀ subgoal, subgoal ∈ refinement.goals → Refinement ctx ctxTy ctxTerm subgoal) :
-    Refinement ctx ctxTy ctxTerm goal where
-  goals := refinement.goals.attach.flatMap fun subgoal =>
-    (next subgoal.val subgoal.property).goals
-  prove := by
-    intro proveGenerated
-    apply refinement.prove
-    intro subgoal hsubgoal
-    apply (next subgoal hsubgoal).prove
-    intro generated hgenerated
-    apply proveGenerated
-    exact List.mem_flatMap.mpr ⟨⟨subgoal, hsubgoal⟩, by simp, hgenerated⟩
-
-def andThen {goal : Pr E} (refinement : Refinement ctx ctxTy ctxTerm goal)
-    (next : Tactic ctx ctxTy ctxTerm E) : Refinement ctx ctxTy ctxTerm goal :=
-  refinement.refine fun subgoal _ => next subgoal
-
-/- The refinement loses no provability: a provable goal only ever generates provable subgoals.
-  In sequent-calculus terms this is *invertibility* of the rule, and it is the converse of the
-  soundness carried by the `prove` field.
-
-  This is NOT completeness, and must not be read as such: `stuck` satisfies it (see
-  `stuck_invertible`), so the identity tactic is invertible. It says the refinement never
-  turns a provable goal into an unprovable one -- not that it makes any progress.
-  For "provable goals actually get closed", see `Tactic.CompleteOn`. -/
-def invertible {goal : Pr E} (refinement : Refinement ctx ctxTy ctxTerm goal) : Prop :=
-  Language.Provable ctx ctxTy ctxTerm goal →
-    ∀ subgoal, subgoal ∈ refinement.goals → Language.Provable ctx ctxTy ctxTerm subgoal
-
-theorem lift_invertible {goal : Pr E} (proof : Language.Provable ctx ctxTy ctxTerm goal) :
-    invertible (lift proof) := by
-  intro _ subgoal hsubgoal
-  simp [lift] at hsubgoal
-
-theorem stuck_invertible (goal : Pr E) :
-    invertible (stuck (ctx := ctx) (ctxTy := ctxTy) (ctxTerm := ctxTerm) goal) := by
-  intro hgoal subgoal hsubgoal
-  simp [stuck] at hsubgoal
-  exact hsubgoal ▸ hgoal
-
-theorem refine_invertible {goal : Pr E} (refinement : Refinement ctx ctxTy ctxTerm goal)
-    (next : ∀ subgoal, subgoal ∈ refinement.goals → Refinement ctx ctxTy ctxTerm subgoal)
-    (hrefinement : invertible refinement)
-    (hnext : ∀ subgoal hsubgoal, invertible (next subgoal hsubgoal)) :
-    invertible (refinement.refine next) := by
-  intro hgoal generated hgenerated
-  rcases List.mem_flatMap.mp hgenerated with ⟨attached, _hattached, hgeneratedNext⟩
-  rcases attached with ⟨subgoal, hsubgoal⟩
-  exact hnext subgoal hsubgoal (hrefinement hgoal subgoal hsubgoal) generated hgeneratedNext
-
-end Refinement
+end PrRefinement
 
 open Lean Elab Tactic Meta
 
@@ -151,27 +64,6 @@ def RefinementNormalizeAttribute.getEntries (attr : RefinementNormalizeAttribute
   let state := attr.ext.toEnvExtension.getState env
   state.importedEntries.flatMap id ++ state.state
 
-private partial def expandRefinementGoals (goal : MVarId) : TacticM (List MVarId) := do
-  let target ← instantiateMVars (← goal.getType)
-  let args := target.getAppArgs
-  let goals ← withTransparency .all do whnf args.back!
-  let target := mkAppN target.getAppFn (args.pop.push goals)
-  let goal ← withTransparency .all do goal.change target
-  try
-    let generated ← goal.apply (mkConst ``Refinement.InterpretsGoals.cons)
-    match generated with
-    | [head, tail] => return head :: (← expandRefinementGoals tail)
-      | _ => throwError "unexpected Refinement.InterpretsGoals.cons goals"
-  catch _ =>
-    let generated ← goal.apply (mkConst ``Refinement.InterpretsGoals.nil)
-    unless generated.isEmpty do
-      throwError "unexpected Refinement.InterpretsGoals.nil goals"
-    return []
-
-elab "refinement_goals" : tactic => do
-  let goals ← expandRefinementGoals (← getMainGoal)
-  replaceMainGoal goals
-
 elab "normalize_refinement_goal" : tactic => do
   let original ← (← getMainGoal).withContext do
     pure (← getLCtx).getFVarIds
@@ -196,15 +88,19 @@ macro_rules
 | `(tactic| applyRefinement $refinement) =>
     `(tactic|
       refine Pr.Provable.ofProof ?_ <;>
-      apply Refinement.sound ($refinement) <;>
+      apply PrRefinement.sound ($refinement) <;>
       refinement_goals <;>
+      rw [Zag.Language.Provable_term] <;>
+      refine Pr.Provable.ofProof ?_ <;>
       normalize_refinement_goal)
 | `(tactic| applyRefinement $refinement reducing_by $reducer:tactic) =>
     `(tactic|
       refine Pr.Provable.ofProof ?_ <;>
-      apply Refinement.sound ($refinement) <;>
+      apply PrRefinement.sound ($refinement) <;>
       $reducer:tactic <;>
       refinement_goals <;>
+      rw [Zag.Language.Provable_term] <;>
+      refine Pr.Provable.ofProof ?_ <;>
       normalize_refinement_goal)
 
 syntax (name := applyTactic) "applyTactic " term : tactic
@@ -214,22 +110,26 @@ macro_rules
 | `(tactic| applyTactic $tactic) =>
     `(tactic|
       refine Pr.Provable.ofProof ?_ <;>
-      apply Refinement.sound (($tactic) _) <;>
+      apply PrRefinement.sound (($tactic) _) <;>
       refinement_goals <;>
+      rw [Zag.Language.Provable_term] <;>
+      refine Pr.Provable.ofProof ?_ <;>
       normalize_refinement_goal)
 | `(tactic| applyTactic $tactic reducing_by $reducer:tactic) =>
     `(tactic|
       refine Pr.Provable.ofProof ?_ <;>
-      apply Refinement.sound (($tactic) _) <;>
+      apply PrRefinement.sound (($tactic) _) <;>
       $reducer:tactic <;>
       refinement_goals <;>
+      rw [Zag.Language.Provable_term] <;>
+      refine Pr.Provable.ofProof ?_ <;>
       normalize_refinement_goal)
 
-def Refinement.raise {ctx : Ctx} {ctxTy : Scope Ty} {ctxTerm : Scope (Term ctx.primCtx)}
+def PrRefinement.raise {ctx : Ctx} {ctxTy : Scope Ty} {ctxTerm : Scope (Term ctx.primCtx)}
     {E : Type} [Language.Reflects ctx.primCtx E] {goal : Pr E} {termGoal : Pr (Term ctx.primCtx)}
     (hlower : goal.toTerm? = some termGoal)
-    (refinement : Refinement ctx ctxTy ctxTerm termGoal) :
-    Refinement ctx ctxTy ctxTerm goal where
+    (refinement : PrRefinement ctx ctxTy ctxTerm termGoal) :
+    PrRefinement ctx ctxTy ctxTerm goal where
   goals := refinement.goals.map Pr.ofTerm
   prove := by
     intro proveSubgoals
@@ -244,88 +144,35 @@ def Refinement.raise {ctx : Ctx} {ctxTy : Scope Ty} {ctxTerm : Scope (Term ctx.p
     cases Option.some.inj hraised
     simpa only [Language.Provable_term] using proof
 
-def Tactic.raise {ctx : Ctx} {ctxTy : Scope Ty} {ctxTerm : Scope (Term ctx.primCtx)}
+def PrTactic.raise {ctx : Ctx} {ctxTy : Scope Ty} {ctxTerm : Scope (Term ctx.primCtx)}
     {E : Type} [Language.Reflects ctx.primCtx E]
-    (tactic : Tactic ctx ctxTy ctxTerm (Term ctx.primCtx)) : Tactic ctx ctxTy ctxTerm E :=
+    (tactic : PrTactic ctx ctxTy ctxTerm (Term ctx.primCtx)) : PrTactic ctx ctxTy ctxTerm E :=
   fun goal =>
     match h : goal.toTerm? with
     | none => Refinement.stuck goal
-    | some termGoal => Refinement.raise h (tactic termGoal)
+    | some termGoal => PrRefinement.raise h (tactic termGoal)
 
-namespace Tactic
-
-variable {ctx : Ctx} {ctxTy : Scope Ty} {ctxTerm : Scope (Term ctx.primCtx)}
-  {E : Type} [Language ctx.primCtx E]
-
-def stuck : Tactic ctx ctxTy ctxTerm E := Refinement.stuck
-
-def andThen (first second : Tactic ctx ctxTy ctxTerm E) : Tactic ctx ctxTy ctxTerm E :=
-  fun goal => (first goal).andThen second
-
-def iterate (fuel : Nat) (step : Tactic ctx ctxTy ctxTerm E) : Tactic ctx ctxTy ctxTerm E
-| goal =>
-    match fuel with
-    | 0 => step goal
-    | n + 1 => (step goal).refine fun subgoal _ => iterate n step subgoal
-
-def invertible (tactic : Tactic ctx ctxTy ctxTerm E) : Prop :=
-  ∀ goal, Refinement.invertible (tactic goal)
-
-theorem iterate_invertible {step : Tactic ctx ctxTy ctxTerm E} (hstep : invertible step) :
-    ∀ fuel, invertible (iterate fuel step)
-| 0 => hstep
-| n + 1 => fun goal =>
-    Refinement.refine_invertible _ _ (hstep goal)
-      (fun subgoal _ => iterate_invertible hstep n subgoal)
-
-/- Completeness proper, relative to a `domain` of goals the tactic claims to decide:
-  every provable goal in the domain is closed outright (no residual subgoals).
-
-  Unlike `invertible` this is not satisfied by `stuck`, and it is the property that makes
-  `tactic` a decision procedure on `domain` -- see `decides`. -/
-def CompleteOn (tactic : Tactic ctx ctxTy ctxTerm E) (domain : Pr E → Prop) : Prop :=
-  ∀ goal, domain goal → Language.Provable ctx ctxTy ctxTerm goal → (tactic goal).goals = []
-
-/- On its domain, a complete tactic decides provability: the goal is provable exactly when
-  the tactic closes it. The `←` direction is soundness (`Refinement.toProvable`), which every
-  `Refinement` carries by construction; `CompleteOn` supplies `→`. -/
-theorem decides {tactic : Tactic ctx ctxTy ctxTerm E} {domain : Pr E → Prop}
-    (hcomplete : CompleteOn tactic domain) (goal : Pr E) (hdomain : domain goal) :
-    Language.Provable ctx ctxTy ctxTerm goal ↔ (tactic goal).goals = [] :=
-  ⟨hcomplete goal hdomain, fun hclosed => (tactic goal).toProvable hclosed⟩
-
-end Tactic
-
-namespace Tactic?
+namespace PrTactic?
 
 variable {ctx : Ctx} {ctxTy : Scope Ty} {ctxTerm : Scope (Term ctx.primCtx)}
   {E : Type} [Language ctx.primCtx E]
-
-def orElse (first second : Tactic? ctx ctxTy ctxTerm E) : Tactic? ctx ctxTy ctxTerm E :=
-  fun goal => (first goal).orElse (fun _ => second goal)
-
-def firstOf : List (Tactic? ctx ctxTy ctxTerm E) → Tactic? ctx ctxTy ctxTerm E
-| [] => fun _ => none
-| tactic :: rest => orElse tactic (firstOf rest)
-
-def toTactic (tactic : Tactic? ctx ctxTy ctxTerm E) : Tactic ctx ctxTy ctxTerm E :=
-  fun goal => (tactic goal).getD (Refinement.stuck goal)
 
 def assumption [DecidableEq E] : (facts : List (Pr E)) →
-    (∀ fact, fact ∈ facts → Language.Provable ctx ctxTy ctxTerm fact) → Tactic? ctx ctxTy ctxTerm E
+    (∀ fact, fact ∈ facts → Language.Provable ctx ctxTy ctxTerm fact) →
+      PrTactic? ctx ctxTy ctxTerm E
 | [], _ => fun _ => none
 | fact :: rest, hfacts => fun goal =>
     if h : fact = goal then some (Refinement.lift (h ▸ hfacts fact (by simp)))
     else assumption rest (fun f hf => hfacts f (by simp [hf])) goal
 
 def raise {E : Type} [Language.Reflects ctx.primCtx E]
-    (tactic : Tactic? ctx ctxTy ctxTerm (Term ctx.primCtx)) : Tactic? ctx ctxTy ctxTerm E :=
+    (tactic : PrTactic? ctx ctxTy ctxTerm (Term ctx.primCtx)) : PrTactic? ctx ctxTy ctxTerm E :=
   fun goal =>
     match h : goal.toTerm? with
     | none => none
-    | some termGoal => (tactic termGoal).map (Refinement.raise h)
+    | some termGoal => (tactic termGoal).map (PrRefinement.raise h)
 
-end Tactic?
+end PrTactic?
 
 namespace Pr
 
@@ -384,7 +231,7 @@ private theorem structuralInterprets {ctx : Ctx}
       | ofProof proof => exact proof
 def structural {ctx : Ctx}
     {ctxTy : Scope Ty} {ctxTerm : Scope (Term ctx.primCtx)} (goal : Pr (Term ctx.primCtx)) :
-    Refinement ctx ctxTy ctxTerm goal where
+    PrRefinement ctx ctxTy ctxTerm goal where
   goals := structuralGoals goal
   prove := by
     intro proveSubgoals

@@ -432,7 +432,7 @@ def stateHeapOp : Op heapCtx :=
 def stateValueOp : Op heapCtx :=
   (stateProjection id (fun _ state => state.2)).toOp
 
-def heapOpCtx : OpCtx heapCtx :=
+@[eval_step] def heapOpCtx : OpCtx heapCtx :=
   Peano.opCtx heapCtx ++ [
     ("mod", binaryNatOp Nat.mod),
     ("le", binaryNatBoolOp fun a b => decide (a ≤ b)),
@@ -474,6 +474,7 @@ def heapOpCtx : OpCtx heapCtx :=
     ("stateHeap", stateHeapOp),
     ("stateValue", stateValueOp)
   ]
+
 
 abbrev peanoHeapCtx : Ctx where
   primCtx := heapCtx

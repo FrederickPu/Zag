@@ -1,4 +1,5 @@
-import Zag.EvalState
+import Zag.Loop
+import Zag.Refinement
 import Lib.Peano.Defs
 
 /-!
@@ -8,6 +9,26 @@ These are relational facts over `EvaluatesTo`, not rewrite rules for the old big
 -/
 
 namespace Zag
+
+/- Peano's evaluation-relevant definitions. Tagged here rather than in `Lib/Peano/Defs.lean` so
+  that the pure definition layer keeps its minimal imports. -/
+/- `Val.nat`/`Val.bool` are deliberately absent: `Val.mk_ofNat`/`mk_ofBool` are `@[simp]` and fold
+  *into* them, so tagging them here would make `simp [eval_step]` loop. They are the normal form.
+  `Term.nat`/`Term.bool` do have to be unfolded -- `step` matches on `Term.prim` -- so they are
+  tagged here and folded back by `Term.prim_nat`/`prim_bool` once stepping is done. -/
+attribute [eval_step]
+  Op.compare Op.eq Op.ite Op.natBinary Op.natUnary
+  Peano.opCtx Term.nat Term.bool Term.ite Lib.Peano.natOpCtx
+  Val.asNat?_nat Val.asBool?_bool
+
+/-- Restore `Term.nat n` in a goal the machine stopped short of. Not `@[eval_step]`: paired with
+  the `Term.nat` tag above in one `simp` call these two loop. -/
+@[eval_fold] theorem Term.prim_nat {primCtx : PrimitiveCtx} [Peano.Types primCtx] (n : Nat) :
+    (Term.prim Peano.NatTy (Ty.ofNat primCtx n) : Term primCtx) = Term.nat n := rfl
+
+@[eval_fold] theorem Term.prim_bool {primCtx : PrimitiveCtx} [Peano.Types primCtx] (b : Bool) :
+    (Term.prim Peano.BoolTy (Ty.ofBool primCtx b) : Term primCtx) = Term.bool b := rfl
+
 
 namespace Val
 
@@ -25,6 +46,8 @@ theorem eq_nat_of_asNat? {v : Val primCtx} {n : Nat} (h : v.asNat? = some n) :
         cases h
         simp [Val.nat, Ty.toNat, Ty.ofNat]
       case neg => simp [hty] at h
+  | blockRef n a o => simp [Val.asNat?, Val.as?] at h
+  | opRef n c a o => simp [Val.asNat?, Val.as?] at h
 
 theorem asNat?_eq_none_iff {v : Val primCtx} : v.asNat? = none ↔ v.ty ≠ Peano.NatTy := by
   cases v with
@@ -32,11 +55,16 @@ theorem asNat?_eq_none_iff {v : Val primCtx} : v.asNat? = none ↔ v.ty ≠ Pean
       by_cases hty : ty = Peano.NatTy
       case pos => cases hty; simp [Val.asNat?, Val.as?]
       case neg => simp [Val.asNat?, Val.as?, hty]
+  | blockRef n a o => simp [Val.asNat?, Val.as?, Val.ty, Peano.NatTy]
+  | opRef n c a o => simp [Val.asNat?, Val.as?, Val.ty, Peano.NatTy]
 
 theorem exists_nat_of_ty {v : Val primCtx} (h : v.ty = Peano.NatTy) : ∃ n, v = Val.nat n := by
-  refine ⟨Ty.toNat primCtx (cast (congrArg (Ty.type primCtx) h) v.val), ?_⟩
   cases v with
-  | mk ty val => cases h; simp [Val.nat, Ty.toNat, Ty.ofNat]
+  | mk ty val =>
+      cases h
+      exact ⟨Ty.toNat primCtx val, by simp [Val.nat, Ty.toNat, Ty.ofNat]⟩
+  | blockRef n a o => simp [Val.ty, Peano.NatTy] at h
+  | opRef n c a o => simp [Val.ty, Peano.NatTy] at h
 
 theorem eq_bool_of_asBool? {v : Val primCtx} {b : Bool} (h : v.asBool? = some b) :
     v = Val.bool b := by
@@ -50,6 +78,8 @@ theorem eq_bool_of_asBool? {v : Val primCtx} {b : Bool} (h : v.asBool? = some b)
         cases h
         simp [Val.bool, Ty.toBool, Ty.ofBool]
       case neg => simp [hty] at h
+  | blockRef n a o => simp [Val.asBool?, Val.as?] at h
+  | opRef n c a o => simp [Val.asBool?, Val.as?] at h
 
 @[simp] theorem ty_nat (n : Nat) : (Val.nat (primCtx := primCtx) n).ty = Peano.NatTy := rfl
 
@@ -57,12 +87,12 @@ theorem eq_bool_of_asBool? {v : Val primCtx} {b : Bool} (h : v.asBool? = some b)
 
 /- Concretization ends at a `Val`, so an answer is compared as a `Val`. These let the caller
   state the arithmetic obligation in `Nat` and `Bool` instead. -/
-@[simp] theorem nat_inj {m n : Nat} :
+@[simp, eval_finish] theorem nat_inj {m n : Nat} :
     (Val.nat (primCtx := primCtx) m = Val.nat n) ↔ m = n := by
   refine ⟨fun h => ?_, fun h => by rw [h]⟩
   simpa using congrArg Val.asNat? h
 
-@[simp] theorem bool_inj {a b : Bool} :
+@[simp, eval_finish] theorem bool_inj {a b : Bool} :
     (Val.bool (primCtx := primCtx) a = Val.bool b) ↔ a = b := by
   refine ⟨fun h => ?_, fun h => by rw [h]⟩
   simpa using congrArg Val.asBool? h
@@ -95,7 +125,7 @@ theorem evaluates_natUnary {ctx : Ctx} [Peano.Types ctx.primCtx]
     (ha : EvaluatesTo ctx env a (Val.nat m)) :
     EvaluatesTo ctx env (.op name [a]) (Val.nat (f m)) := by
   refine EvaluatesTo.op_applyVals hop (EvaluatesToAll.cons ha EvaluatesToAll.nil) ?_
-  simp [Op.applyVals, Op.natUnary, Op.ofVals, Op.Body.applyVals, Op.Body.eager]
+  simp [Op.applyValsAt, Op.fixed, Op.natUnary, Op.ofVals, Op.Body.applyVals, Op.Body.eager]
 
 theorem evaluates_natBinary {ctx : Ctx} [Peano.Types ctx.primCtx]
     {env : Env ctx.primCtx} {name : String} {f : Nat → Nat → Nat}
@@ -106,7 +136,7 @@ theorem evaluates_natBinary {ctx : Ctx} [Peano.Types ctx.primCtx]
     EvaluatesTo ctx env (.op name [a, b]) (Val.nat (f m n)) := by
   refine EvaluatesTo.op_applyVals hop
     (EvaluatesToAll.cons ha (EvaluatesToAll.cons hb EvaluatesToAll.nil)) ?_
-  simp [Op.applyVals, Op.natBinary, Op.ofVals, Op.Body.applyVals, Op.Body.eager]
+  simp [Op.applyValsAt, Op.fixed, Op.natBinary, Op.ofVals, Op.Body.applyVals, Op.Body.eager]
 
 theorem evaluates_eq_same_nat_true {ctx : Ctx} [Peano.Model ctx]
     {env : Env ctx.primCtx} {a b : Term ctx.primCtx} {n : Nat}
@@ -115,8 +145,8 @@ theorem evaluates_eq_same_nat_true {ctx : Ctx} [Peano.Model ctx]
     EvaluatesTo ctx env (.op "eq" [a, b]) (Val.bool true) := by
   refine EvaluatesTo.op_applyVals (Peano.Model.eqOp (ctx := ctx))
     (EvaluatesToAll.cons ha (EvaluatesToAll.cons hb EvaluatesToAll.nil)) ?_
-  simpa [Op.eq, Val.primEq?] using
-    (Op.applyVals_compare (primCtx := ctx.primCtx) Val.primEq?
+  simpa [Op.eq, Op.applyValsAt, Op.compare, Op.fixed, Val.primEq?] using
+    (Op.applyVals_compare (primCtx := ctx.primCtx) "eq" Val.primEq?
       (Val.nat (primCtx := ctx.primCtx) n) (Val.nat n) rfl)
 
 /-! ### from evaluation to `Term.eq`
@@ -165,14 +195,16 @@ private theorem evaluates_natUnary_result_nat {ctx : Ctx} [Peano.Model ctx]
     {value : Val ctx.primCtx}
     (h : EvaluatesTo ctx env (.op name [arg]) value) :
     ∃ n : Nat, value = Val.nat (f n) := by
-  let resume := Op.Body.resume? (Op.natUnary (primCtx := ctx.primCtx) f).body
+  let resume := Op.Body.resume?
+    (((Op.natUnary (primCtx := ctx.primCtx) f).body name 1).getD
+      (Op.Body.fail : Op.Body ctx.primCtx))
   let base : List (Frame ctx.primCtx) := [Frame.opBody resume [] env]
   have hfrom := EvaluatesFrom.of_evaluatesTo h
   have hprefix : EvalState.stepN ctx 1 (EvalState.start env (.op name [arg])) =
       some (EvalState.appendStack (EvalState.start env arg) base) := by
-    simp [EvalState.stepN_succ, EvalState.step, EvalState.start, EvalState.driveOp,
+    simp [EvalState.stepN_succ, EvalState.step, EvalState.evalStep, EvalState.resumeFrame, EvalState.unwindFrame, EvalState.start, EvalState.driveOp,
       EvalState.appendStack, hop, base, resume, Op.Body.resume?, Op.natUnary, Op.ofVals,
-      Op.Body.eager]
+      Op.Body.eager, Op.fixed]
   have hfromArgState := EvaluatesFrom.drop_prefix hprefix hfrom
   have hfromArgStateSaved := hfromArgState
   obtain ⟨fuel, scope, hsteps⟩ := hfromArgState
@@ -194,15 +226,15 @@ private theorem evaluates_natUnary_result_nat {ctx : Ctx} [Peano.Model ctx]
       | zero => simp [base] at hretSteps
       | succ retFuel =>
           rw [EvalState.stepN_succ] at hretSteps
-          simp [EvalState.step, EvalState.driveOp, base, resume, Op.Body.resume?, Op.natUnary,
-            Op.ofVals, Op.Body.eager, hm] at hretSteps
+          simp [EvalState.step, EvalState.evalStep, EvalState.resumeFrame, EvalState.unwindFrame, EvalState.driveOp, base, resume, Op.Body.resume?, Op.natUnary,
+            Op.ofVals, Op.Body.eager, Op.fixed, hm] at hretSteps
   | some n =>
       have hargNat : argVal = Val.nat n := Val.eq_nat_of_asNat? hm
       subst argVal
       have hstepRet : EvalState.step ctx ⟨.ret (Val.nat (primCtx := ctx.primCtx) n),
           argScope, base⟩ = some ⟨.ret (Val.nat (f n)), env, []⟩ := by
-        simp [EvalState.step, EvalState.driveOp, base, resume, Op.Body.resume?, Op.natUnary,
-          Op.ofVals, Op.Body.eager]
+        simp [EvalState.step, EvalState.evalStep, EvalState.resumeFrame, EvalState.unwindFrame, EvalState.driveOp, base, resume, Op.Body.resume?, Op.natUnary,
+          Op.ofVals, Op.Body.eager, Op.fixed]
       have hfromResult := EvaluatesFrom.drop_prefix
         (ctx := ctx) (fuel₀ := 1) (state := ⟨.ret (Val.nat (primCtx := ctx.primCtx) n),
           argScope, base⟩) (mid := ⟨.ret (Val.nat (f n)), env, []⟩)
@@ -216,14 +248,16 @@ theorem eval_nat_of_eq_natUnary_true {ctx : Ctx} [Peano.Model ctx]
     (h : EvaluatesTo ctx env (.op "eq" [.op name [arg], rhs]) (Val.bool true)) :
     ∃ n : Nat, EvaluatesTo ctx env rhs (Val.nat n) := by
   let lhs := Term.op name [arg]
-  let firstResume := Op.Body.resume? (Op.eq (primCtx := ctx.primCtx)).body
+  let firstResume := Op.Body.resume?
+    (((Op.eq (primCtx := ctx.primCtx)).body "eq" 2).getD
+      (Op.Body.fail : Op.Body ctx.primCtx))
   let firstBase : List (Frame ctx.primCtx) := [Frame.opBody firstResume [rhs] env]
   have hfrom := EvaluatesFrom.of_evaluatesTo h
   have hprefix : EvalState.stepN ctx 1 (EvalState.start env (.op "eq" [lhs, rhs])) =
       some (EvalState.appendStack (EvalState.start env lhs) firstBase) := by
-    simp [EvalState.stepN_succ, EvalState.step, EvalState.start, EvalState.driveOp,
+    simp [EvalState.stepN_succ, EvalState.step, EvalState.evalStep, EvalState.resumeFrame, EvalState.unwindFrame, EvalState.start, EvalState.driveOp,
       EvalState.appendStack, Peano.Model.eqOp, firstBase, firstResume, lhs, Op.Body.resume?,
-      Op.eq, Op.compare]
+      Op.eq, Op.compare, Op.fixed]
   have hfromLhsState := EvaluatesFrom.drop_prefix hprefix hfrom
   have hfromLhsStateSaved := hfromLhsState
   obtain ⟨lhsFuel, lhsScope, hlhsSteps⟩ := hfromLhsState
@@ -245,8 +279,8 @@ theorem eval_nat_of_eq_natUnary_true {ctx : Ctx} [Peano.Model ctx]
   have hfromRetLhs := EvaluatesFrom.drop_prefix hlhsEvalSteps hfromLhsStateSaved
   have hstepLhsRet : EvalState.step ctx ⟨.ret (Val.nat (primCtx := ctx.primCtx) (f m)),
       lhsEvalScope, firstBase⟩ = some (EvalState.appendStack (EvalState.start env rhs) secondBase) := by
-    simp [EvalState.step, EvalState.driveOp, EvalState.appendStack, firstBase, secondBase,
-      EvalState.start, firstResume, secondResume, Op.Body.resume?, Op.eq, Op.compare]
+    simp [EvalState.step, EvalState.evalStep, EvalState.resumeFrame, EvalState.unwindFrame, EvalState.driveOp, EvalState.appendStack, firstBase, secondBase,
+      EvalState.start, firstResume, secondResume, Op.Body.resume?, Op.eq, Op.compare, Op.fixed]
   have hfromRhsState := EvaluatesFrom.drop_prefix
     (ctx := ctx) (fuel₀ := 1) (state := ⟨.ret (Val.nat (primCtx := ctx.primCtx) (f m)),
       lhsEvalScope, firstBase⟩) (mid := EvalState.appendStack (EvalState.start env rhs) secondBase)
@@ -273,8 +307,9 @@ theorem eval_nat_of_eq_natUnary_true {ctx : Ctx} [Peano.Model ctx]
       · have hrhsTy : rhsVal.ty = Peano.NatTy := by simpa using hty.symm
         obtain ⟨n, hn⟩ := Val.exists_nat_of_ty hrhsTy
         exact ⟨n, by simpa [hn] using hrhs⟩
-      · simp [EvalState.step, EvalState.driveOp, secondBase, secondResume, firstResume,
-          Op.Body.resume?, Op.eq, Op.compare, show ¬ Peano.NatTy = rhsVal.ty by simpa using hty]
+      · simp [EvalState.step, EvalState.evalStep, EvalState.resumeFrame, EvalState.unwindFrame, EvalState.driveOp, secondBase, secondResume, firstResume,
+          Op.Body.resume?, Op.eq, Op.compare, Op.fixed,
+          show ¬ Peano.NatTy = rhsVal.ty by simpa using hty]
           at hretSteps
 
 theorem eval_nat_of_reflected_natUnary_eq {ctx : Ctx} [Peano.Model ctx]
@@ -290,5 +325,361 @@ theorem eval_nat_of_reflected_natUnary_eq {ctx : Ctx} [Peano.Model ctx]
       (EvaluatesTo.prim (ctx := ctx) (env := env) Peano.BoolTy
         (Ty.ofBool ctx.primCtx true))
   exact (heq.eq env henv (Val.bool true)).mpr htrue
+
+/-! ### continuation-passing `while` -/
+
+namespace Peano
+
+variable {primCtx : PrimitiveCtx} [Peano.Types primCtx]
+
+def whileCondRef (condName : String) (stateTys : List Ty) : Val primCtx :=
+  .blockRef condName stateTys Peano.BoolTy
+
+def whileBodyRef (bodyName : String) (stateTys : List Ty) (resultTy : Ty) : Val primCtx :=
+  .blockRef bodyName (stateTys ++ [.func stateTys resultTy]) resultTy
+
+def whileRef (opName condName bodyName : String) (stateTys : List Ty) (resultTy : Ty) :
+    Val primCtx :=
+  .opRef opName [whileCondRef condName stateTys, whileBodyRef bodyName stateTys resultTy]
+    stateTys resultTy
+
+/- A finite invariant rule for the ordinary `while` operator. One body call receives the loop
+  continuation as its final argument. Its premise is continuation-parametric: after proving the
+  simultaneous next state satisfies the invariant, the body may use the supplied application
+  specification and return the recursive answer through its own call frame. -/
+theorem while_invariant {ctx : Ctx} [Peano.Types ctx.primCtx]
+    {opName condName bodyName : String} {stateTys : List Ty} {resultTy : Ty}
+    {I : Nat → List (Val ctx.primCtx) → Prop} {N : Nat}
+    {initial : List (Val ctx.primCtx)} {loopResult : Val ctx.primCtx}
+    (hop : ctx.opCtx.get? opName = some (Op.whileOp (primCtx := ctx.primCtx)))
+    (hheadTy : stateTys.head? = some resultTy)
+    (init : I 0 initial)
+    (typed : ∀ n args, I n args → args.map Val.ty = stateTys)
+    (preserved : ∀ n args, n < N → I n args →
+      EvaluatesCall ctx condName args (Val.bool true) ∧
+      ((∀ nextArgs, I (n + 1) nextArgs →
+          EvaluatesApply ctx (whileRef opName condName bodyName stateTys resultTy)
+            nextArgs loopResult) →
+        EvaluatesCall ctx bodyName
+          (args ++ [whileRef opName condName bodyName stateTys resultTy]) loopResult))
+    (exits : ∀ args, I N args →
+      EvaluatesCall ctx condName args (Val.bool false) ∧ args.head? = some loopResult) :
+    EvaluatesApply ctx (whileRef opName condName bodyName stateTys resultTy)
+      initial loopResult := by
+  apply EvaluatesApply.loop init
+  · intro n args hn hI hnext
+    obtain ⟨hcond, hbody⟩ := preserved n args hn hI
+    have htys := typed n args hI
+    have hne : args ≠ [] := by
+      intro hnil
+      subst args
+      simp at htys
+      simpa [htys] using hheadTy
+    obtain ⟨head, tail, hargs⟩ : ∃ head tail, args = head :: tail := by
+      cases args with
+      | nil => exact (hne rfl).elim
+      | cons head tail => exact ⟨head, tail, rfl⟩
+    have hhead : args.head? = some head := by simp [hargs]
+    have hcondApply : EvaluatesApply ctx (whileCondRef condName stateTys) args
+        (Val.bool true) := EvaluatesApply.blockRef hcond
+    have hbodyApply : EvaluatesApply ctx (whileBodyRef bodyName stateTys resultTy)
+        (args ++ [whileRef opName condName bodyName stateTys resultTy]) loopResult :=
+      EvaluatesApply.blockRef (hbody hnext)
+    apply EvaluatesApply.opRef
+      (body := Op.Body.collect (Op.whileBodyFromValues (primCtx := ctx.primCtx) opName)
+        (2 + args.length) []) hop
+    · have hthree : 3 ≤ 2 + args.length := by
+        cases args with
+        | nil => exact (hne rfl).elim
+        | cons => simp; omega
+      simp [Op.whileOp, hthree]
+    · intro env base
+      have hout : Op.whileResultTy? (primCtx := ctx.primCtx)
+          (.func stateTys Peano.BoolTy ::
+            .func (stateTys ++ [.func stateTys resultTy]) resultTy :: stateTys) =
+            some resultTy := by
+        simp [Op.whileResultTy?, hheadTy]
+      obtain ⟨bodyStart, hbodyDrive, hbodyFrom⟩ :=
+        EvaluatesFrom.driveOpVals_apply (env := env) (stack := base) (operands := [])
+          (resume := fun value => .done value) hbodyApply
+          (hdrive := by simp [EvalState.driveOpVals])
+          (EvaluatesFrom.done (ctx := ctx) (value := loopResult) (scope := env) (base := base))
+      obtain ⟨condStart, hcondDrive, hcondFrom⟩ :=
+        EvaluatesFrom.driveOpVals_apply (env := env) (stack := base) (operands := [])
+          (resume := fun condition =>
+            match condition.asBool? with
+            | some false => .done head
+            | some true =>
+                .apply (whileBodyRef bodyName stateTys resultTy)
+                  (args ++ [whileRef opName condName bodyName stateTys resultTy]) .done
+            | none => .fail) hcondApply
+          (hdrive := by
+            simpa only [Val.asBool?_bool] using hbodyDrive) hbodyFrom
+      refine ⟨condStart, ?_, hcondFrom⟩
+      have hlen :
+          ([whileCondRef condName stateTys, whileBodyRef bodyName stateTys resultTy] ++ args).length =
+            2 + args.length := by simp; omega
+      rw [EvalState.driveOpVals_collect _ _ _ hlen]
+      have hfinish :
+          Op.whileBodyFromValues (primCtx := ctx.primCtx) opName
+              ([whileCondRef condName stateTys, whileBodyRef bodyName stateTys resultTy] ++ args) =
+            .apply (whileCondRef condName stateTys) args (fun condition =>
+              match condition.asBool? with
+              | some false => .done head
+              | some true =>
+                  .apply (whileBodyRef bodyName stateTys resultTy)
+                    (args ++ [whileRef opName condName bodyName stateTys resultTy]) .done
+              | none => .fail) := by
+        simp [Op.whileBodyFromValues, hout, hhead, htys,
+          whileCondRef, whileBodyRef, whileRef]
+        funext condition
+        unfold Op.whileAfterCondition
+        rw [htys]
+        rfl
+      simp only [List.nil_append]
+      rw [hfinish]
+      exact hcondDrive
+  · intro args hI
+    obtain ⟨hcond, hhead⟩ := exits args hI
+    have htys := typed N args hI
+    have hne : args ≠ [] := by
+      intro hnil
+      subst args
+      simp at hhead
+    have hcondApply : EvaluatesApply ctx (whileCondRef condName stateTys) args
+        (Val.bool false) := EvaluatesApply.blockRef hcond
+    apply EvaluatesApply.opRef
+      (body := Op.Body.collect (Op.whileBodyFromValues (primCtx := ctx.primCtx) opName)
+        (2 + args.length) []) hop
+    · have hthree : 3 ≤ 2 + args.length := by
+        cases args with
+        | nil => exact (hne rfl).elim
+        | cons => simp; omega
+      simp [Op.whileOp, hthree]
+    · intro env base
+      have hout : Op.whileResultTy? (primCtx := ctx.primCtx)
+          (.func stateTys Peano.BoolTy ::
+            .func (stateTys ++ [.func stateTys resultTy]) resultTy :: stateTys) =
+            some resultTy := by
+        simp [Op.whileResultTy?, hheadTy]
+      obtain ⟨condStart, hcondDrive, hcondFrom⟩ :=
+        EvaluatesFrom.driveOpVals_apply (env := env) (stack := base) (operands := [])
+          (resume := fun condition =>
+            match condition.asBool? with
+            | some false => .done loopResult
+            | some true =>
+                .apply (whileBodyRef bodyName stateTys resultTy)
+                  (args ++ [whileRef opName condName bodyName stateTys resultTy]) .done
+            | none => .fail) hcondApply
+          (hdrive := by simp only [Val.asBool?_bool, EvalState.driveOpVals])
+          (EvaluatesFrom.done (ctx := ctx) (value := loopResult) (scope := env) (base := base))
+      refine ⟨condStart, ?_, hcondFrom⟩
+      have hlen :
+          ([whileCondRef condName stateTys, whileBodyRef bodyName stateTys resultTy] ++ args).length =
+            2 + args.length := by simp; omega
+      rw [EvalState.driveOpVals_collect _ _ _ hlen]
+      have hfinish :
+          Op.whileBodyFromValues (primCtx := ctx.primCtx) opName
+              ([whileCondRef condName stateTys, whileBodyRef bodyName stateTys resultTy] ++ args) =
+            .apply (whileCondRef condName stateTys) args (fun condition =>
+              match condition.asBool? with
+              | some false => .done loopResult
+              | some true =>
+                  .apply (whileBodyRef bodyName stateTys resultTy)
+                    (args ++ [whileRef opName condName bodyName stateTys resultTy]) .done
+              | none => .fail) := by
+        simp [Op.whileBodyFromValues, hout, hhead, htys,
+          whileCondRef, whileBodyRef, whileRef]
+        funext condition
+        unfold Op.whileAfterCondition
+        rw [htys]
+        rfl
+      simp only [List.nil_append]
+      rw [hfinish]
+      exact hcondDrive
+
+/- The term-level entry rule for `while`. The initial operands are evaluated by the enclosing
+operator; recursive iterations use the continuation specification from `while_invariant`. -/
+theorem while_evaluatesTo {ctx : Ctx} [Peano.Types ctx.primCtx]
+    {opName condName bodyName : String} {stateTys : List Ty} {resultTy : Ty}
+    {I : Nat → List (Val ctx.primCtx) → Prop} {N : Nat}
+    {initial : List (Val ctx.primCtx)} {loopResult : Val ctx.primCtx}
+    {env : Env ctx.primCtx} {operands : List (Term ctx.primCtx)}
+    (hop : ctx.opCtx.get? opName = some (Op.whileOp (primCtx := ctx.primCtx)))
+    (hargs : EvaluatesToAll ctx env operands
+      ([whileCondRef condName stateTys, whileBodyRef bodyName stateTys resultTy] ++ initial))
+    (hheadTy : stateTys.head? = some resultTy)
+    (init : I 0 initial)
+    (typed : ∀ n args, I n args → args.map Val.ty = stateTys)
+    (preserved : ∀ n args, n < N → I n args →
+      EvaluatesCall ctx condName args (Val.bool true) ∧
+      ((∀ nextArgs, I (n + 1) nextArgs →
+          EvaluatesApply ctx (whileRef opName condName bodyName stateTys resultTy)
+            nextArgs loopResult) →
+        EvaluatesCall ctx bodyName
+          (args ++ [whileRef opName condName bodyName stateTys resultTy]) loopResult))
+    (exits : ∀ args, I N args →
+      EvaluatesCall ctx condName args (Val.bool false) ∧ args.head? = some loopResult) :
+    EvaluatesTo ctx env (.op opName operands) loopResult := by
+  have htys := typed 0 initial init
+  have hne : initial ≠ [] := by
+    intro hnil
+    subst initial
+    simp at htys
+    simpa [htys] using hheadTy
+  have hone : 1 ≤ initial.length := by
+    cases initial with
+    | nil => exact (hne rfl).elim
+    | cons => simp
+  apply EvaluatesTo.op_collect
+      (finish := Op.whileBodyFromValues (primCtx := ctx.primCtx) opName) hop
+      (by simp [Op.whileOp, hone]) hargs
+  have hout : Op.whileResultTy? (primCtx := ctx.primCtx)
+      (.func stateTys Peano.BoolTy ::
+        .func (stateTys ++ [.func stateTys resultTy]) resultTy :: stateTys) =
+        some resultTy := by
+    simp [Op.whileResultTy?, hheadTy]
+  obtain ⟨head, tail, hinitial⟩ : ∃ head tail, initial = head :: tail := by
+    cases initial with
+    | nil => exact (hne rfl).elim
+    | cons head tail => exact ⟨head, tail, rfl⟩
+  have hhead : initial.head? = some head := by simp [hinitial]
+  cases N with
+  | zero =>
+      obtain ⟨hcond, hresult⟩ := exits initial init
+      have hcondApply : EvaluatesApply ctx (whileCondRef condName stateTys) initial
+          (Val.bool false) := EvaluatesApply.blockRef hcond
+      obtain ⟨condStart, hcondDrive, hcondFrom⟩ :=
+        EvaluatesFrom.driveOp_apply (env := env) (stack := []) (operands := [])
+          (resume := fun condition =>
+            match condition.asBool? with
+            | some false => .done loopResult
+            | some true =>
+                .apply (whileBodyRef bodyName stateTys resultTy)
+                  (initial ++ [whileRef opName condName bodyName stateTys resultTy]) .done
+            | none => .fail) hcondApply
+          (hdrive := by simp only [Val.asBool?_bool, EvalState.driveOp])
+          (EvaluatesFrom.done (ctx := ctx) (value := loopResult) (scope := env) (base := []))
+      refine ⟨condStart, ?_, hcondFrom⟩
+      have hfinish :
+          Op.whileBodyFromValues (primCtx := ctx.primCtx) opName
+              ([whileCondRef condName stateTys, whileBodyRef bodyName stateTys resultTy] ++ initial) =
+            .apply (whileCondRef condName stateTys) initial (fun condition =>
+              match condition.asBool? with
+              | some false => .done loopResult
+              | some true =>
+                  .apply (whileBodyRef bodyName stateTys resultTy)
+                    (initial ++ [whileRef opName condName bodyName stateTys resultTy]) .done
+              | none => .fail) := by
+        simp [Op.whileBodyFromValues, hout, hresult, htys,
+          whileCondRef, whileBodyRef, whileRef]
+        funext condition
+        unfold Op.whileAfterCondition
+        rw [htys]
+        rfl
+      rw [hfinish]
+      exact hcondDrive
+  | succ remaining =>
+      obtain ⟨hcond, hbody⟩ := preserved 0 initial (by omega) init
+      have hnext : ∀ nextArgs, I (0 + 1) nextArgs →
+          EvaluatesApply ctx (whileRef opName condName bodyName stateTys resultTy)
+            nextArgs loopResult := by
+        intro nextArgs hnextI
+        apply while_invariant (I := fun n args => I (n + 1) args) (N := remaining)
+            hop hheadTy hnextI
+        · intro n args hI
+          exact typed (n + 1) args hI
+        · intro n args hn hI
+          exact preserved (n + 1) args (by omega) hI
+        · intro args hI
+          apply exits args
+          simpa only [Nat.add_comm] using hI
+      have hcondApply : EvaluatesApply ctx (whileCondRef condName stateTys) initial
+          (Val.bool true) := EvaluatesApply.blockRef hcond
+      have hbodyApply : EvaluatesApply ctx (whileBodyRef bodyName stateTys resultTy)
+          (initial ++ [whileRef opName condName bodyName stateTys resultTy]) loopResult :=
+        EvaluatesApply.blockRef (hbody hnext)
+      obtain ⟨bodyStart, hbodyDrive, hbodyFrom⟩ :=
+        EvaluatesFrom.driveOp_apply (env := env) (stack := []) (operands := [])
+          (resume := fun value => .done value) hbodyApply
+          (hdrive := by simp [EvalState.driveOp])
+          (EvaluatesFrom.done (ctx := ctx) (value := loopResult) (scope := env) (base := []))
+      obtain ⟨condStart, hcondDrive, hcondFrom⟩ :=
+        EvaluatesFrom.driveOp_apply (env := env) (stack := []) (operands := [])
+          (resume := fun condition =>
+            match condition.asBool? with
+            | some false => .done head
+            | some true =>
+                .apply (whileBodyRef bodyName stateTys resultTy)
+                  (initial ++ [whileRef opName condName bodyName stateTys resultTy]) .done
+            | none => .fail) hcondApply
+          (hdrive := by simpa only [Val.asBool?_bool] using hbodyDrive) hbodyFrom
+      refine ⟨condStart, ?_, hcondFrom⟩
+      have hfinish :
+          Op.whileBodyFromValues (primCtx := ctx.primCtx) opName
+              ([whileCondRef condName stateTys, whileBodyRef bodyName stateTys resultTy] ++ initial) =
+            .apply (whileCondRef condName stateTys) initial (fun condition =>
+              match condition.asBool? with
+              | some false => .done head
+              | some true =>
+                  .apply (whileBodyRef bodyName stateTys resultTy)
+                    (initial ++ [whileRef opName condName bodyName stateTys resultTy]) .done
+              | none => .fail) := by
+        simp [Op.whileBodyFromValues, hout, hhead, htys,
+          whileCondRef, whileBodyRef, whileRef]
+        funext condition
+        unfold Op.whileAfterCondition
+        rw [htys]
+        rfl
+      rw [hfinish]
+      exact hcondDrive
+
+/-- The semantic while rule split into the four obligations exposed by `while_induction`. -/
+def whileInduction {ctx : Ctx} [Peano.Types ctx.primCtx]
+    {opName condName bodyName : String} {stateTys : List Ty} {resultTy : Ty}
+    {I : Nat → List (Val ctx.primCtx) → Prop} {N : Nat}
+    {initial : List (Val ctx.primCtx)} {loopResult : Val ctx.primCtx}
+    {env : Env ctx.primCtx} {operands : List (Term ctx.primCtx)}
+    (hop : ctx.opCtx.get? opName = some (Op.whileOp (primCtx := ctx.primCtx)))
+    (hargs : EvaluatesToAll ctx env operands
+      ([whileCondRef condName stateTys, whileBodyRef bodyName stateTys resultTy] ++ initial))
+    (hheadTy : stateTys.head? = some resultTy)
+    (typed : ∀ n args, I n args → args.map Val.ty = stateTys) :
+    PropRefinement (EvaluatesTo ctx env (.op opName operands) loopResult) where
+  goals :=
+    [ I 0 initial
+    , ∀ n args, n < N → I n args → EvaluatesCall ctx condName args (Val.bool true)
+    , ∀ n args, n < N → I n args →
+        ((∀ nextArgs, I (n + 1) nextArgs →
+            EvaluatesApply ctx (whileRef opName condName bodyName stateTys resultTy)
+              nextArgs loopResult) →
+          EvaluatesCall ctx bodyName
+            (args ++ [whileRef opName condName bodyName stateTys resultTy]) loopResult)
+    , ∀ args, I N args →
+        EvaluatesCall ctx condName args (Val.bool false) ∧ args.head? = some loopResult
+    ]
+  prove := by
+    intro proveSubgoals
+    have init : I 0 initial := proveSubgoals _ (by simp)
+    have condition : ∀ n args, n < N → I n args →
+        EvaluatesCall ctx condName args (Val.bool true) := proveSubgoals _ (by simp)
+    have preservation : ∀ n args, n < N → I n args →
+        ((∀ nextArgs, I (n + 1) nextArgs →
+            EvaluatesApply ctx (whileRef opName condName bodyName stateTys resultTy)
+              nextArgs loopResult) →
+          EvaluatesCall ctx bodyName
+            (args ++ [whileRef opName condName bodyName stateTys resultTy]) loopResult) :=
+      proveSubgoals _ (by simp)
+    have termination : ∀ args, I N args →
+        EvaluatesCall ctx condName args (Val.bool false) ∧ args.head? = some loopResult :=
+      proveSubgoals _ (by simp)
+    apply while_evaluatesTo (I := I) (N := N) (loopResult := loopResult) hop hargs hheadTy
+    · exact init
+    · exact typed
+    · intro n args hn hinv
+      exact ⟨condition n args hn hinv, preservation n args hn hinv⟩
+    · exact termination
+
+end Peano
 
 end Zag

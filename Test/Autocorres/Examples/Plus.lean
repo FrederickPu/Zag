@@ -5,14 +5,27 @@ namespace Zag.Test.Autocorres.Examples
 open Zag Zag.Lib.PeanoHeap
 open Zag.Pr.Induction
 
+/-! `plusLoop` is a `while` over two variables: it increments `x` and decrements `y` until `y`
+  reaches zero, and answers with `x`. The CPS body computes both next-state values from the current
+  state, then passes them to the loop continuation.
+
+  `plusLoop` keeps index 1 in the list: `Test/Induction.lean` reaches for `plusBlocks[1].2`. -/
 abbrev plusBlocks : BlockCtx.Raw heapCtx :=
   blocks% [
     plus(x : Nat, y : Nat) : Nat {
       ret op "add"[x, y]
     },
     plusLoop(x : Nat, y : Nat) : Nat {
-      done := primEq y nat(0);
-      ret if done { x } else { call plusLoop [op "add"[x, nat(1)], op "sub"[y, nat(1)]] }
+      final := while [plusLoopCond, plusLoopBody] (x, y);
+      ret final
+    },
+    plusLoopCond(x : Nat, y : Nat) : Bool {
+      ret primGt y nat(0)
+    },
+    plusLoopBody(x : Nat, y : Nat, loop : func[Nat, Nat] => Nat) : Nat {
+      nextX := op "add"[x, nat(1)];
+      nextY := op "sub"[y, nat(1)];
+      ret apply loop [nextX, nextY]
     },
     plusMain() : Nat {
       direct := call plus [nat(1), nat(2)];
@@ -33,200 +46,26 @@ theorem plusCtx_wellTyped : Ctx.WellTyped plusCtx := by typecheck_ctx
 theorem plus_eval (x y : Nat) :
     EvaluatesCall plusCtx "plus" ([Val.nat x, Val.nat y] : List (Val heapCtx))
       (Val.nat (x + y)) := by
-  evaluates_call 300 [heapOpCtx, plusBlocks]
+  evaluates_call [heapOpCtx, Op.fixed, plusBlocks]
 
+/-- After `k` turns the state is `(x + k, y - k)`, and the loop exits after `y` of them. -/
 theorem plusLoop_eval (x y : Nat) :
     EvaluatesCall plusCtx "plusLoop" ([Val.nat x, Val.nat y] : List (Val heapCtx))
       (Val.nat (x + y)) := by
-  induction y generalizing x with
-  | zero => evaluates_call 300 [heapOpCtx, plusBlocks]
-  | succ y ih =>
-      refine EvaluatesCall.of_evaluatesFrom ?_
-      intro env base
-      set_option linter.unusedSimpArgs false in
-        simp +arith [EvalState.enterInstrs, EvalState.enterBlock, BlockCtx.get?,
-          BlockCtx.Raw.get?, Scope.get?, Block.entryEnv, Term.nat, Term.bool, Term.ite,
-          heapOpCtx, plusBlocks]
-      refine EvaluatesFrom.trans_stepN (fuel₀ := 9)
-        (mid := {
-          control := .eval (.call "plusLoop"
-            [Term.op "add" [Term.var "x", Term.nat 1],
-             Term.op "sub" [Term.var "y", Term.nat 1]]),
-          env := [("x", Val.nat x), ("y", Val.nat (y + 1)), ("done", Val.bool false)],
-          stack :=
-            Frame.opBody (fun elseVal =>
-              match elseVal with
-              | some value => Op.Body.done value
-              | none => Op.Body.fail) []
-              [("x", Val.nat x), ("y", Val.nat (y + 1)), ("done", Val.bool false)] ::
-            Frame.call "plusLoop" env :: base }) ?_ ?_
-      · set_option linter.unusedSimpArgs false in
-          simp +arith [EvalState.stepN, EvalState.step, EvalState.driveOp,
-            EvalState.enterInstrs, EvalState.enterBlock, OpCtx.get?, BlockCtx.get?,
-            BlockCtx.Raw.get?, Scope.get?, Block.entryEnv, Peano.opCtx, Op.natBinary,
-            Op.natUnary, Op.compare, Op.eq, Op.ite, Op.ofVals, Op.Body.eager,
-            Term.nat, Term.bool, Term.ite, heapOpCtx, plusBlocks] <;>
-            (first | rfl | funext z <;> cases z <;> rfl)
-      refine EvaluatesFrom.call_then (block := plusBlocks[1].2) (hcall := ih (x + 1)) ?_ ?_ ?_
-      · set_option linter.unusedSimpArgs false in
-          simp +arith [EvalState.step, EvalState.driveOp, EvalState.enterInstrs,
-            EvalState.enterBlock, OpCtx.get?, BlockCtx.get?, BlockCtx.Raw.get?, Scope.get?,
-            Block.entryEnv, Peano.opCtx, Op.natBinary, Op.natUnary, Op.compare,
-            Op.eq, Op.ite, Op.ofVals, Op.Body.eager, Term.nat, Term.bool, Term.ite,
-            heapOpCtx, plusBlocks] <;> rfl
-      · evaluates_to_all 300 [heapOpCtx, plusBlocks]
-      · intro scope
-        refine EvaluatesFrom.trans_stepN (fuel₀ := 2)
-          (mid := { control := .ret (Val.nat (y + x + 1)), env := env, stack := base }) ?_ ?_
-        · set_option linter.unusedSimpArgs false in
-            simp +arith [EvalState.stepN, EvalState.step, EvalState.driveOp,
-              EvalState.enterInstrs, EvalState.enterBlock, OpCtx.get?, BlockCtx.get?,
-              BlockCtx.Raw.get?, Scope.get?, Block.entryEnv, Peano.opCtx, Op.natBinary,
-              Op.natUnary, Op.compare, Op.eq, Op.ite, Op.ofVals, Op.Body.eager,
-              Term.nat, Term.bool, Term.ite, heapOpCtx, plusBlocks] <;> rfl
-        exact EvaluatesFrom.done
+  while_induction [heapOpCtx, Op.fixed, plusBlocks]
+    (fun k args => args = [Val.nat (x + k), Val.nat (y - k)]) stopping_at y
+    returning (Val.nat (x + y))
+
+/-- The machine really runs the loop: three concrete turns, no invariant involved. -/
+example : EvaluatesCall plusCtx "plusLoop" ([Val.nat 1, Val.nat 3] : List (Val heapCtx))
+    (Val.nat 4) := by
+  evaluates_call [heapOpCtx, Op.fixed, Op.whileOp, Op.Body.collect,
+    Op.whileBodyFromValues, Op.whileAfterCondition, Op.whileResultTy?, plusBlocks]
 
 /-- The loop agrees with the one-shot version, which is what `plusMain` checks at runtime. -/
 theorem plusMain_eval : EvaluatesCall plusCtx "plusMain" [] (Val.nat 0) := by
-  refine EvaluatesCall.of_evaluatesFrom ?_
-  intro env base
-  set_option linter.unusedSimpArgs false in
-    simp +arith [EvalState.enterInstrs, EvalState.enterBlock, BlockCtx.get?,
-      BlockCtx.Raw.get?, Scope.get?, Block.entryEnv, Term.nat, Term.bool, Term.ite,
-      heapOpCtx, plusBlocks]
-  refine EvaluatesFrom.call_then (block := plusBlocks[0].2) (hcall := plus_eval 1 2) ?_ ?_ ?_
-  · set_option linter.unusedSimpArgs false in
-      simp +arith [EvalState.step, EvalState.driveOp, EvalState.enterInstrs,
-        EvalState.enterBlock, OpCtx.get?, BlockCtx.get?, BlockCtx.Raw.get?, Scope.get?,
-        Block.entryEnv, Peano.opCtx, Op.natBinary, Op.natUnary, Op.compare,
-        Op.eq, Op.ite, Op.ofVals, Op.Body.eager, Term.nat, Term.bool, Term.ite,
-        heapOpCtx, plusBlocks] <;> rfl
-  · evaluates_to_all 600 [heapOpCtx, plusBlocks]
-  · intro scope
-    refine EvaluatesFrom.trans_stepN (fuel₀ := 1)
-      (mid := {
-        control := .eval (.call "plusLoop" [Term.nat 1, Term.nat 2]),
-        env := [("direct", Val.nat 3)],
-        stack :=
-          Frame.instrs "looped"
-            [{ name := "same", value := Term.op "eq" [Term.var "direct", Term.var "looped"] }]
-            (Term.op "ite" [Term.var "same", Term.nat 0, Term.nat 1])
-            [("direct", Val.nat 3)] ::
-          Frame.call "plusMain" env :: base }) ?_ ?_
-    · set_option linter.unusedSimpArgs false in
-        simp +arith [EvalState.stepN, EvalState.step, EvalState.driveOp,
-          EvalState.enterInstrs, EvalState.enterBlock, OpCtx.get?, BlockCtx.get?,
-          BlockCtx.Raw.get?, Scope.get?, Block.entryEnv, Peano.opCtx, Op.natBinary,
-          Op.natUnary, Op.compare, Op.eq, Op.ite, Op.ofVals, Op.Body.eager,
-          Term.nat, Term.bool, Term.ite, heapOpCtx, plusBlocks] <;> rfl
-    refine EvaluatesFrom.call_then (block := plusBlocks[1].2) (hcall := plusLoop_eval 1 2) ?_ ?_ ?_
-    · set_option linter.unusedSimpArgs false in
-        simp +arith [EvalState.step, EvalState.driveOp, EvalState.enterInstrs,
-          EvalState.enterBlock, OpCtx.get?, BlockCtx.get?, BlockCtx.Raw.get?, Scope.get?,
-          Block.entryEnv, Peano.opCtx, Op.natBinary, Op.natUnary, Op.compare,
-          Op.eq, Op.ite, Op.ofVals, Op.Body.eager, Term.nat, Term.bool, Term.ite,
-          heapOpCtx, plusBlocks] <;> rfl
-    · evaluates_to_all 600 [heapOpCtx, plusBlocks]
-    · intro scope
-      evaluates_from 600 [heapOpCtx, plusBlocks]
-
-/-! ### the same fact, proved inside Zag by induction
-
-  Above, Lean evaluates the program. Here Zag states `plusLoop x n = x + n` as a proposition of
-  its own and derives it from `Pr.Induction`'s rule; Lean only discharges the base and step. -/
-
-theorem plusSuccSpec : SuccSpec plusCtx "succ" where
-  hasType_op := fun _ _ ht => Term.hasType.unOp rfl ht
-  eval_succ := fun _ _ _ ht => by
-    simpa using (evaluates_natUnary (ctx := plusCtx) (name := "succ") (f := Nat.succ)
-      (Peano.Model.succOp (ctx := plusCtx)) ht)
-
-def plusLoopTerm (x : Nat) (t : Term heapCtx) : Term heapCtx := .call "plusLoop" [Term.nat x, t]
-
-def plusAddTerm (x : Nat) (t : Term heapCtx) : Term heapCtx := .op "add" [Term.nat x, t]
-
-def plusLoopStatement (x y : Nat) : Pr (Term heapCtx) :=
-  .eq [] Peano.NatTy (plusLoopTerm x (Term.nat y)) (plusAddTerm x (Term.nat y))
-
-def plusLoopPredicate (x : Nat) : Pr (Term heapCtx) :=
-  .eq [] Peano.NatTy (plusLoopTerm x (.var "n")) (plusAddTerm x (.var "n"))
-
-attribute [local simp] plusLoopTerm plusAddTerm plusLoopStatement plusLoopPredicate
-
-theorem plusLoopStatement_eq (x y : Nat) :
-    plusLoopStatement x y = Pr.Induction.instantiate "n" (Term.nat y) (plusLoopPredicate x) := rfl
-
-theorem plusLoopTerm_hasType {varCtx : VarCtx} {x : Nat} {t : Term heapCtx}
-    (ht : Term.hasType plusCtx varCtx t Peano.NatTy) :
-    Term.hasType plusCtx varCtx (plusLoopTerm x t) Peano.NatTy :=
-  Term.hasType.call (ctx := plusCtx) (varCtx := varCtx) (name := "plusLoop")
-    (args := [Term.nat x, t]) (block := plusBlocks[1].2) rfl rfl (by
-      intro idx
-      cases idx using Fin.cases with
-      | zero => exact Term.hasType.prim _
-      | succ idx =>
-          cases idx using Fin.cases with
-          | zero => exact ht
-          | succ idx => exact Fin.elim0 idx)
-
-theorem plusAddTerm_hasType {varCtx : VarCtx} {x : Nat} {t : Term heapCtx}
-    (ht : Term.hasType plusCtx varCtx t Peano.NatTy) :
-    Term.hasType plusCtx varCtx (plusAddTerm x t) Peano.NatTy :=
-  Term.hasType.binOp (argTy := Peano.NatTy) rfl (Term.hasType.prim _) ht
-
-/-- The statement `plusLoop x t = x + t`, for any `t` that evaluates to a `Nat`. -/
-theorem plusLoop_eq_of_arg_nat (x : Nat) {t : Term heapCtx}
-    (ht : Term.hasType plusCtx [] t Peano.NatTy)
-    (heval : ∀ env : Env heapCtx, env.Models [] → ∃ n : Nat,
-      EvaluatesTo plusCtx env t (Val.nat n)) :
-    Term.eq plusCtx [] Peano.NatTy (plusLoopTerm x t) (plusAddTerm x t) :=
-  term_eq_nat_of_eval (plusLoopTerm_hasType ht) (plusAddTerm_hasType ht) fun env henv =>
-    match heval env henv with
-    | ⟨n, hn⟩ =>
-        let hnatx : EvaluatesTo plusCtx env (Term.nat x) (Val.nat x) :=
-          Pr.Induction.eval_natLit (ctx := plusCtx) env x
-        let hblock : plusCtx.blockCtx.get? "plusLoop" = some plusBlocks[1].2 := by
-          set_option linter.unusedSimpArgs false in
-            simp [BlockCtx.get?, BlockCtx.Raw.get?, Scope.get?, plusCtx, plusBlocks]
-        ⟨x + n,
-          by
-            unfold plusLoopTerm
-            exact EvaluatesTo.call (block := plusBlocks[1].2)
-              (hcall := plusLoop_eval x n) hblock
-              (EvaluatesToAll.cons hnatx (EvaluatesToAll.cons hn EvaluatesToAll.nil)),
-          by
-            unfold plusAddTerm
-            exact evaluates_natBinary (ctx := plusCtx) (name := "add") (f := Nat.add)
-              (Peano.Model.addOp (ctx := plusCtx)) hnatx hn⟩
-
-theorem plusLoopBaseProvable (x : Nat) :
-    Pr.Provable plusCtx [] [] (Pr.Induction.instantiate "n" (Term.nat 0) (plusLoopPredicate x)) := by
-  rw [← plusLoopStatement_eq x 0]
-  refine Pr.Provable.ofProof ?_
-  exact_reflected plusLoop_eq_of_arg_nat x (Term.hasType.prim _)
-    (fun env _ => ⟨0, Pr.Induction.eval_natLit (ctx := plusCtx) env 0⟩)
-
-theorem plusLoopStepProvable (x : Nat) :
-    Pr.Provable plusCtx [] [] (Pr.Induction.natStepGoal "n" "n_next" "succ" (plusLoopPredicate x)) := by
-  open_reflected_provable
-  intro nTerm hn y hy hsucc _ih
-  exact_reflected plusLoop_eq_of_arg_nat x hy
-    (eval_nat_of_reflected_natUnary_eq (ctx := plusCtx) (name := "succ") (f := Nat.succ)
-      rfl hsucc)
-
-def plusLoopInductionProgram (x y : Nat) : Refinement plusCtx [] [] (plusLoopStatement x y) :=
-  Pr.Induction.natInductionWithPredicate "succ" plusSuccSpec (plusLoopStatement x y)
-    (plusLoopPredicate x) "n" "n_next" y (by decide) (by rfl)
-    (by
-      change ¬ ("n_next" ∈ (["n", "n"] : List String))
-      decide)
-    (plusLoopStatement_eq x y)
-
-theorem plusLoopProvable (x y : Nat) : Pr.Provable plusCtx [] [] (plusLoopStatement x y) := by
-  applyRefinement (plusLoopInductionProgram x y)
-  · cases plusLoopBaseProvable x with | ofProof proof => exact proof
-  · cases plusLoopStepProvable x with | ofProof proof => exact proof
-
-example : Pr.Provable plusCtx [] [] (plusLoopStatement 7 100) := plusLoopProvable 7 100
+  evaluates_call [heapOpCtx, Op.fixed, plusBlocks]
+  use_call [heapOpCtx, Op.fixed, plusBlocks] plus_eval
+  use_call [heapOpCtx, Op.fixed, plusBlocks] plusLoop_eval
 
 end Zag.Test.Autocorres.Examples

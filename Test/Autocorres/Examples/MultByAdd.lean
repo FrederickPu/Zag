@@ -4,14 +4,27 @@ namespace Zag.Test.Autocorres.Examples
 
 open Zag Zag.Lib.PeanoHeap
 
+/-! `multByAddLoop` is a `while` over three variables. The loop answers with its *first* variable,
+  so the state is ordered `(acc, remaining, x)` even though the block's own parameters keep the
+  upstream order. The CPS body computes the simultaneous next state and passes it to the loop
+  continuation; `x` remains unchanged. -/
 abbrev multByAddBlocks : BlockCtx.Raw heapCtx :=
   blocks% [
     multByAdd(x : Nat, y : Nat) : Nat {
       ret call multByAddLoop [x, y, nat(0)]
     },
     multByAddLoop(x : Nat, remaining : Nat, acc : Nat) : Nat {
-      done := primEq remaining nat(0);
-      ret if done { acc } else { call multByAddLoop [x, op "sub"[remaining, nat(1)], op "add"[acc, x]] }
+      final := while [multByAddCond, multByAddBody] (acc, remaining, x);
+      ret final
+    },
+    multByAddCond(acc : Nat, remaining : Nat, x : Nat) : Bool {
+      ret primGt remaining nat(0)
+    },
+    multByAddBody(acc : Nat, remaining : Nat, x : Nat,
+        loop : func[Nat, Nat, Nat] => Nat) : Nat {
+      nextAcc := op "add"[acc, x];
+      nextRemaining := op "sub"[remaining, nat(1)];
+      ret apply loop [nextAcc, nextRemaining, x]
     }
   ]
 
@@ -22,114 +35,50 @@ abbrev multByAddCtx : Ctx := mkCtx multByAddBlocks multByAddBlocksValid
 
 theorem multByAddCtx_wellTyped : Ctx.WellTyped multByAddCtx := by typecheck_ctx
 
-/-- The loop accumulates one `x` per remaining step. -/
+/-- The loop accumulates one `x` per remaining step: after `k` turns the state is
+  `(acc + k * x, remaining - k, x)`, and it exits after `remaining` of them. -/
 theorem multByAddLoop_eval (x remaining acc : Nat) :
     EvaluatesCall multByAddCtx "multByAddLoop"
         ([Val.nat x, Val.nat remaining, Val.nat acc] : List (Val heapCtx))
       (Val.nat (acc + remaining * x)) := by
-  induction remaining generalizing acc with
-  | zero => evaluates_call 300 [heapOpCtx, multByAddBlocks]
-  | succ remaining ih =>
-      refine EvaluatesCall.of_evaluatesFrom ?_
-      intro env base
-      set_option linter.unusedSimpArgs false in
-        simp +arith [EvalState.enterInstrs, EvalState.enterBlock, BlockCtx.get?,
-          BlockCtx.Raw.get?, Scope.get?, Block.entryEnv, Term.nat, Term.bool, Term.ite,
-          heapOpCtx, multByAddBlocks]
-      refine EvaluatesFrom.trans_stepN (fuel₀ := 9)
-        (mid := {
-          control := .eval (.call "multByAddLoop"
-            [Term.var "x",
-             Term.op "sub" [Term.var "remaining", Term.nat 1],
-             Term.op "add" [Term.var "acc", Term.var "x"]]),
-          env := [("x", Val.nat x), ("remaining", Val.nat (remaining + 1)),
-            ("acc", Val.nat acc), ("done", Val.bool false)],
-          stack :=
-            Frame.opBody (fun elseVal =>
-              match elseVal with
-              | some value => Op.Body.done value
-              | none => Op.Body.fail) []
-              [("x", Val.nat x), ("remaining", Val.nat (remaining + 1)),
-                ("acc", Val.nat acc), ("done", Val.bool false)] ::
-            Frame.call "multByAddLoop" env :: base }) ?_ ?_
-      · set_option linter.unusedSimpArgs false in
-          simp +arith [EvalState.stepN, EvalState.step, EvalState.driveOp,
-            EvalState.enterInstrs, EvalState.enterBlock, OpCtx.get?, BlockCtx.get?,
-            BlockCtx.Raw.get?, Scope.get?, Block.entryEnv, Peano.opCtx, Op.natBinary,
-            Op.natUnary, Op.compare, Op.eq, Op.ite, Op.ofVals, Op.Body.eager,
-            Term.nat, Term.bool, Term.ite, heapOpCtx, multByAddBlocks] <;>
-            (first | rfl | funext z <;> cases z <;> rfl)
-      refine EvaluatesFrom.call_then (block := multByAddBlocks[1].2)
-        (hcall := by
-          show EvaluatesCall multByAddCtx "multByAddLoop"
-            ([Val.nat x, Val.nat remaining, Val.nat (acc + x)] : List (Val heapCtx))
-            (Val.nat (acc + (remaining + 1) * x))
-          have hnat : (acc + x) + remaining * x = acc + (remaining + 1) * x := by
-            rw [Nat.succ_mul]
-            omega
-          simpa [hnat] using ih (acc + x)) ?_ ?_ ?_
-      · set_option linter.unusedSimpArgs false in
-          simp +arith [EvalState.step, EvalState.driveOp, EvalState.enterInstrs,
-            EvalState.enterBlock, OpCtx.get?, BlockCtx.get?, BlockCtx.Raw.get?, Scope.get?,
-            Block.entryEnv, Peano.opCtx, Op.natBinary, Op.natUnary, Op.compare,
-            Op.eq, Op.ite, Op.ofVals, Op.Body.eager, Term.nat, Term.bool, Term.ite,
-            heapOpCtx, multByAddBlocks] <;> rfl
-      · evaluates_to_all 300 [heapOpCtx, multByAddBlocks]
-      · intro scope
-        refine EvaluatesFrom.trans_stepN (fuel₀ := 2)
-          (mid := {
-            control := .ret (Val.nat (acc + (remaining + 1) * x)),
-            env := env,
-            stack := base }) ?_ ?_
-        · set_option linter.unusedSimpArgs false in
-            simp +arith [EvalState.stepN, EvalState.step, EvalState.driveOp,
-              EvalState.enterInstrs, EvalState.enterBlock, OpCtx.get?, BlockCtx.get?,
-              BlockCtx.Raw.get?, Scope.get?, Block.entryEnv, Peano.opCtx, Op.natBinary,
-              Op.natUnary, Op.compare, Op.eq, Op.ite, Op.ofVals, Op.Body.eager,
-              Term.nat, Term.bool, Term.ite, heapOpCtx, multByAddBlocks] <;> rfl
-        exact EvaluatesFrom.done
+  while_induction [heapOpCtx, Op.fixed, multByAddBlocks, Nat.succ_mul]
+    (fun k args => args = [Val.nat (acc + k * x), Val.nat (remaining - k), Val.nat x])
+    stopping_at remaining returning (Val.nat (acc + remaining * x))
+
+/-- The same loop with `Nat.succ_mul` withheld -- the smallest case in the repository where the
+  tactic does not close everything.
+
+  `+arith` handles the linear part, so the residue is exactly the one nonlinear fact about the
+  accumulator, exposed as an ordinary preservation goal. -/
+example (x remaining acc : Nat) :
+    EvaluatesCall multByAddCtx "multByAddLoop"
+        ([Val.nat x, Val.nat remaining, Val.nat acc] : List (Val heapCtx))
+      (Val.nat (acc + remaining * x)) := by
+  while_induction [heapOpCtx, Op.fixed, multByAddBlocks]
+    (fun k args => args = [Val.nat (acc + k * x), Val.nat (remaining - k), Val.nat x])
+    stopping_at remaining returning (Val.nat (acc + remaining * x))
+  case step.preservation =>
+    constructor
+    · simp [Nat.succ_mul, Nat.add_comm]
+    · omega
+
+/-- The machine really runs the three-variable loop: four concrete turns of four blocks each. -/
+example : EvaluatesCall multByAddCtx "multByAddLoop"
+    ([Val.nat 3, Val.nat 4, Val.nat 0] : List (Val heapCtx)) (Val.nat 12) := by
+  evaluates_call [heapOpCtx, Op.fixed, Op.whileOp, Op.Body.collect,
+    Op.whileBodyFromValues, Op.whileAfterCondition, Op.whileResultTy?, multByAddBlocks]
 
 theorem multByAdd_eval (x y : Nat) :
     EvaluatesCall multByAddCtx "multByAdd" ([Val.nat x, Val.nat y] : List (Val heapCtx))
       (Val.nat (x * y)) := by
-  refine EvaluatesCall.of_evaluatesFrom ?_
-  intro env base
-  set_option linter.unusedSimpArgs false in
-    simp +arith [EvalState.enterInstrs, EvalState.enterBlock, BlockCtx.get?,
-      BlockCtx.Raw.get?, Scope.get?, Block.entryEnv, Term.nat, Term.bool, Term.ite,
-      heapOpCtx, multByAddBlocks]
-  refine EvaluatesFrom.call_then (block := multByAddBlocks[1].2)
-    (hcall := by simpa [Nat.mul_comm] using multByAddLoop_eval x y 0) ?_ ?_ ?_
-  · set_option linter.unusedSimpArgs false in
-      simp +arith [EvalState.step, EvalState.driveOp, EvalState.enterInstrs,
-        EvalState.enterBlock, OpCtx.get?, BlockCtx.get?, BlockCtx.Raw.get?, Scope.get?,
-        Block.entryEnv, Peano.opCtx, Op.natBinary, Op.natUnary, Op.compare,
-        Op.eq, Op.ite, Op.ofVals, Op.Body.eager, Term.nat, Term.bool, Term.ite,
-        heapOpCtx, multByAddBlocks] <;> rfl
-  · evaluates_to_all 300 [heapOpCtx, multByAddBlocks]
-  · intro scope
-    evaluates_from 300 [heapOpCtx, multByAddBlocks]
+  evaluates_call [heapOpCtx, Op.fixed, multByAddBlocks, Nat.mul_comm]
+  use_call [heapOpCtx, Op.fixed, multByAddBlocks, Nat.mul_comm] multByAddLoop_eval
 
 /-- The same statement at the surface: calling `multByAdd` on two literals. -/
 theorem multByAdd_eval_call (x y : Nat) :
     EvaluatesTo multByAddCtx [] (.call "multByAdd" [Term.nat x, Term.nat y])
       (Val.nat (x * y)) := by
-  obtain ⟨fuel, scope, hsteps⟩ :
-      EvaluatesFrom multByAddCtx (EvalState.start [] (.call "multByAdd" [Term.nat x, Term.nat y]))
-        (Val.nat (x * y)) [] := by
-    unfold EvalState.start
-    refine EvaluatesFrom.call_then (block := multByAddBlocks[0].2)
-      (hcall := multByAdd_eval x y) ?_ ?_ ?_
-    · set_option linter.unusedSimpArgs false in
-        simp +arith [EvalState.step, EvalState.driveOp, EvalState.enterInstrs,
-          EvalState.enterBlock, OpCtx.get?, BlockCtx.get?, BlockCtx.Raw.get?, Scope.get?,
-          Block.entryEnv, Peano.opCtx, Op.natBinary, Op.natUnary, Op.compare,
-          Op.eq, Op.ite, Op.ofVals, Op.Body.eager, Term.nat, Term.bool, Term.ite,
-          heapOpCtx, multByAddBlocks] <;> rfl
-    · evaluates_to_all 300 [heapOpCtx, multByAddBlocks]
-    · intro scope
-      exact EvaluatesFrom.done
-  refine ⟨fuel, ?_⟩
-  simpa [EvalState.result?] using congrArg EvalState.result? (EvalState.run_eq_of_stepN hsteps)
+  refine EvaluatesTo.call (multByAdd_eval x y) rfl ?_
+  evaluates_to_all [heapOpCtx, Op.fixed, multByAddBlocks]
 
 end Zag.Test.Autocorres.Examples

@@ -42,29 +42,34 @@ def Op.Body.applyVals {primCtx : PrimitiveCtx} :
 | .next _ _, [] => none
 | .next evaluate resume, value :: rest =>
     (resume (if evaluate then some value else none)).applyVals rest
+| .apply .., _ => none
 termination_by _ vals => vals.length
 
-/- apply an operator after dynamically checking its arity and domain -/
-def Op.applyVals {primCtx : PrimitiveCtx} (oper : Op primCtx) (vals : List (Val primCtx)) :
+/- Purely apply a named operator along a path that makes no machine application. This is the
+  concretization fast path; an executed `Body.apply` returns `none`. -/
+def Op.applyValsAt {primCtx : PrimitiveCtx} (name : String) (oper : Op primCtx)
+    (vals : List (Val primCtx)) :
     Option (Val primCtx) :=
-  if vals.length = oper.arity then
-    oper.body.applyVals vals
-  else none
+  match oper.body name vals.length with
+  | some body => body.applyVals vals
+  | none => none
 
-@[simp] theorem Op.Signature.applyVals_unary {primCtx : PrimitiveCtx} (output : Ty → Ty)
+@[simp] theorem Op.Signature.applyVals_unary {primCtx : PrimitiveCtx} (name : String)
+    (output : Ty → Ty)
     (run : (input : Ty) → Ty.type primCtx input → Ty.type primCtx (output input))
     (input : Ty) (value : Ty.type primCtx input) :
-    Op.applyVals (Signature.unary output run).toOp [Val.mk input value] =
+    Op.applyValsAt name (Signature.unary output run).toOp [Val.mk input value] =
       some (Val.mk (output input) (run input value)) := by
-  simp [Op.applyVals, Signature.toOp, Signature.unary, Signature.eagerBody, Op.Body.eager,
-    Signature.apply, Op.Body.applyVals]
+  simp [Op.applyValsAt, Op.fixed, Signature.toOp, Signature.unary, Signature.eagerBody,
+    Op.Body.eager, Signature.apply, Op.Body.applyVals]
 
-/- Apply a *primitive* function value. A block reference declines here: running a block needs the
-  machine, so `EvalState.step` intercepts it before this is reached. -/
+/- Apply a *primitive* function value. A block reference or an operator continuation declines here:
+  running either needs the machine, so `EvalState.step` intercepts it before this is reached. -/
 def Term.evalApp {primCtx : PrimitiveCtx} (fn : Val primCtx) (args : List (Val primCtx)) :
     Option (Val primCtx) :=
   match fn with
   | .blockRef .. => none
+  | .opRef .. => none
   | .mk fnTy fnVal =>
       match fnTy, fnVal with
       | .func argsTy outTy, fnVal => do

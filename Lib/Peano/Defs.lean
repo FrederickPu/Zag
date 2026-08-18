@@ -111,10 +111,8 @@ def compareOut? : List Ty → Option Ty
 | _ => none
 
 def compare {primCtx : PrimitiveCtx} [Peano.Types primCtx]
-    (cmp : Val primCtx → Val primCtx → Option Bool) : Op primCtx where
-  arity := 2
-  out tys := if tys 0 = tys 1 then some Peano.BoolTy else none
-  body := .next true fun
+    (cmp : Val primCtx → Val primCtx → Option Bool) : Op primCtx :=
+  Op.fixed 2 (fun tys => if tys 0 = tys 1 then some Peano.BoolTy else none) (.next true fun
     | none => .fail
     | some lhs => .next true fun
         | none => .fail
@@ -123,13 +121,13 @@ def compare {primCtx : PrimitiveCtx} [Peano.Types primCtx]
               match cmp lhs rhs with
               | none => .fail
               | some result => .done (Val.bool result)
-            else .fail
+            else .fail)
 
 theorem applyVals_compare {primCtx : PrimitiveCtx} [Peano.Types primCtx]
-    (cmp : Val primCtx → Val primCtx → Option Bool) (va vb : Val primCtx)
+    (name : String) (cmp : Val primCtx → Val primCtx → Option Bool) (va vb : Val primCtx)
     (hty : va.ty = vb.ty) :
-    Op.applyVals (compare cmp) [va, vb] = (cmp va vb).map Val.bool := by
-  simp [Op.applyVals, Op.Body.applyVals, compare, hty]
+    Op.applyValsAt name (compare cmp) [va, vb] = (cmp va vb).map Val.bool := by
+  simp [Op.applyValsAt, Op.fixed, Op.Body.applyVals, compare, hty]
   cases cmp va vb <;> simp [Op.Body.applyVals]
 
 def eq {primCtx : PrimitiveCtx} [Peano.Types primCtx] : Op primCtx :=
@@ -142,9 +140,8 @@ def eq {primCtx : PrimitiveCtx} [Peano.Types primCtx] : Op primCtx :=
   else none
 
 def ite {primCtx : PrimitiveCtx} [Peano.Types primCtx] : Op primCtx :=
-  { arity := 3
-    out := fun tys => (iteShape? (tys 0) (tys 1) (tys 2)).map Subtype.val
-    body := .next true fun
+  Op.fixed 3 (fun tys => (iteShape? (tys 0) (tys 1) (tys 2)).map Subtype.val)
+    (.next true fun
       | none => .fail
       | some conditionVal =>
           match conditionVal.as? Peano.BoolTy with
@@ -155,7 +152,7 @@ def ite {primCtx : PrimitiveCtx} [Peano.Types primCtx] : Op primCtx :=
                 .next (!chooseThen) fun elseVal =>
                   match if chooseThen then thenVal else elseVal with
                   | some value => .done value
-                  | none => .fail }
+                  | none => .fail)
 
 /- The arithmetic that used to be supplied as primitive functions. A primitive function is now
   just an operator with fixed operand and result types. -/
@@ -175,6 +172,50 @@ def natUnary {primCtx : PrimitiveCtx} [Peano.Types primCtx] (f : Nat → Nat) : 
       some (Val.nat (f n))
   | _ => none
 
+/- The typing rule for continuation-passing `while`. The first two operands are the condition and
+  body blocks; the remaining operands are the loop state. -/
+def whileResultTy? [Peano.Types primCtx] : List Ty → Option Ty
+| .func condArgs condOut :: .func bodyArgs bodyOut :: stateTys =>
+    match stateTys.head? with
+    | none => none
+    | some resultTy =>
+        if condArgs = stateTys ∧ condOut = Peano.BoolTy ∧
+            bodyArgs = stateTys ++ [.func stateTys resultTy] ∧ bodyOut = resultTy then
+          some resultTy
+        else none
+| _ => none
+
+def whileAfterCondition [Peano.Types primCtx] (name : String)
+    (condition body : Val primCtx) (state : List (Val primCtx)) (resultTy : Ty)
+    (currentResult conditionResult : Val primCtx) : Op.Body primCtx :=
+  match conditionResult.asBool? with
+  | some false => .done currentResult
+  | some true =>
+      let stateTys := state.map Val.ty
+      let nextIteration := Val.opRef name [condition, body] stateTys resultTy
+      .apply body (state ++ [nextIteration]) .done
+  | none => .fail
+
+def whileBodyFromValues [Peano.Types primCtx] (name : String) (vals : List (Val primCtx)) :
+    Op.Body primCtx :=
+  (do
+    let condition ← vals[0]?
+    let body ← vals[1]?
+    let state := vals.drop 2
+    let resultTy ← whileResultTy? (primCtx := primCtx) (vals.map Val.ty)
+    let currentResult ← state.head?
+    some (Op.Body.apply condition state
+      (whileAfterCondition name condition body state resultTy currentResult))).getD .fail
+
+/- A single variadic `while` operator. Applying the continuation returns through the body call,
+  so each iteration wraps the next one and remains compatible with the top-frame-only machine. -/
+def whileOp {primCtx : PrimitiveCtx} [Peano.Types primCtx] : Op primCtx where
+  out := whileResultTy? (primCtx := primCtx)
+  body name arity :=
+    if 3 ≤ arity then
+      some (Op.Body.collect (whileBodyFromValues (primCtx := primCtx) name) arity [])
+    else none
+
 end Op
 
 def Peano.opCtx (primCtx : PrimitiveCtx) [Peano.Types primCtx] : OpCtx primCtx :=
@@ -182,7 +223,7 @@ def Peano.opCtx (primCtx : PrimitiveCtx) [Peano.Types primCtx] : OpCtx primCtx :
    ("ite", Op.ite),
    ("add", Op.natBinary Nat.add), ("sub", Op.natBinary Nat.sub),
    ("mul", Op.natBinary Nat.mul), ("div", Op.natBinary Nat.div),
-   ("succ", Op.natUnary Nat.succ)]
+   ("succ", Op.natUnary Nat.succ), ("while", Op.whileOp)]
 
 namespace Peano
 
@@ -245,11 +286,9 @@ theorem Term.hasType.ite {ctx : Ctx} [Peano.Model ctx]
       contradiction
   · unfold OpCtx.outTy?
     rw [Peano.Model.iteOp]
-    simp [Op.ite, Op.iteShape?]
+    simp [Op.ite, Op.fixed, Op.iteShape?]
 
-/- Typing for a two-operand op. Arithmetic used to be a `Term.primFunc` with a `func` type, so
-  it was typed by `Term.hasType.app`; now that it is an ordinary op it is typed by
-  `Term.hasType.op` against `OpCtx.outTy?`, exactly like `eq`, `lt` and `ite`. -/
+/- Typing for ordinary two-operand operators through `OpCtx.outTy?`. -/
 theorem Term.hasType.binOp {ctx : Ctx} {varCtx : VarCtx} {name : String}
     {a b : Term ctx.primCtx} {argTy outTy : Ty}
     (hout : ctx.opCtx.outTy? name [argTy, argTy] = some outTy)

@@ -77,7 +77,12 @@ def inferType? (ctx : Ctx) (varCtx : VarCtx) :
 | .var name =>
     match h : Scope.get? varCtx name with
     | some ty => some ⟨ty, Term.hasType.var h⟩
-    | none => none
+    -- no local binding: the name may still be a block, and a block is a value
+    | none =>
+        match hb : ctx.blockCtx.get? name with
+        | some block =>
+            some ⟨.func (block.params.map Prod.snd) block.outTy, Term.hasType.varBlock h hb⟩
+        | none => none
 | .op name args =>
     match inferTypes? ctx varCtx args with
     | none => none
@@ -279,7 +284,7 @@ private theorem unifyType_sound {ctx : Ctx}
 
 def unifyType {ctx : Ctx}
     {ctxTy : Scope Ty} {ctxTerm : Scope (Term ctx.primCtx)}
-    (goal : Pr (Term ctx.primCtx)) : Refinement ctx ctxTy ctxTerm goal where
+    (goal : Pr (Term ctx.primCtx)) : PrRefinement ctx ctxTy ctxTerm goal where
   goals := unifyTypeGoals (ctx := ctx) ctxTy ctxTerm goal
   prove := by
     intro proveSubgoals
@@ -326,9 +331,9 @@ macro_rules
           checkInstrs?, checkBlock?, checkBlocks?, checkCtx?, hasType_of_isSome,
           blockWellTyped_of_isSome, ctxWellTyped_of_isSome, VarCtx.subst, Ty.subst,
           Term.subst, Scope.get?, Scope.get?_append_singleton, BlockCtx.get?,
-          BlockCtx.Raw.get?, OpCtx.get?, OpCtx.outTy?, Lib.Peano.peanoCtx,
+          BlockCtx.Raw.get?, BlockCtx.empty, OpCtx.get?, OpCtx.outTy?, Lib.Peano.peanoCtx,
           Lib.Peano.natOpCtx, Peano.opCtx, Term.nat, Term.bool, Term.ite, Op.ite,
-          Op.eq, Op.compare, Op.natBinary, Op.natUnary, Op.ofVals])
+          Op.eq, Op.compare, Op.fixed, Op.natBinary, Op.natUnary, Op.ofVals])
 | `(tactic| has_type) =>
     `(tactic|
       apply Pr.TypeUnification.hasType_of_isSome <;>

@@ -14,9 +14,8 @@ block% sumTo(n : Nat) : Nat {
 }
 ```
 
-An instruction may also be a *control* rather than a term, which is how a loop is written: the
-control is named, the blocks it drives are listed positionally against its roles, and the
-parenthesised terms are the initial phi values.
+The loop form is sugar for an ordinary operator term. Its listed blocks become first-class block
+operands followed by the parenthesised initial values.
 
 ```
 block% countDown(start : Nat) : Nat {
@@ -78,14 +77,14 @@ syntax ident : zagTerm
 
 syntax ident " : " zagTy : zagParam
 
-/-- A block named positionally against a control's roles. -/
+/-- A block supplied as a first-class value to an operator. -/
 syntax ident : zagBlockRef
 syntax str : zagBlockRef
 
 syntax ident " := " zagTerm ";" : zagInstr
-/-- A control instruction: `final := while [cond, body] (start);`. The control is named by
+/-- Operator sugar: `final := while [cond, body] (start);`. The operator is named by
   `rawIdent` rather than `ident` so that `while`, `for` and `switch` -- all Lean keywords -- can
-  be written bare; nothing here knows which controls exist, so a new entry in `ControlCtx` needs
+  be written bare; nothing here knows which operators exist, so a new entry in `OpCtx` needs
   no parser change. -/
 syntax ident " := " rawIdent "[" zagBlockRef,* "]" "(" zagTerm,* ")" ";" : zagInstr
 syntax ident "(" zagParam,* ")" " : " zagTy "{" zagInstr* "ret" zagTerm "}" : zagBlock
@@ -144,10 +143,10 @@ macro_rules
         | `(zagInstr| $name:ident := $value:zagTerm ;) =>
             `(term| (Zag.Instr.ofTerm (zagName% $name) (term% { $value }) : Zag.Instr _))
         | `(zagInstr| $name:ident := $control [ $blocks:zagBlockRef,* ] ( $args:zagTerm,* ) ;) =>
-            `(term| ({ name := zagName% $name
-                       source := Zag.Instr.Source.control (zagName% $control)
-                         [ $[(zagBlockRef% $blocks)],* ] [ $[(term% { $args })],* ] }
-                     : Zag.Instr _))
+            `(term| (Zag.Instr.ofTerm (zagName% $name)
+                (Zag.Term.op (zagName% $control)
+                  ([ $[(Zag.Term.var (zagBlockRef% $blocks))],* ] ++
+                   [ $[(term% { $args })],* ])) : Zag.Instr _))
         | _ => Lean.Macro.throwErrorAt instr "invalid instruction"
       `([ $[$entries],* ])
   | `(block% $name:ident ( $params:zagParam,* ) : $outTy:zagTy

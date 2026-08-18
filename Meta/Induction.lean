@@ -474,7 +474,7 @@ theorem succEq_natLit {ctx : Ctx} [Peano.Model ctx] {succName : String}
     refine Term.hasType.binOp (argTy := Peano.NatTy) ?_ ?_ (Term.hasType.prim _)
     · unfold OpCtx.outTy?
       rw [Peano.Model.eqOp]
-      simp [Op.eq, Op.compare]
+      simp [Op.eq, Op.compare, Op.fixed]
     · exact hspec.hasType_op _ _ (Term.hasType.prim _)
   · simp only [Term.bool, Term.subst_prim, varCtx_subst_nil, subst_boolTy]
     exact Term.hasType.prim _
@@ -490,8 +490,8 @@ theorem succEq_natLit {ctx : Ctx} [Peano.Model ctx] {succName : String}
         (Val.bool true) := by
       refine EvaluatesTo.op_applyVals (Peano.Model.eqOp (ctx := ctx))
         (EvaluatesToAll.cons hsucc (EvaluatesToAll.cons hlit EvaluatesToAll.nil)) ?_
-      simpa [Op.eq, Val.primEq?] using
-        (Op.applyVals_compare (primCtx := ctx.primCtx) Val.primEq?
+      simpa [Op.eq, Op.applyValsAt, Op.compare, Op.fixed, Val.primEq?] using
+        (Op.applyVals_compare (primCtx := ctx.primCtx) "eq" Val.primEq?
           (Val.nat (primCtx := ctx.primCtx) (k + 1)) (Val.nat (k + 1)) rfl)
     have htrue : EvaluatesTo ctx env (Term.bool true) (Val.bool true) := by
       simpa [Term.bool] using
@@ -561,7 +561,7 @@ def natInductionWithPredicate {ctx : Ctx} [Peano.Model ctx]
     (hqf : quantifierFree body = true)
     (hfresh : yName ∉ varNames body)
     (hinst : goal = instantiate name (Term.nat target) body) :
-    Refinement ctx ctxTy ctxTerm goal where
+    PrRefinement ctx ctxTy ctxTerm goal where
   goals := natInductionGoals name yName succName body
   prove := by
     intro proveSubgoals

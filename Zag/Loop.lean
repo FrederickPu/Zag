@@ -1,168 +1,280 @@
 import Zag.EvalState
+import Zag.Refinement
 
 /-!
-# The loop rule
+# Continuation-passing operator loops
 
-`tail_induction` proves a specification of a block that calls itself. A loop written as a control
-*instruction* never makes a call -- re-entry comes from `Frame.control` -- so this is its
-counterpart: an invariant indexed by the iteration, plus an explicit iteration count for
-termination. The argument for that shape is in `HANDOFF.md`.
+An operator can ask the machine to apply a value and resume its body with the answer. In
+particular, applying an `opRef` restarts the named operator on its captured values followed by the
+new arguments. This file gives that machine action a compositional specification and records how
+the answer returns through either kind of operator frame.
 -/
 
 namespace Zag
 
-/-! ### loops
+namespace EvalState
 
-  `tail_induction` proves a specification of a block that calls itself. A loop written as a
-  control *instruction* never makes a call -- re-entry comes from `Frame.control`, not from a
-  term -- so nothing there applies to it. These are its counterpart.
+/- Feeding a collected value list reaches the continuation built from exactly those values. -/
+theorem driveOpVals_collect {ctx : Ctx} (finish : List (Val ctx.primCtx) → Op.Body ctx.primCtx)
+    (vals acc : List (Val ctx.primCtx)) {remaining : Nat} {env : Env ctx.primCtx}
+    {stack : List (Frame ctx.primCtx)} (hlen : vals.length = remaining) :
+    driveOpVals (Op.Body.collect finish remaining acc) vals env stack =
+      driveOpVals (finish (acc ++ vals)) [] env stack := by
+  induction vals generalizing remaining acc with
+  | nil =>
+      simp at hlen
+      subst remaining
+      simp [Op.Body.collect]
+  | cons value vals ih =>
+      cases remaining with
+      | zero => simp at hlen
+      | succ remaining =>
+          have hlen' : vals.length = remaining := by simpa using hlen
+          rw [Op.Body.collect, driveOpVals]
+          simpa [List.append_assoc] using ih (remaining := remaining) (acc := acc ++ [value]) hlen'
 
-  The invariant `I` is indexed by the *iteration*, and stated over the phi values, which is where
-  a loop's state lives. Termination is the separate hypothesis `N`: the iteration at which the
-  condition stops the loop. It is deliberately *not* a decreasing measure -- keeping progress and
-  termination apart is the whole reason this rule exists rather than a well-founded recursion.
+end EvalState
 
-  A loop may carry several variables. A block returns one value, so one turn runs one block per
-  variable: role `0` is the condition and role `k+1` computes the new value of variable `k`. The
-  rule is stated over an arbitrary control, described by equations on its `next`, subject to one
-  structural assumption -- that the control asks for role `p` while sitting at phase `p`, so a
-  phase names the block that is running. `whileControl` satisfies it and so would `for`. -/
+/-- Applying `fn` to already-evaluated arguments produces `value`, independently of the caller's
+environment and pending stack. Quantifying over both is what makes the specification usable for
+an application made from inside an operator body. -/
+def EvaluatesApply (ctx : Ctx) (fn : Val ctx.primCtx) (args : List (Val ctx.primCtx))
+    (value : Val ctx.primCtx) : Prop :=
+  ∀ (env : Env ctx.primCtx) (base : List (Frame ctx.primCtx)),
+    EvaluatesFrom ctx ⟨.apply fn args, env, base⟩ value base
 
-/-- One turn's body sweep: `m` bodies still to run, the control parked at `phase` with state
-  `args`, and role `phase`'s block running. `P` is what must hold where the sweep lands.
+namespace EvaluatesApply
 
-  A recursive `def` rather than an inductive, so that a concrete arity unfolds under `simp` into
-  exactly `m` obligations, one per loop variable. -/
-def BodySweep (ctx : Ctx) (ctrl : Control ctx.primCtx) (blockNames : List String)
-    (P : Nat → List (Val ctx.primCtx) → Prop) :
-    Nat → Nat → List (Val ctx.primCtx) → Prop
-| 0, phase, args => P phase args
-| m + 1, phase, args =>
-    ∃ bodyName value phase' args',
-      blockNames[phase]? = some bodyName ∧
-      EvaluatesCall ctx bodyName args value ∧
-      ctrl.next phase args value = some (phase', .call phase' args') ∧
-      BodySweep ctx ctrl blockNames P m phase' args'
+/-- Establish an application specification directly from `applyValue` and the computation it
+starts. -/
+theorem of_applyValue {ctx : Ctx} {fn : Val ctx.primCtx} {args : List (Val ctx.primCtx)}
+    {value : Val ctx.primCtx}
+    (h : ∀ (env : Env ctx.primCtx) (base : List (Frame ctx.primCtx)),
+      ∃ state, EvalState.applyValue ctx fn args env base = some state ∧
+        EvaluatesFrom ctx state value base) :
+    EvaluatesApply ctx fn args value := by
+  intro env base
+  obtain ⟨state, happly, hfrom⟩ := h env base
+  exact EvaluatesFrom.step (by simpa [EvalState.step] using happly) hfrom
 
-open EvalState in
-/-- Running the sweep: each body in turn, then the landing state handed to `cont`. -/
-private theorem EvaluatesFrom.sweep_run {ctx : Ctx} {ctrl : Control ctx.primCtx}
-    {controlName : String} {blockNames : List String}
+/-- An `EvaluatesCall` specification is also a specification of applying the corresponding block
+reference. The type annotation carried by the reference does not affect machine execution. -/
+theorem blockRef {ctx : Ctx} {name : String} {args : List (Val ctx.primCtx)}
+    {value : Val ctx.primCtx} {argTys : List Ty} {outTy : Ty}
+    (hcall : EvaluatesCall ctx name args value) :
+    EvaluatesApply ctx (.blockRef name argTys outTy) args value := by
+  intro env base
+  obtain ⟨block, state, fuel, scope, hblock, henter, hsteps⟩ := hcall env base
+  refine EvaluatesFrom.step ?_ ⟨fuel, scope, hsteps⟩
+  simp [EvalState.step, EvalState.applyValue, hblock, henter]
+
+/-- Applying an operator reference starts the body selected by the named operator. The premise is
+deliberately relational rather than `Op.Body.applyVals`: a body containing `.apply` needs the
+machine and cannot be interpreted by the pure helper. -/
+theorem opRef {ctx : Ctx} {name : String} {captured args : List (Val ctx.primCtx)}
+    {argTys : List Ty} {outTy : Ty} {oper : Op ctx.primCtx} {body : Op.Body ctx.primCtx}
+    {value : Val ctx.primCtx}
+    (hop : ctx.opCtx.get? name = some oper)
+    (hbody : oper.body name (captured.length + args.length) = some body)
+    (hrun : ∀ (env : Env ctx.primCtx) (base : List (Frame ctx.primCtx)),
+      ∃ state, EvalState.driveOpVals body (captured ++ args) env base = some state ∧
+        EvaluatesFrom ctx state value base) :
+    EvaluatesApply ctx (.opRef name captured argTys outTy) args value := by
+  apply of_applyValue
+  intro env base
+  obtain ⟨state, hdrive, hfrom⟩ := hrun env base
+  exact ⟨state, by simp [EvalState.applyValue, hop, hbody, hdrive], hfrom⟩
+
+/-- Finite induction for a continuation-passing loop. A running iteration receives the semantic
+specification of every invariant-preserving next application as its continuation hypothesis.
+Unlike a tail-call rule, `round` may use that hypothesis under operator and call frames, so the
+recursive answer is allowed to return through the current iteration. -/
+theorem loop {ctx : Ctx} {fn : Val ctx.primCtx} {I : Nat → List (Val ctx.primCtx) → Prop}
+    {N : Nat} {result : Val ctx.primCtx} {initial : List (Val ctx.primCtx)}
+    (init : I 0 initial)
+    (round : ∀ n args, n < N → I n args →
+      (∀ nextArgs, I (n + 1) nextArgs → EvaluatesApply ctx fn nextArgs result) →
+      EvaluatesApply ctx fn args result)
+    (stop : ∀ args, I N args → EvaluatesApply ctx fn args result) :
+    EvaluatesApply ctx fn initial result := by
+  have aux : ∀ k n args, n + k = N → I n args → EvaluatesApply ctx fn args result := by
+    intro k
+    induction k with
+    | zero =>
+        intro n args hn hI
+        have : n = N := by omega
+        subst n
+        exact stop args hI
+    | succ k ih =>
+        intro n args hn hI
+        apply round n args (by omega) hI
+        intro nextArgs hnext
+        exact ih (n + 1) nextArgs (by omega) hnext
+  exact aux N 0 initial (Nat.zero_add N) init
+
+end EvaluatesApply
+
+namespace EvaluatesFrom
+
+/-- Evaluate a term with pending frames and then continue from the value it returns. -/
+theorem eval_then {ctx : Ctx} {term : Term ctx.primCtx} {value final : Val ctx.primCtx}
     {env : Env ctx.primCtx} {stack base : List (Frame ctx.primCtx)}
-    {Q : List (Val ctx.primCtx) → Prop} {final : Val ctx.primCtx}
-    (hctrl : Scope.get? ctx.controlCtx controlName = some ctrl)
-    (cont : ∀ args, Q args → ∃ st,
-      driveControl ctx controlName 0 (.call 0 args) blockNames env stack
-        = some st ∧ EvaluatesFrom ctx st final base) :
-    ∀ m phase args,
-      BodySweep ctx ctrl blockNames (fun p a => p = 0 ∧ Q a) m phase args →
-      ∃ st, driveControl ctx controlName phase (.call phase args) blockNames env stack = some st ∧ EvaluatesFrom ctx st final base := by
-  intro m
-  induction m with
-  | zero =>
-      intro phase args hsweep
-      obtain ⟨rfl, hQ⟩ := hsweep
-      exact cont args hQ
-  | succ m ih =>
-      intro phase args hsweep
-      obtain ⟨bodyName, value, phase', args', hrole, hcall, hnext, hrest⟩ := hsweep
-      obtain ⟨bodyBlock, st, fuel, scope, hblk, henter, hsteps⟩ :=
-        hcall env (.control controlName phase blockNames args env :: stack)
-      obtain ⟨st', hdrive', hfrom'⟩ := ih phase' args' hrest
-      have hstep : EvalState.step ctx
-          ⟨.ret value, scope,
-            .control controlName phase blockNames args env :: stack⟩
-            = some st' := by
-        simp only [EvalState.step, EvalState.evalStep, EvalState.resumeFrame, EvalState.unwindFrame, hctrl, hnext]
-        exact hdrive'
-      exact ⟨st, by simp only [EvalState.driveControl, hrole, hblk]; exact henter,
-        EvaluatesFrom.trans_stepN hsteps (EvaluatesFrom.step hstep hfrom')⟩
+    (heval : EvaluatesTo ctx env term value)
+    (hcont : ∀ scope, EvaluatesFrom ctx ⟨.ret value, scope, stack⟩ final base) :
+    EvaluatesFrom ctx ⟨.eval term, env, stack⟩ final base :=
+  EvaluatesFrom.bind (EvaluatesTo.weaken heval stack) hcont
 
-open EvalState in
-/-- One turn of the loop, and then the rest of it. Induction is on `k`, the iterations still to
-  come, so that the invariant is carried forwards while the recursion runs backwards from `N`. -/
-private theorem EvaluatesFrom.control_loop_aux {ctx : Ctx} {ctrl : Control ctx.primCtx}
-    {controlName condName : String} {blockNames : List String}
+/-- Evaluate and collect term operands, then continue from the body built from their values. -/
+theorem driveOp_collect {ctx : Ctx}
+    (finish : List (Val ctx.primCtx) → Op.Body ctx.primCtx)
+    {terms : List (Term ctx.primCtx)} {values acc : List (Val ctx.primCtx)}
     {env : Env ctx.primCtx} {stack base : List (Frame ctx.primCtx)}
-    {I : Nat → List (Val ctx.primCtx) → Prop} {N bodies : Nat}
-    {loopResult final : Val ctx.primCtx}
-    (hctrl : Scope.get? ctx.controlCtx controlName = some ctrl)
-    (hcondRole : blockNames[0]? = some condName)
-    (round : ∀ n args, n < N → I n args → ∃ w,
-      EvaluatesCall ctx condName args w ∧
-      ctrl.next 0 args w = some (1, .call 1 args) ∧
-      BodySweep ctx ctrl blockNames (fun p a => p = 0 ∧ I (n + 1) a) bodies 1 args)
-    (stop : ∀ args, I N args → ∃ w,
-      EvaluatesCall ctx condName args w ∧
-      ctrl.next 0 args w = some (0, .done loopResult))
-    (cont : EvaluatesFrom ctx ⟨.ret loopResult, env, stack⟩ final base) :
-    ∀ k n args, n + k = N → I n args →
-      ∃ st, driveControl ctx controlName 0 (.call 0 args) blockNames env stack = some st ∧ EvaluatesFrom ctx st final base := by
-  intro k
-  induction k with
-  | zero =>
-      intro n args hk hI
-      subst_vars
-      obtain ⟨w, hcondCall, hnext⟩ := stop args (by simpa using hI)
-      obtain ⟨condBlock, st, fuel, scope, hblk, henter, hsteps⟩ :=
-        hcondCall env (.control controlName 0 blockNames args env :: stack)
-      refine ⟨st, by simp only [EvalState.driveControl, hcondRole, hblk]; exact henter, ?_⟩
-      refine EvaluatesFrom.trans_stepN hsteps (EvaluatesFrom.step ?_ cont)
-      simp only [EvalState.step, EvalState.evalStep, EvalState.resumeFrame, EvalState.unwindFrame, hctrl, hnext, EvalState.driveControl]
-  | succ k ih =>
-      intro n args hk hI
-      obtain ⟨w, hcondCall, hnext, hsweep⟩ := round n args (by omega) hI
-      obtain ⟨condBlock, st, fuel, scope, hblk, henter, hsteps⟩ :=
-        hcondCall env (.control controlName 0 blockNames args env :: stack)
-      -- the sweep lands on a state the next iteration's hypothesis accepts
-      obtain ⟨st', hdrive', hfrom'⟩ :=
-        EvaluatesFrom.sweep_run hctrl (fun a hI' => ih (n + 1) a (by omega) hI') bodies 1 args
-          hsweep
-      -- leaving `cond`, the control asks for the first body on the same phi
-      have hintoBody : EvalState.step ctx
-          ⟨.ret w, scope,
-            .control controlName 0 blockNames args env :: stack⟩
-            = some st' := by
-        simp only [EvalState.step, EvalState.evalStep, EvalState.resumeFrame, EvalState.unwindFrame, hctrl, hnext]
-        exact hdrive'
-      exact ⟨st, by simp only [EvalState.driveControl, hcondRole, hblk]; exact henter,
-        EvaluatesFrom.trans_stepN hsteps (EvaluatesFrom.step hintoBody hfrom')⟩
+    {result : Val ctx.primCtx}
+    (hargs : EvaluatesToAll ctx env terms values)
+    (hfinish : ∃ state,
+      EvalState.driveOp (finish (acc ++ values)) [] env stack = some state ∧
+        EvaluatesFrom ctx state result base) :
+    ∃ state,
+      EvalState.driveOp (Op.Body.collect finish values.length acc) terms env stack = some state ∧
+        EvaluatesFrom ctx state result base := by
+  induction hargs generalizing acc stack with
+  | nil => simpa [Op.Body.collect] using hfinish
+  | @cons term terms value values hterm hterms ih =>
+      obtain ⟨state, hdrive, hfrom⟩ := ih (acc := acc ++ [value]) (stack := stack) (by
+        simpa [List.append_assoc] using hfinish)
+      let resume : Option (Val ctx.primCtx) → Op.Body ctx.primCtx := fun
+        | some value => Op.Body.collect finish values.length (acc ++ [value])
+        | none => .fail
+      obtain ⟨fuel, scope, hsteps⟩ :=
+        EvaluatesTo.weaken hterm (.opBody resume terms env :: stack)
+      have hret : EvalState.step ctx
+          ⟨.ret value, scope, .opBody resume terms env :: stack⟩ = some state := by
+        simpa [EvalState.step, EvalState.resumeFrame, resume] using hdrive
+      refine ⟨⟨.eval term, env, .opBody resume terms env :: stack⟩, ?_,
+        EvaluatesFrom.trans_stepN hsteps (EvaluatesFrom.step hret hfrom)⟩
+      simp [EvalState.driveOp, Op.Body.collect, resume]
+      funext input
+      cases input <;> rfl
 
-open EvalState in
-/-- A loop, from the point where its last initial phi value has just been produced.
+/-- Run an application and then continue from the value it returns. -/
+theorem apply_then {ctx : Ctx} {fn : Val ctx.primCtx} {args : List (Val ctx.primCtx)}
+    {value final : Val ctx.primCtx} {env : Env ctx.primCtx}
+    {stack base : List (Frame ctx.primCtx)}
+    (happly : EvaluatesApply ctx fn args value)
+    (hcont : ∀ scope, EvaluatesFrom ctx ⟨.ret value, scope, stack⟩ final base) :
+    EvaluatesFrom ctx ⟨.apply fn args, env, stack⟩ final base :=
+  EvaluatesFrom.bind (happly env stack) hcont
 
-  This is the state proof automation reaches on its own: the control instruction's arguments are
-  ordinary terms, so the machine evaluates them one at a time under a `Frame.controlArgs`, and
-  the moment the last one lands the control takes over. Everything after that -- entering `cond`,
-  coming back, sweeping the bodies, coming back -- is what this rule replaces. -/
-theorem EvaluatesFrom.control_loop {ctx : Ctx} {ctrl : Control ctx.primCtx}
-    {controlName condName : String} {blockNames : List String}
-    {env scope : Env ctx.primCtx} {stack base : List (Frame ctx.primCtx)}
-    {done : List (Val ctx.primCtx)} {v : Val ctx.primCtx}
-    {I : Nat → List (Val ctx.primCtx) → Prop} {N bodies : Nat}
-    {loopResult final : Val ctx.primCtx}
-    (hctrl : Scope.get? ctx.controlCtx controlName = some ctrl)
-    (hcondRole : blockNames[0]? = some condName)
-    (hinit : ctrl.init (done ++ [v]) = some (0, .call 0 (done ++ [v])))
-    (init : I 0 (done ++ [v]))
-    (round : ∀ n args, n < N → I n args → ∃ w,
-      EvaluatesCall ctx condName args w ∧
-      ctrl.next 0 args w = some (1, .call 1 args) ∧
-      BodySweep ctx ctrl blockNames (fun p a => p = 0 ∧ I (n + 1) a) bodies 1 args)
-    (stop : ∀ args, I N args → ∃ w,
-      EvaluatesCall ctx condName args w ∧
-      ctrl.next 0 args w = some (0, .done loopResult))
-    (cont : EvaluatesFrom ctx ⟨.ret loopResult, env, stack⟩ final base) :
+/-- An application made by a term-driven operator returns through its `opBody` frame and resumes
+the suspended body. -/
+theorem apply_opBody {ctx : Ctx} {fn : Val ctx.primCtx} {args : List (Val ctx.primCtx)}
+    {value final : Val ctx.primCtx} {env frameEnv : Env ctx.primCtx}
+    {resume : Option (Val ctx.primCtx) → Op.Body ctx.primCtx}
+    {rest : List (Term ctx.primCtx)} {stack base : List (Frame ctx.primCtx)}
+    {state : EvalState ctx.primCtx}
+    (happly : EvaluatesApply ctx fn args value)
+    (hdrive : EvalState.driveOp (resume (some value)) rest frameEnv stack = some state)
+    (hfrom : EvaluatesFrom ctx state final base) :
     EvaluatesFrom ctx
-      ⟨.ret v, scope,
-        .args (.control controlName blockNames) done [] env :: stack⟩
-      final base := by
-  obtain ⟨st, hdrive, hfrom⟩ :=
-    EvaluatesFrom.control_loop_aux (bodies := bodies) hctrl hcondRole round stop cont
-      N 0 (done ++ [v]) (Nat.zero_add N) init
-  refine EvaluatesFrom.step ?_ hfrom
-  simp only [EvalState.step, EvalState.evalStep, EvalState.resumeFrame, EvalState.unwindFrame, hctrl, hinit]
-  exact hdrive
+      ⟨.apply fn args, env, .opBody resume rest frameEnv :: stack⟩ final base := by
+  apply EvaluatesFrom.apply_then happly
+  intro scope
+  exact EvaluatesFrom.step
+    (by simp [EvalState.step, EvalState.resumeFrame, hdrive]) hfrom
 
+/-- An application made by a value-driven operator returns through its `opBodyVals` frame and
+resumes the suspended body. This is the frame used after applying an `opRef`. -/
+theorem apply_opBodyVals {ctx : Ctx} {fn : Val ctx.primCtx}
+    {args : List (Val ctx.primCtx)} {value final : Val ctx.primCtx}
+    {env frameEnv : Env ctx.primCtx}
+    {resume : Option (Val ctx.primCtx) → Op.Body ctx.primCtx}
+    {rest : List (Val ctx.primCtx)} {stack base : List (Frame ctx.primCtx)}
+    {state : EvalState ctx.primCtx}
+    (happly : EvaluatesApply ctx fn args value)
+    (hdrive : EvalState.driveOpVals (resume (some value)) rest frameEnv stack = some state)
+    (hfrom : EvaluatesFrom ctx state final base) :
+    EvaluatesFrom ctx
+      ⟨.apply fn args, env, .opBodyVals resume rest frameEnv :: stack⟩ final base := by
+  apply EvaluatesFrom.apply_then happly
+  intro scope
+  exact EvaluatesFrom.step
+    (by simp [EvalState.step, EvalState.resumeFrame, hdrive]) hfrom
+
+/-- Execute an `.apply` node reached by `driveOp`, including the return through the frame that the
+driver installs. -/
+theorem driveOp_apply {ctx : Ctx} {fn : Val ctx.primCtx} {args : List (Val ctx.primCtx)}
+    {resume : Val ctx.primCtx → Op.Body ctx.primCtx} {operands : List (Term ctx.primCtx)}
+    {value final : Val ctx.primCtx}
+    {env : Env ctx.primCtx} {stack base : List (Frame ctx.primCtx)}
+    {state : EvalState ctx.primCtx}
+    (happly : EvaluatesApply ctx fn args value)
+    (hdrive : EvalState.driveOp (resume value) operands env stack = some state)
+    (hfrom : EvaluatesFrom ctx state final base) :
+    ∃ start, EvalState.driveOp (.apply fn args resume) operands env stack = some start ∧
+      EvaluatesFrom ctx start final base := by
+  let k : Option (Val ctx.primCtx) → Op.Body ctx.primCtx := fun
+    | some result => resume result
+    | none => .fail
+  refine ⟨⟨.apply fn args, env, .opBody k operands env :: stack⟩, ?_, ?_⟩
+  · simp [EvalState.driveOp, k]
+    funext input
+    cases input <;> rfl
+  · exact EvaluatesFrom.apply_opBody happly (by simpa [k] using hdrive) hfrom
+
+/-- Execute an `.apply` node reached by `driveOpVals`. This is the composition rule used when a
+restarted operator calls another continuation and then returns its answer. -/
+theorem driveOpVals_apply {ctx : Ctx} {fn : Val ctx.primCtx}
+    {args : List (Val ctx.primCtx)} {resume : Val ctx.primCtx → Op.Body ctx.primCtx}
+    {operands : List (Val ctx.primCtx)} {value final : Val ctx.primCtx}
+    {env : Env ctx.primCtx} {stack base : List (Frame ctx.primCtx)}
+    {state : EvalState ctx.primCtx}
+    (happly : EvaluatesApply ctx fn args value)
+    (hdrive : EvalState.driveOpVals (resume value) operands env stack = some state)
+    (hfrom : EvaluatesFrom ctx state final base) :
+    ∃ start, EvalState.driveOpVals (.apply fn args resume) operands env stack = some start ∧
+      EvaluatesFrom ctx start final base := by
+  let k : Option (Val ctx.primCtx) → Op.Body ctx.primCtx := fun
+    | some result => resume result
+    | none => .fail
+  refine ⟨⟨.apply fn args, env, .opBodyVals k operands env :: stack⟩, ?_, ?_⟩
+  · simp [EvalState.driveOpVals, k]
+    funext input
+    cases input <;> rfl
+  · exact EvaluatesFrom.apply_opBodyVals happly (by simpa [k] using hdrive) hfrom
+
+end EvaluatesFrom
+
+namespace PropRefinement
+
+/-- Lift a refinement for evaluating a term through a pending machine continuation. -/
+def evalThen {ctx : Ctx} {term : Term ctx.primCtx} {value final : Val ctx.primCtx}
+    {env : Env ctx.primCtx} {stack base : List (Frame ctx.primCtx)}
+    (refinement : PropRefinement (EvaluatesTo ctx env term value))
+    (hcont : ∀ scope, EvaluatesFrom ctx ⟨.ret value, scope, stack⟩ final base) :
+    PropRefinement (EvaluatesFrom ctx ⟨.eval term, env, stack⟩ final base) where
+  goals := refinement.goals
+  prove := fun proveSubgoals =>
+    EvaluatesFrom.eval_then (refinement.prove proveSubgoals) hcont
+
+end PropRefinement
+
+/-- An ordinary operator whose body collects all operands can use a relational continuation after
+the collected values have been produced. -/
+theorem EvaluatesTo.op_collect {ctx : Ctx} {env : Env ctx.primCtx}
+    {name : String} {terms : List (Term ctx.primCtx)} {values : List (Val ctx.primCtx)}
+    {oper : Op ctx.primCtx} {finish : List (Val ctx.primCtx) → Op.Body ctx.primCtx}
+    {result : Val ctx.primCtx}
+    (hop : ctx.opCtx.get? name = some oper)
+    (hbody : oper.body name values.length = some (Op.Body.collect finish values.length []))
+    (hargs : EvaluatesToAll ctx env terms values)
+    (hfinish : ∃ state, EvalState.driveOp (finish values) [] env [] = some state ∧
+      EvaluatesFrom ctx state result []) :
+    EvaluatesTo ctx env (.op name terms) result := by
+  have hargsLen := EvaluatesToAll.length_eq hargs
+  obtain ⟨state, hdrive, hfrom⟩ :=
+    EvaluatesFrom.driveOp_collect (acc := []) finish hargs (by simpa using hfinish)
+  exact EvaluatesTo.of_evaluatesFrom
+    (EvaluatesFrom.step (by
+      simp [EvalState.step, EvalState.evalStep, EvalState.start, hop, hargsLen, hbody, hdrive]) hfrom)
 
 end Zag

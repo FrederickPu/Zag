@@ -386,6 +386,7 @@ theorem driveOp {ctx : Ctx} {body : Op.Body ctx.primCtx}
           subst result
           exact ⟨⟨.ret value, env, S⟩, by simp [EvalState.driveOp], EvaluatesFrom.done⟩
       | next evaluate resume => simp [Op.Body.applyVals] at hbody
+      | apply fn args resume => simp [Op.Body.applyVals] at hbody
   | cons term terms ih =>
       cases hargs with
       | cons hterm hterms =>
@@ -418,6 +419,7 @@ theorem driveOp {ctx : Ctx} {body : Op.Body ctx.primCtx}
                   exact ⟨⟨.eval term, env, .opBody resume terms env :: S⟩,
                     by simp [EvalState.driveOp],
                     EvaluatesFrom.trans_stepN htermSteps (EvaluatesFrom.step hretStep hfrom)⟩
+          | apply fn args resume => simp [Op.Body.applyVals] at hbody
 
 end EvaluatesFrom
 
@@ -426,22 +428,20 @@ theorem EvaluatesTo.op_applyVals {ctx : Ctx} {env : Env ctx.primCtx}
     {oper : Op ctx.primCtx} {result : Val ctx.primCtx}
     (hop : ctx.opCtx.get? name = some oper)
     (hargs : EvaluatesToAll ctx env args values)
-    (happly : Op.applyVals oper values = some result) :
+    (happly : Op.applyValsAt name oper values = some result) :
     EvaluatesTo ctx env (.op name args) result := by
-  have hvaluesLen : values.length = oper.arity := by
-    unfold Op.applyVals at happly
-    by_cases hlen : values.length = oper.arity
-    · exact hlen
-    · simp [hlen] at happly
-  have hargsLen : args.length = oper.arity := by
-    rw [EvaluatesToAll.length_eq hargs, hvaluesLen]
-  have hbody : oper.body.applyVals values = some result := by
-    unfold Op.applyVals at happly
-    simpa [hvaluesLen] using happly
-  obtain ⟨state, hdrive, hfrom⟩ :=
-    EvaluatesFrom.driveOp (S := []) hargs hbody
-  exact EvaluatesTo.of_evaluatesFrom
-    (EvaluatesFrom.step (by simp [EvalState.step, EvalState.evalStep, EvalState.resumeFrame, EvalState.unwindFrame, EvalState.start, hop, hargsLen, hdrive]) hfrom)
+  have hargsLen : args.length = values.length := EvaluatesToAll.length_eq hargs
+  unfold Op.applyValsAt at happly
+  cases hstart : oper.body name values.length with
+  | none => simp [hstart] at happly
+  | some body =>
+      have hbody : body.applyVals values = some result := by simpa [hstart] using happly
+      obtain ⟨state, hdrive, hfrom⟩ :=
+        EvaluatesFrom.driveOp (S := []) hargs hbody
+      exact EvaluatesTo.of_evaluatesFrom
+        (EvaluatesFrom.step (by
+          simp [EvalState.step, EvalState.evalStep, EvalState.resumeFrame, EvalState.unwindFrame,
+            EvalState.start, hop, hargsLen, hstart, hdrive]) hfrom)
 
 open EvalState in
 /-- Applying a block reference is entering that block. -/
@@ -463,7 +463,7 @@ theorem EvalState.stepN_applyArgs {fn : Val ctx.primCtx}
       EvaluatesTo ctx env arg value →
       EvaluatesToAll ctx env rest values →
       ∃ n, stepN ctx n ⟨.eval arg, env, .args .apply (fn :: done) rest env :: S⟩
-        = applyValue ctx fn (done ++ value :: values) env S := by
+        = some ⟨.apply fn (done ++ value :: values), env, S⟩ := by
   intro rest
   induction rest with
   | nil =>
@@ -474,7 +474,7 @@ theorem EvalState.stepN_applyArgs {fn : Val ctx.primCtx}
       refine ⟨n + 1, ?_⟩
       rw [stepN_add, hrun]
       simp only [Option.bind_some, stepN_succ, step, EvalState.evalStep, EvalState.resumeFrame, EvalState.unwindFrame, List.cons_append]
-      cases h : applyValue ctx fn (done ++ [value]) env S <;> simp [h]
+      rfl
   | cons a r ih =>
       intro values arg value done harg hrest
       cases hrest with
@@ -500,20 +500,33 @@ theorem EvalState.stepN_call {name : String} {block : Block ctx.primCtx}
       = enterBlock name block vargs env S := by
   cases hargs with
   | nil =>
-      refine ⟨1, ?_⟩
-      simp only [stepN_succ, step, EvalState.evalStep, EvalState.resumeFrame, EvalState.unwindFrame, hblock, Option.bind_some, stepN_zero]
-      rw [applyValue_blockRef hblock]
-      cases h : enterBlock name block [] env S <;> simp [h]
+      refine ⟨2, ?_⟩
+      simp [stepN, step, EvalState.evalStep, applyValue, hblock]
   | cons harg hrest =>
       rename_i arg args value values
       obtain ⟨n, hsteps⟩ :=
         EvalState.stepN_applyArgs
           (fn := .blockRef name (block.params.map Prod.snd) block.outTy) (S := S)
           args values arg value [] harg hrest
-      refine ⟨1 + n, ?_⟩
-      rw [stepN_add]
-      simp only [stepN_succ, step, EvalState.evalStep, EvalState.resumeFrame, EvalState.unwindFrame, hblock, Option.bind_some, stepN_zero]
-      simpa [applyValue_blockRef hblock] using hsteps
+      let argState : EvalState ctx.primCtx :=
+        ⟨.eval arg, env,
+          .args .apply [.blockRef name (block.params.map Prod.snd) block.outTy] args env :: S⟩
+      let applyState : EvalState ctx.primCtx :=
+        ⟨.apply (.blockRef name (block.params.map Prod.snd) block.outTy) (value :: values),
+          env, S⟩
+      have hfirst : stepN ctx 1 ⟨.eval (.call name (arg :: args)), env, S⟩ = some argState := by
+        simp [argState, stepN_succ, step, EvalState.evalStep, hblock]
+      have hmiddle : stepN ctx n argState = some applyState := by
+        simpa [argState, applyState] using hsteps
+      have hlast : stepN ctx 1 applyState = enterBlock name block (value :: values) env S := by
+        simp [applyState, stepN_succ, step, applyValue, hblock]
+        cases enterBlock name block (value :: values) env S <;> rfl
+      refine ⟨1 + n + 1, ?_⟩
+      rw [show 1 + n + 1 = 1 + (n + 1) by omega, stepN_add]
+      rw [hfirst]
+      simp only [Option.bind_some]
+      rw [stepN_add, hmiddle]
+      exact hlast
 
 /-- Finish a walk whose value is only *propositionally* equal to the target. This is what turns
   a leftover machine state into an arithmetic obligation: normalisation runs to the end and hands
@@ -535,22 +548,19 @@ theorem EvaluatesFrom.atCall {ctx : Ctx} {name : String} {args : List (Term ctx.
     (h : EvaluatesFrom ctx ⟨.eval (.call name args), env, S⟩ value base) :
     EvaluatesFrom ctx ⟨.eval (.call name args), env, S⟩ value base := h
 
-/-- The control counterpart of `atCall`: a no-op that only typechecks when the machine has just
-  produced the *last* initial phi value of a control instruction. That is the state
-  `EvaluatesFrom.control_loop` starts from, and it is where normalisation has to stop -- one more
-  step enters the loop, which is where a walk would either run forever or need an invariant. -/
-theorem EvaluatesFrom.atControl {ctx : Ctx} {controlName : String}
-    {blockNames : List String} {done : List (Val ctx.primCtx)}
-    {env scope : Env ctx.primCtx} {stack base : List (Frame ctx.primCtx)}
-    {v value : Val ctx.primCtx}
-    (h : EvaluatesFrom ctx
-      ⟨.ret v, scope,
-        .args (.control controlName blockNames) done [] env :: stack⟩
-      value base) :
-    EvaluatesFrom ctx
-      ⟨.ret v, scope,
-        .args (.control controlName blockNames) done [] env :: stack⟩
-      value base := h
+/- Proof automation uses this identity rule to recognize a named operator before stepping it. -/
+theorem EvaluatesFrom.atOp {ctx : Ctx} {name : String} {args : List (Term ctx.primCtx)}
+    {env : Env ctx.primCtx} {stack base : List (Frame ctx.primCtx)}
+    {value : Val ctx.primCtx}
+    (h : EvaluatesFrom ctx ⟨.eval (.op name args), env, stack⟩ value base) :
+    EvaluatesFrom ctx ⟨.eval (.op name args), env, stack⟩ value base := h
+
+/- The application counterpart used when a CPS body reaches its operator continuation. -/
+theorem EvaluatesFrom.atApply {ctx : Ctx} {fn : Val ctx.primCtx}
+    {args : List (Val ctx.primCtx)} {env : Env ctx.primCtx}
+    {stack base : List (Frame ctx.primCtx)} {value : Val ctx.primCtx}
+    (h : EvaluatesFrom ctx ⟨.apply fn args, env, stack⟩ value base) :
+    EvaluatesFrom ctx ⟨.apply fn args, env, stack⟩ value base := h
 
 theorem EvaluatesFrom.call_then {ctx : Ctx} {name : String}
     {args : List (Term ctx.primCtx)} {vargs : List (Val ctx.primCtx)}

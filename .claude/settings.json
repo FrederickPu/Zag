@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -)",
+      "Bash(LEAN_NUM_THREADS=1 lake build Zag.EvalState)",
+      "Bash(LEAN_NUM_THREADS=1 lake build Lib Test)"
+    ]
+  }
+}

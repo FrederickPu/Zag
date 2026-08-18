@@ -25,27 +25,29 @@ set_option maxRecDepth 100000
 /-! ### operators -/
 
 example : EvaluatesTo peanoCtx [] (.op "add" [Term.nat 3, Term.nat 4]) (Val.nat 7) := by
-  evaluates 20 [natOpCtx]
+  evaluates 20 [natOpCtx, Op.fixed]
 
 /-- Only the leaves are symbolic; the control flow is still concrete, so the machine runs. -/
 example (x : Nat) :
     EvaluatesTo peanoCtx [] (.op "add" [Term.nat x, Term.nat 1]) (Val.nat (x + 1)) := by
-  evaluates 20 [natOpCtx]
+  evaluates 20 [natOpCtx, Op.fixed]
 
 /-- `ite` is lazy, and the machine keeps it that way: the untaken branch is never stepped. -/
 example : EvaluatesTo peanoCtx [] (Term.ite (Term.bool false) (Term.nat 1) (Term.nat 2))
     (Val.nat 2) := by
-  evaluates 20 [natOpCtx]
+  evaluates 20 [natOpCtx, Op.fixed]
 
 /-! ### blocks, including a recursive one -/
 
 open Zag.Test.Gauss in
 example : EvaluatesTo gaussCtx [] (.call "gauss" [Term.nat 3]) (Val.nat 6) := by
-  evaluates 300 [natOpCtx, gaussBlocks]
+  evaluates 300 [natOpCtx, Op.fixed, Op.whileOp, Op.Body.collect,
+    Op.whileBodyFromValues, Op.whileAfterCondition, Op.whileResultTy?, gaussBlocks]
 
 open Zag.Test.Gauss in
 example : EvaluatesTo gaussCtx [] (.call "gauss" [Term.nat 5]) (Val.nat 15) := by
-  evaluates 600 [natOpCtx, gaussBlocks]
+  evaluates 600 [natOpCtx, Op.fixed, Op.whileOp, Op.Body.collect,
+    Op.whileBodyFromValues, Op.whileAfterCondition, Op.whileResultTy?, gaussBlocks]
 
 /-! ### non-local exit
 
@@ -55,11 +57,11 @@ example : EvaluatesTo gaussCtx [] (.call "gauss" [Term.nat 5]) (Val.nat 15) := b
 
 open Zag.Test.Exit in
 example : EvaluatesTo clampCtx [] (.call "clamp" [Term.nat 3]) (Val.nat 3) := by
-  evaluates 200 [natOpCtx, clampBlocks]
+  evaluates 200 [natOpCtx, Op.fixed, clampBlocks]
 
 open Zag.Test.Exit in
 example : EvaluatesTo clampCtx [] (.call "clamp" [Term.nat 42]) (Val.nat 10) := by
-  evaluates 200 [natOpCtx, clampBlocks]
+  evaluates 200 [natOpCtx, Op.fixed, clampBlocks]
 
 /-! ### evaluator regression tests
 

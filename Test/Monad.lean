@@ -55,9 +55,8 @@ def pureOp : Op stateCtx :=
   | _, _ => none
 
 def bindOp : Op stateCtx :=
-  { arity := 2
-    out := fun tys => (bindShape? (tys 0) (tys 1)).map fun shape => MTy shape.val.2
-    body := .next true fun
+  Op.fixed 2 (fun tys => (bindShape? (tys 0) (tys 1)).map fun shape => MTy shape.val.2)
+    (.next true fun
       | none => .fail
       | some computation => .next true fun
           | none => .fail
@@ -68,9 +67,9 @@ def bindOp : Op stateCtx :=
                   let inputTy := shape.val.1
                   let resultTy := shape.val.2
                   let computation' : Ty.type stateCtx (MTy inputTy) :=
-                    cast (congrArg (Ty.type stateCtx) shape.property.1.symm) computation.val
+                    cast (congrArg (Ty.type stateCtx) shape.property.1.symm) computation.raw
                   let continuation' : Ty.type stateCtx (.func [inputTy] (MTy resultTy)) :=
-                    cast (congrArg (Ty.type stateCtx) shape.property.2.symm) continuation.val
+                    cast (congrArg (Ty.type stateCtx) shape.property.2.symm) continuation.raw
                   .done (Val.mk (MTy resultTy) <| ofM resultTy do
                     let input? ← toM inputTy computation'
                     match input? with
@@ -78,7 +77,7 @@ def bindOp : Op stateCtx :=
                     | some input =>
                         match Ty.applyUnary? stateCtx inputTy (MTy resultTy) continuation' input with
                         | none => Pure.pure none
-                        | some next => toM resultTy next) }
+                        | some next => toM resultTy next))
 
 abbrev ctx : Ctx where
   primCtx := stateCtx
@@ -150,7 +149,7 @@ theorem lift_eval_val (n : Nat) :
     · simpa [Term.nat] using
         (EvaluatesTo.prim (ctx := ctx) (env := []) NatTy (Ty.ofNat stateCtx n))
     · exact EvaluatesToAll.nil
-  · simpa [pureOp] using Op.Signature.applyVals_unary MTy
+  · simpa [Op.applyValsAt, Op.fixed, pureOp] using Op.Signature.applyVals_unary "pure" MTy
       (fun ty value => ofM ty (Pure.pure (some value))) NatTy (Ty.ofNat stateCtx n)
 
 theorem bind_eval (n : Nat) :
@@ -169,8 +168,8 @@ theorem bind_eval (n : Nat) :
             identityContinuationValue)
       · exact EvaluatesToAll.nil
   · set_option linter.unusedSimpArgs false in
-      simp [Op.applyVals, bindOp, bindShape?, Op.Signature.apply, Op.Signature.eagerBody,
-        Op.Body.eager, Op.Body.applyVals, MTy, NatTy, ofM, toM, type_m,
+      simp [Op.applyValsAt, Op.fixed, bindOp, bindShape?, Op.Signature.apply,
+        Op.Signature.eagerBody, Op.Body.eager, Op.Body.applyVals, MTy, NatTy, ofM, toM, type_m,
         identityContinuationValue, Ty.applyUnary?]
 
 end Zag.Test.Monad

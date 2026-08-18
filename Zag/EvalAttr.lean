@@ -22,3 +22,10 @@ The two sets must stay separate -- a fold rule and its matching unfold rule in o
 loop. The tactics run this one once, after normalisation has finished.
 -/
 register_simp_attr eval_fold
+
+/-!
+`@[eval_finish]` contains semantic simplifications for obligations left after machine evaluation.
+Primitive libraries register their own value injectivity lemmas here, keeping `Meta.Eval`
+independent of any particular primitive context.
+-/
+register_simp_attr eval_finish

@@ -42,6 +42,10 @@ theorem autocorresBlocksValid : BlockCtx.Valid autocorresBlocks := by
     swapBlocks, allocBlocks, kmallocBlocks, listBlocks, listRevBlocks, schorrWaiteBlocks,
     heapWrapBlocks, conditionGuardBlocks, suzukiBlocks, traceDemoBlocks, str2longBlocks,
     renameBlocks, functionInfoBlocks, typeStrengthenBlocks, wordAbsBlocks]
+  -- quicksort's blocks call each other, which leaves the same propositional residue as in
+  -- `Quicksort.lean`: every name called is among the names declared.
+  intro name h
+  rcases h with (h | h) | h <;> simp [h]
 
 abbrev autocorresCtx : Ctx := mkCtx autocorresBlocks autocorresBlocksValid
 

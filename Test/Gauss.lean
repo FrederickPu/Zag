@@ -1,4 +1,4 @@
-import Lib.Peano.Defs
+import Lib.Peano.Eval
 import Zag.EvalState
 import Meta.UnifyType
 
@@ -8,11 +8,13 @@ Gauss's sum as a block program.
 This is the SSA loop that used to live in `Test/Gauss/SSA.lean`, written against the block IR now
 that it is part of Zag. The loop carried its two live variables in a `Ty.struct` state, packed by
 `mkStruct` and read back by `structProj`, because `recurse` threaded exactly one state value.
-A block takes named parameters, so `loop(i, acc)` needs no product type at all -- which is why
-dropping `struct` from `Ty` costs this program nothing.
+A block takes named parameters, so nothing here needs a product type -- which is why dropping
+`struct` from `Ty` costs this program nothing.
 
-The back edge `yield nextI, nextAcc` is now the self-call `call loop [...]`, and it sits inside
-the lazy `ite` operand so the loop actually terminates.
+The back edge `yield nextI, nextAcc` is the application of the continuation passed to
+`gaussBody`. The loop answers with its *first* variable, so the state is ordered `(acc, i)` even
+though `loop`'s own parameters keep the caller's order. Both next-state values are computed before
+the continuation is applied.
 -/
 
 namespace Zag.Test.Gauss
@@ -25,8 +27,16 @@ abbrev gaussBlocks : BlockCtx.Raw natCtx :=
       ret call loop [n, nat(0)]
     },
     loop(i : Nat, acc : Nat) : Nat {
-      cond := primGt i nat(0);
-      ret if cond { call loop [op "sub"[i, nat(1)], op "add"[acc, i]] } else { acc }
+      final := while [gaussCond, gaussBody] (acc, i);
+      ret final
+    },
+    gaussCond(acc : Nat, i : Nat) : Bool {
+      ret primGt i nat(0)
+    },
+    gaussBody(acc : Nat, i : Nat, next : func[Nat, Nat] => Nat) : Nat {
+      nextAcc := op "add"[acc, i];
+      nextI := op "sub"[i, nat(1)];
+      ret apply next [nextAcc, nextI]
     }
   ]
 
@@ -35,7 +45,7 @@ abbrev gaussCtx : Ctx where
   opCtx := natOpCtx
   blockCtx := ⟨gaussBlocks, by
     refine ⟨by decide, ?_⟩
-    simp [gaussBlocks, Block.callNames, Term.callNames, Term.nat, Term.ite]⟩
+    simp [gaussBlocks, Block.callNames, Term.callNames, Term.nat]⟩
 
 instance : Peano.Model gaussCtx where
   natType := by rfl

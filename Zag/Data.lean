@@ -266,22 +266,22 @@ end Ty
   and a block value is just its name. The signature travels with it because `Val.ty` has no `Ctx`
   to look the block up in.
 
-  `loopRef` is a *control* used as a value: the continuation a control hands to a block it drives.
-  It cannot be a `blockRef` -- a control is not a block -- and it cannot be a `mk` at a `func`
-  type, since that inhabitant is a pure Lean function. `captured` is what the control was holding
-  when it produced the continuation (for `while`, the condition and body references), and applying
-  the reference restarts the control on `captured ++ args`. That field is what makes `Val`
+  `opRef` is an operator continuation used as a value. It cannot be a `blockRef` -- an operator is
+  not a block -- and it cannot be a `mk` at a `func` type, since that inhabitant is a pure Lean
+  function. `captured` is what the operator was holding when it produced the continuation (for
+  `while`, the condition and body references), and applying the reference restarts the operator on
+  `captured ++ args`. That field is what makes `Val`
   recursive. -/
 inductive Val (primCtx : PrimitiveCtx) where
 | mk (ty : Ty) (val : Ty.type primCtx ty)
 | blockRef (name : String) (argTys : List Ty) (outTy : Ty)
-| loopRef (control : String) (captured : List (Val primCtx))
+| opRef (op : String) (captured : List (Val primCtx))
     (argTys : List Ty) (outTy : Ty)
 
 def Val.ty {primCtx : PrimitiveCtx} : Val primCtx → Ty
 | .mk ty _ => ty
 | .blockRef _ argTys outTy => .func argTys outTy
-| .loopRef _ _ argTys outTy => .func argTys outTy
+| .opRef _ _ argTys outTy => .func argTys outTy
 
 /- The inhabitant behind a value.
 
@@ -295,7 +295,7 @@ def Val.raw {primCtx : PrimitiveCtx} : (v : Val primCtx) → Ty.type primCtx v.t
 | .mk _ val => val
 | .blockRef _ argTys outTy =>
     cast (Ty.type_func primCtx argTys outTy).symm (fun _ => none)
-| .loopRef _ _ argTys outTy =>
+| .opRef _ _ argTys outTy =>
     cast (Ty.type_func primCtx argTys outTy).symm (fun _ => none)
 
 @[simp] theorem Val.ty_mk {primCtx : PrimitiveCtx} (ty : Ty) (val : Ty.type primCtx ty) :
@@ -308,15 +308,15 @@ def Val.raw {primCtx : PrimitiveCtx} : (v : Val primCtx) → Ty.type primCtx v.t
     (argTys : List Ty) (outTy : Ty) :
     (Val.blockRef (primCtx := primCtx) name argTys outTy).ty = .func argTys outTy := rfl
 
-@[simp] theorem Val.ty_loopRef {primCtx : PrimitiveCtx} (control : String)
+@[simp] theorem Val.ty_opRef {primCtx : PrimitiveCtx} (op : String)
     (captured : List (Val primCtx)) (argTys : List Ty) (outTy : Ty) :
-    (Val.loopRef control captured argTys outTy).ty = .func argTys outTy := rfl
+    (Val.opRef op captured argTys outTy).ty = .func argTys outTy := rfl
 
 /- Read a value back at a known type. A reference never answers here, for the reason above. -/
 def Val.as? {primCtx : PrimitiveCtx} (ty : Ty) : Val primCtx → Option (Ty.type primCtx ty)
 | .mk vty val => if h : vty = ty then some (cast (congrArg (Ty.type primCtx) h) val) else none
 | .blockRef .. => none
-| .loopRef .. => none
+| .opRef .. => none
 
 /- evaluation environment: the value bound to each name in scope -/
 abbrev Env (primCtx : PrimitiveCtx) := Scope (Val primCtx)
@@ -332,11 +332,20 @@ inductive Op.Body (primCtx : PrimitiveCtx) where
 | fail
 | done (value : Val primCtx)
 | next (evaluate : Bool) (resume : Option (Val primCtx) → Op.Body primCtx)
+| apply (fn : Val primCtx) (args : List (Val primCtx))
+    (resume : Val primCtx → Op.Body primCtx)
 
 structure Op (primCtx : PrimitiveCtx) where
-  arity : Nat
-  out : (Fin arity → Ty) → Option Ty
-  body : Op.Body primCtx
+  out : List Ty → Option Ty
+  /- The lookup name is supplied so a continuation can re-enter the same context entry. -/
+  body : String → Nat → Option (Op.Body primCtx)
+
+/- A fixed-arity operator. This keeps ordinary pure operators concise while `body` remains able to
+  start variadic operators such as `while`. -/
+def Op.fixed {primCtx : PrimitiveCtx} (arity : Nat) (out : (Fin arity → Ty) → Option Ty)
+    (body : Op.Body primCtx) : Op primCtx where
+  out tys := if h : tys.length = arity then out fun i => tys.get (i.cast h.symm) else none
+  body _ actualArity := if actualArity = arity then some body else none
 
 /- evaluate every operand left to right, then run `run` on the collected values -/
 def Op.Body.eager {primCtx : PrimitiveCtx} (run : List (Val primCtx) → Option (Val primCtx)) :
@@ -347,6 +356,14 @@ def Op.Body.eager {primCtx : PrimitiveCtx} (run : List (Val primCtx) → Option 
     | none => .fail
 | remaining + 1, vals => .next true fun
     | some value => eager run remaining (vals ++ [value])
+    | none => .fail
+
+/- Evaluate and collect a known number of operands, then continue as an operator body. -/
+def Op.Body.collect {primCtx : PrimitiveCtx} (finish : List (Val primCtx) → Op.Body primCtx) :
+    Nat → List (Val primCtx) → Op.Body primCtx
+| 0, vals => finish vals
+| remaining + 1, vals => .next true fun
+    | some value => collect finish remaining (vals ++ [value])
     | none => .fail
 
 /- type shape and semantics of an operator -/
@@ -379,10 +396,8 @@ def eagerBody {primCtx : PrimitiveCtx} {arity : Nat} (sig : Signature primCtx ar
   Op.Body.eager sig.apply
 
 @[simp] def toOp {primCtx : PrimitiveCtx} {arity : Nat} (sig : Signature primCtx arity) :
-    Op primCtx where
-  arity := arity
-  out tys := (sig.decode tys).map sig.output
-  body := eagerBody sig arity []
+    Op primCtx :=
+  Op.fixed arity (fun tys => (sig.decode tys).map sig.output) (eagerBody sig arity [])
 
 @[simp] def unary {primCtx : PrimitiveCtx} (output : Ty → Ty)
     (run : (input : Ty) → Ty.type primCtx input → Ty.type primCtx (output input)) :
@@ -453,14 +468,13 @@ end Op.Signature
   function": such a function is now just an op, so a term has only one kind of named
   context-supplied operation. -/
 def Op.ofVals {primCtx : PrimitiveCtx} (argTys : List Ty) (outTy : Ty)
-    (interp : List (Val primCtx) → Option (Val primCtx)) : Op primCtx where
-  arity := argTys.length
-  out tys := if List.ofFn tys = argTys then some outTy else none
-  body := Op.Body.eager (fun vals =>
+    (interp : List (Val primCtx) → Option (Val primCtx)) : Op primCtx :=
+  Op.fixed argTys.length (fun tys => if List.ofFn tys = argTys then some outTy else none)
+    (Op.Body.eager (fun vals =>
     if vals.map Val.ty = argTys then do
       let raw ← (← interp vals).as? outTy
       some (Val.mk outTy raw)
-    else none) argTys.length []
+    else none) argTys.length [])
 
 /- operator context: the named operators a term may use -/
 abbrev OpCtx (primCtx : PrimitiveCtx) := List (String × Op primCtx)
@@ -473,10 +487,7 @@ def OpCtx.get? {primCtx : PrimitiveCtx} (opCtx : OpCtx primCtx) (name : String) 
 def OpCtx.outTy? {primCtx : PrimitiveCtx} (opCtx : OpCtx primCtx)
     (name : String) (tys : List Ty) : Option Ty :=
   match opCtx.get? name with
-  | some op =>
-      if h : tys.length = op.arity then
-        op.out (fun i => tys.get (i.cast h.symm))
-      else none
+  | some op => op.out tys
   | none => none
 
 /- A term computes a value. `op` names an operation whose semantics come from the context;
@@ -496,28 +507,14 @@ inductive Term (primCtx : PrimitiveCtx) where
   breaks out of it, which is what the old recursor stack allowed by calling an outer motive. -/
 | exit : String → Term primCtx → Term primCtx
 
-/- What an instruction computes. A term is the ordinary case; a control transfers to blocks
-  repeatedly, which a term cannot do -- `driveOp` consumes each operand exactly once
-  (`termination_by rest`), so no operator can re-evaluate one, and therefore no operator can
-  loop. `while`, `for` and `switch` are entries in `Ctx.controlCtx`, named here by string.
-
-  There is one argument list. The blocks a control drives are *values*, so they are ordinary
-  terms here -- a bare name evaluates to a `Val.blockRef` -- and a control reads them off the
-  front of its arguments rather than out of a separate positional block list. That is also why
-  `Control` no longer declares roles: what it drives is whatever it was handed. -/
-inductive Instr.Source (primCtx : PrimitiveCtx) where
-| term (value : Term primCtx)
-| control (control : String) (args : List (Term primCtx))
-
-/- One instruction names the value of its source for the remainder of its block. Term sources are
-  terms rather than flat `op name args` rows, so operands may nest. -/
+/- One instruction names the value of its term for the remainder of its block. -/
 structure Instr (primCtx : PrimitiveCtx) where
   name : String
-  source : Instr.Source primCtx
+  value : Term primCtx
 
 /- Sugar for the common case, and what the `blocks%` syntax builds. -/
 @[simp] def Instr.ofTerm {primCtx : PrimitiveCtx} (name : String) (value : Term primCtx) :
-    Instr primCtx := { name := name, source := .term value }
+    Instr primCtx := { name := name, value := value }
 
 /- A named scope: parameters bound on entry (`phi` in SSA terms), straight-line instructions,
   and the term whose value the block returns. Blocks are declared explicitly and called by name
@@ -540,13 +537,8 @@ def callNames {primCtx : PrimitiveCtx} : Term primCtx → List String
 
 end Term
 
-/- Every block name an instruction reaches. A control's driven blocks are named by `.var`, not by
-  `.call`, so they are invisible here -- a `.var` is indistinguishable from a local variable.
-  Checking that they exist is `Ctx.WellTyped`'s job, through `Term.hasType.varBlock`. -/
 @[simp] def Instr.callNames {primCtx : PrimitiveCtx} (instr : Instr primCtx) : List String :=
-  match instr.source with
-  | .term value => value.callNames
-  | .control _ args => args.flatMap Term.callNames
+  instr.value.callNames
 
 def Block.callNames {primCtx : PrimitiveCtx} (block : Block primCtx) : List String :=
   block.instrs.flatMap Instr.callNames ++ block.result.callNames
@@ -590,37 +582,6 @@ end BlockCtx
 
 /- Everything a `Term` is interpreted against: primitive types, operators, and the program's
   blocks. Later fields may depend on the earlier contexts. -/
-
-/- What a control wants to happen next: it is finished with `value`, or it wants `fn` -- one of
-  the values it was handed -- applied to `args`. Applying goes through `applyValue`, the single
-  calling convention, so a control drives whatever it was given rather than a fixed role. -/
-inductive Control.Yield (primCtx : PrimitiveCtx) where
-| done (value : Val primCtx)
-| apply (fn : Val primCtx) (args : List (Val primCtx))
-
-/- Instruction-level control flow: `while`, `for`, `switch`. A control is driven by the machine
-  rather than by `driveOp`, which is what lets it run a block more than once -- `driveOp` consumes
-  each operand exactly once, so no operator can loop.
-
-  `phase` is the control's own state, and it is a `Nat` on purpose: `next` has to know whether the
-  value coming back arrived from role 0 or role 1, and an iteration index is both enough for that
-  and the thing an iteration-indexed loop invariant is stated over. Keeping it a `Nat` also keeps
-  `Frame` in `Type`, which a `State : Type` field would not.
-
-  Loop-carried state is *not* held here: it is phi-style, living in the arguments passed to the
-  blocks, exactly as `Block.params` already means. `next` is handed the current arguments
-  alongside the value that came back. -/
-structure Control (primCtx : PrimitiveCtx) where
-  /- the roles this control drives, e.g. `["cond", "body"]`; `Instr.Source.control`'s block list
-    lines up with this positionally -/
-  roles : List String
-  /- result type given the argument types -/
-  out : List Ty → Option Ty
-  init : List (Val primCtx) → Option (Nat × Control.Yield primCtx)
-  next : Nat → List (Val primCtx) → Val primCtx → Option (Nat × Control.Yield primCtx)
-
-abbrev ControlCtx (primCtx : PrimitiveCtx) := Scope (Control primCtx)
-
 structure Ctx where
   primCtx : PrimitiveCtx
   /- The effect a program runs in. `Id` for a pure context; a state monad once there is a heap.
@@ -629,7 +590,6 @@ structure Ctx where
   M : Type → Type := Id
   [monad : Monad M]
   opCtx : OpCtx primCtx
-  controlCtx : ControlCtx primCtx := []
   blockCtx : BlockCtx primCtx := .empty
 
 attribute [instance] Ctx.monad
@@ -785,27 +745,8 @@ inductive Block.instrsHaveType (ctx : Ctx) :
     VarCtx → List (Instr ctx.primCtx) → VarCtx → Prop where
 | nil {varCtx} : instrsHaveType ctx varCtx [] varCtx
 | cons {varCtx : VarCtx} {instr : Instr ctx.primCtx} {instrs : List (Instr ctx.primCtx)}
-    {ty : Ty} {out : VarCtx} {value : Term ctx.primCtx}
-    (hsource : instr.source = .term value)
-    (hvalue : Term.hasType ctx varCtx value ty)
-    (hrest : instrsHaveType ctx (varCtx ++ [(instr.name, ty)]) instrs out) :
-    instrsHaveType ctx varCtx (instr :: instrs) out
-/- A control instruction. Its arguments are the initial phi values, so their types are the phi
-  types, and every block the control drives is entered on the phi -- hence `hblocks`, which is
-  the control's analogue of the arity check in `Term.hasType.call`. `Control.out` reads the
-  instruction's own type off the phi types; it is the only typing information a `Control`
-  carries, which is why the *result* types of the driven blocks are not constrained here. -/
-| consControl {varCtx : VarCtx} {instr : Instr ctx.primCtx} {instrs : List (Instr ctx.primCtx)}
-    {controlName : String} {blockNames : List String} {args : List (Term ctx.primCtx)}
-    {ctrl : Control ctx.primCtx} {argTys : List Ty} {ty : Ty} {out : VarCtx}
-    (hsource : instr.source = .control controlName blockNames args)
-    (hctrl : Scope.get? ctx.controlCtx controlName = some ctrl)
-    (hroles : blockNames.length = ctrl.roles.length)
-    (hargs₁ : args.length = argTys.length)
-    (hargs₂ : ∀ idx : Fin args.length, Term.hasType ctx varCtx args[idx] argTys[idx])
-    (hblocks : ∀ idx : Fin blockNames.length, ∃ block : Block ctx.primCtx,
-      ctx.blockCtx.get? blockNames[idx] = some block ∧ block.params.map Prod.snd = argTys)
-    (hout : ctrl.out argTys = some ty)
+    {ty : Ty} {out : VarCtx}
+    (hvalue : Term.hasType ctx varCtx instr.value ty)
     (hrest : instrsHaveType ctx (varCtx ++ [(instr.name, ty)]) instrs out) :
     instrsHaveType ctx varCtx (instr :: instrs) out
 

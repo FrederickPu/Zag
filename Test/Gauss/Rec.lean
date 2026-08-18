@@ -1,5 +1,5 @@
 import Test.Gauss
-import Meta.Eval
+import Meta.Peano.Eval
 
 namespace Zag.Test.Gauss.Rec
 
@@ -43,95 +43,52 @@ theorem rhsTerm_hasType (n : Nat) :
     Term.hasType.binOp (ctx := gaussCtx) (name := "mul") (argTy := NatTy) rfl hn hadd
   exact Term.hasType.binOp (ctx := gaussCtx) (name := "div") (argTy := NatTy) rfl hmul h2
 
+/-- What the loop has added after `k` turns: `i + (i-1) + … + (i-k+1)`. Counting down is what
+  the loop does, and stating the invariant that way keeps it free of truncated subtraction. -/
+def sumDown (i : Nat) : Nat → Nat
+| 0 => 0
+| k + 1 => sumDown i k + (i - k)
+
+theorem sumDown_succ (i k : Nat) :
+    sumDown i (k + 1) = sumDown i k + (i - k) := by
+  rfl
+
+theorem sumDown_add_sumTo (i : Nat) :
+    ∀ k, k ≤ i → sumDown i k + sumTo (i - k) = sumTo i := by
+  intro k
+  induction k with
+  | zero => intro _; simp [sumDown]
+  | succ k ih =>
+      intro hk
+      have hik : i - k = (i - (k + 1)) + 1 := by omega
+      have hstep : sumTo (i - k) = sumTo (i - (k + 1)) + (i - k) := by
+        rw [hik]; simp [sumTo]
+      have hih := ih (by omega)
+      simp only [sumDown]
+      omega
+
+/-- Counting all the way down is the same as counting up. -/
+theorem sumDown_self (i : Nat) : sumDown i i = sumTo i := by
+  simpa [sumTo] using sumDown_add_sumTo i i (Nat.le_refl i)
+
 theorem loop_eval (i acc : Nat) :
     EvaluatesCall gaussCtx "loop" ([Val.nat i, Val.nat acc] : List (Val natCtx))
       (Val.nat (acc + sumTo i)) := by
-  induction i generalizing acc with
-  | zero =>
-      simp [sumTo]
-      evaluates_call 300 [natOpCtx, gaussBlocks]
-  | succ i ih =>
-      have hrec : EvaluatesCall gaussCtx "loop"
-          ([Val.nat i, Val.nat (acc + (i + 1))] : List (Val natCtx))
-          (Val.nat (acc + sumTo (i + 1))) := by
-        simpa [sumTo, Nat.add_assoc, Nat.add_comm, Nat.add_left_comm] using
-          ih (acc + (i + 1))
-      refine EvaluatesCall.of_evaluatesFrom ?_
-      intro env base
-      set_option linter.unusedSimpArgs false in
-        simp +arith [EvalState.enterInstrs, EvalState.enterBlock, BlockCtx.get?,
-          BlockCtx.Raw.get?, Scope.get?, Block.entryEnv, Term.nat, Term.bool, Term.ite,
-          natOpCtx, gaussBlocks]
-      refine EvaluatesFrom.trans_stepN (fuel₀ := 9)
-        (mid := (⟨.eval (.call "loop"
-            [Term.op "sub" [Term.var "i", Term.nat 1],
-             Term.op "add" [Term.var "acc", Term.var "i"]]),
-          [("i", Val.nat (i + 1)), ("acc", Val.nat acc), ("cond", Val.bool true)],
-            Frame.opBody (fun thenVal =>
-              Op.Body.next false fun _ =>
-                match thenVal with
-                | some value => Op.Body.done value
-                | none => Op.Body.fail)
-              [Term.var "acc"]
-              [("i", Val.nat (i + 1)), ("acc", Val.nat acc), ("cond", Val.bool true)] ::
-            Frame.call "loop" env :: base⟩ : EvalState natCtx)) ?_ ?_
-      · set_option linter.unusedSimpArgs false in
-          simp +arith [EvalState.stepN, EvalState.step, EvalState.driveOp,
-            EvalState.enterInstrs, EvalState.enterBlock, OpCtx.get?, BlockCtx.get?,
-            BlockCtx.Raw.get?, Scope.get?, Block.entryEnv, Peano.opCtx, Op.natBinary,
-            Op.natUnary, Op.compare, Op.eq, Op.ite, Op.ofVals, Op.Body.eager,
-            Term.nat, Term.bool, Term.ite, natOpCtx, gaussBlocks] <;>
-            (first | rfl | funext z <;> cases z <;> rfl)
-      refine EvaluatesFrom.call_then (block := gaussBlocks[1].2) (hcall := hrec) ?_ ?_ ?_
-      · set_option linter.unusedSimpArgs false in
-          simp +arith [EvalState.step, EvalState.driveOp, EvalState.enterInstrs,
-            EvalState.enterBlock, OpCtx.get?, BlockCtx.get?, BlockCtx.Raw.get?, Scope.get?,
-            Block.entryEnv, Peano.opCtx, Op.natBinary, Op.natUnary, Op.compare,
-            Op.eq, Op.ite, Op.ofVals, Op.Body.eager, Term.nat, Term.bool, Term.ite,
-            natOpCtx, gaussBlocks] <;> rfl
-      · evaluates_to_all 300 [natOpCtx, gaussBlocks]
-      · intro scope
-        refine EvaluatesFrom.trans_stepN (fuel₀ := 2)
-          (mid := (⟨.ret (Val.nat (acc + sumTo (i + 1))), env, base⟩ : EvalState natCtx)) ?_ ?_
-        · set_option linter.unusedSimpArgs false in
-            simp +arith [EvalState.stepN, EvalState.step, EvalState.driveOp,
-              EvalState.enterInstrs, EvalState.enterBlock, OpCtx.get?, BlockCtx.get?,
-              BlockCtx.Raw.get?, Scope.get?, Block.entryEnv, Peano.opCtx, Op.natBinary,
-              Op.natUnary, Op.compare, Op.eq, Op.ite, Op.ofVals, Op.Body.eager,
-              Term.nat, Term.bool, Term.ite, natOpCtx, gaussBlocks] <;> rfl
-        exact EvaluatesFrom.done
+  while_induction [natOpCtx, Op.fixed, gaussBlocks, sumDown, sumDown_succ, sumDown_self]
+    (fun k args => args = [Val.nat (acc + sumDown i k), Val.nat (i - k)]) stopping_at i
+    returning (Val.nat (acc + sumTo i))
 
 theorem gauss_eval (n : Nat) :
     EvaluatesCall gaussCtx "gauss" ([Val.nat n] : List (Val natCtx)) (Val.nat (sumTo n)) := by
-  refine EvaluatesCall.of_evaluatesFrom ?_
-  intro env base
-  set_option linter.unusedSimpArgs false in
-    simp +arith [EvalState.enterInstrs, EvalState.enterBlock, BlockCtx.get?,
-      BlockCtx.Raw.get?, Scope.get?, Block.entryEnv, Term.nat, Term.bool, Term.ite,
-      natOpCtx, gaussBlocks]
-  have hloop : EvaluatesCall gaussCtx "loop"
-      ([Val.nat n, Val.nat 0] : List (Val natCtx)) (Val.nat (sumTo n)) := by
-    simpa using loop_eval n 0
-  refine EvaluatesFrom.call_then (block := gaussBlocks[1].2) (hcall := hloop) ?_ ?_ ?_
-  · set_option linter.unusedSimpArgs false in
-      simp +arith [EvalState.step, EvalState.driveOp, EvalState.enterInstrs,
-        EvalState.enterBlock, OpCtx.get?, BlockCtx.get?, BlockCtx.Raw.get?, Scope.get?,
-        Block.entryEnv, Peano.opCtx, Op.natBinary, Op.natUnary, Op.compare,
-        Op.eq, Op.ite, Op.ofVals, Op.Body.eager, Term.nat, Term.bool, Term.ite,
-        natOpCtx, gaussBlocks] <;> rfl
-  · evaluates_to_all 300 [natOpCtx, gaussBlocks]
-  · intro scope
-    refine EvaluatesFrom.step
-      (next := (⟨.ret (Val.nat (sumTo n)), env, base⟩ : EvalState natCtx)) ?_
-      EvaluatesFrom.done
-    simp [EvalState.step]
+  evaluates_call [gaussBlocks]
+  use_call [gaussBlocks] (loop_eval n 0)
 
 theorem lhsProgram_eval_sumTo (n : Nat) (env : Env natCtx) :
     EvaluatesTo gaussCtx env (lhsProgram n) (Val.nat (sumTo n)) := by
   unfold lhsProgram
   refine EvaluatesTo.call (block := gaussBlocks[0].2) (hcall := gauss_eval n) ?_ ?_
   · rfl
-  · evaluates_to_all 20 [natOpCtx, gaussBlocks]
+  · evaluates_to_all [gaussBlocks]
 
 theorem two_mul_sumTo (n : Nat) : 2 * sumTo n = n * (n + 1) := by
   induction n with
@@ -156,7 +113,7 @@ theorem lhsProgram_eval_rhs (n : Nat) (env : Env natCtx) :
 theorem rhsTerm_eval_rhs (n : Nat) (env : Env natCtx) :
     EvaluatesTo gaussCtx env (rhsTerm n) (Val.nat (closedForm n)) := by
   unfold rhsTerm closedForm
-  evaluates 100 [natOpCtx, gaussBlocks]
+  evaluates 100 [natOpCtx, Op.fixed]
 
 theorem gaussEq (n : Nat) :
     Term.eq gaussCtx [] NatTy (lhsProgram n) (rhsTerm n) :=

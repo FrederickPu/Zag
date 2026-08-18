@@ -6,20 +6,34 @@ namespace Zag
 open Lib.Peano
 open Pr.TypeUnification
 
-/- Recursive `unifyType` closes raw typing goals with symbolic literal payloads. -/
+/- The typing rules handle symbolic literal payloads without inspecting them. -/
 example (m n : Nat) :
     Term.hasType peanoCtx [] (.op "lt" [Term.nat m, Term.nat n]) Peano.BoolTy := by
-  has_type
+  refine Term.hasType.binOp ?_ (Term.hasType.prim _) (Term.hasType.prim _)
+  unfold OpCtx.outTy?
+  rw [Peano.Model.ltOp]
+  simp [Op.compare, Op.fixed]
 
 example (condition : Bool) (m n : Nat) :
     Term.hasType peanoCtx [] (Term.ite (Term.bool condition) (Term.nat m) (Term.nat n))
       Peano.NatTy := by
-  has_type
+  exact Term.hasType.ite (Term.hasType.prim _) (Term.hasType.prim _) (Term.hasType.prim _)
 
 example (m n : Nat) :
-    Term.hasType peanoCtx [] (.app (.primFunc "add") [Term.nat m, Term.nat n])
+    Term.hasType peanoCtx [("add", .func [Peano.NatTy, Peano.NatTy] Peano.NatTy)]
+      (.app (.var "add") [Term.nat m, Term.nat n])
       Peano.NatTy := by
-  has_type
+  refine Term.hasType.app (argsTy := [Peano.NatTy, Peano.NatTy]) ?_ rfl ?_
+  · exact Term.hasType.var (by rfl)
+  · intro idx
+    match idx with
+    | ⟨0, _⟩ => exact Term.hasType.prim _
+    | ⟨1, _⟩ => exact Term.hasType.prim _
+    | ⟨k + 2, h⟩ =>
+        have : False := by
+          change k + 2 < 2 at h
+          omega
+        contradiction
 
 private abbrev comparisonCtx : PrimitiveCtx :=
   .ofPrims [
@@ -31,10 +45,8 @@ private instance : Peano.Types comparisonCtx where
   natType := by rfl
   boolType := by rfl
 
-private def optionNat (value : Option Nat) : Val comparisonCtx :=
-  .mk (.option Peano.NatTy) (cast (by
-    rw [Ty.type.eq_3, Ty.type.eq_2, Peano.Types.natType]
-    rfl : Option Nat = Ty.type comparisonCtx (.option Peano.NatTy)) value)
+private def opaqueFn (name : String) : Val comparisonCtx :=
+  .blockRef name [] Peano.NatTy
 
 example : Val.primEq? (Val.nat (primCtx := comparisonCtx) 0) (Val.bool false) = none := by
   have hboolNat : (Val.bool (primCtx := comparisonCtx) false).asNat? = none := by
@@ -56,18 +68,18 @@ example : Val.primLt? (Val.bool (primCtx := comparisonCtx) false) (Val.nat 1) = 
 
 example :
     (Op.compare (primCtx := comparisonCtx) Val.primEq?).out
-      (fun i : Fin 2 => if i = 0 then Peano.NatTy else Peano.BoolTy) = none := by
-  simp [Op.compare]
+      [Peano.NatTy, Peano.BoolTy] = none := by
+  simp [Op.compare, Op.fixed]
 
 example :
-    Op.applyVals (Op.compare Val.primEq?)
-      [optionNat none, optionNat (some 1)] = none := by
-  simp [Op.applyVals, Op.compare, Op.Body.applyVals, optionNat, Val.primEq?, Val.asNat?,
-    Val.asBool?, Val.as?]
+  Op.applyValsAt "compare" (Op.compare Val.primEq?)
+      [opaqueFn "left", opaqueFn "right"] = none := by
+  simp [Op.applyValsAt, Op.compare, Op.fixed, Op.Body.applyVals, opaqueFn, Val.primEq?,
+    Val.asNat?, Val.asBool?, Val.as?]
 
 example :
-    Op.applyVals (Op.compare (primCtx := comparisonCtx) (fun _ _ => none))
+    Op.applyValsAt "compare" (Op.compare (primCtx := comparisonCtx) (fun _ _ => none))
       [Val.nat 1, Val.nat 1] = none := by
-  simp [Op.applyVals, Op.compare, Op.Body.applyVals]
+  simp [Op.applyValsAt, Op.compare, Op.fixed, Op.Body.applyVals]
 
 end Zag
