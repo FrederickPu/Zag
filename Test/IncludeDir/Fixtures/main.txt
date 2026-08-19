@@ -1,0 +1,3 @@
+#import "lib.txt"
+#import "nested/deep.txt"
+main body
