@@ -53,6 +53,10 @@ theorem double_call (x : Nat) :
     EvaluatesCall applyCtx "double" ([Val.nat x] : List (Val heapCtx)) (Val.nat (x + x)) := by
   evaluates_call 300 [heapOpCtx, Op.fixed, applyBlocks]
 
+theorem increment_call (x : Nat) :
+    EvaluatesCall applyCtx "increment" ([Val.nat x] : List (Val heapCtx)) (Val.nat (x + 1)) := by
+  evaluates_call 300 [heapOpCtx, Op.fixed, applyBlocks]
+
 /-- `call double [3]`. -/
 example : EvaluatesTo applyCtx [] (.call "double" [Term.nat 3]) (Val.nat 6) := by
   evaluates 300 [heapOpCtx, Op.fixed, applyBlocks]
@@ -101,25 +105,92 @@ theorem twiceDouble_eval (x : Nat) :
     EvaluatesCall applyCtx "twice"
       ([Val.blockRef "double" [Peano.NatTy] Peano.NatTy, Val.nat x] : List (Val heapCtx))
       (Val.nat (x + x + (x + x))) := by
-  evaluates_call 300 [heapOpCtx, Op.fixed, applyBlocks]
+  have double_twice :
+      EvaluatesCall applyCtx "double" ([Val.nat (2 * x)] : List (Val heapCtx))
+        (Val.nat (4 * x)) := by
+    simpa only [← Nat.add_mul] using double_call (2 * x)
+  evaluates_call_wp 300 [heapOpCtx, Op.fixed, applyBlocks]
+  use_apply 300 [heapOpCtx, Op.fixed, applyBlocks]
+    (EvaluatesApply.blockRef (argTys := [Peano.NatTy]) (outTy := Peano.NatTy)
+      (double_call x))
+  use_apply 300 [heapOpCtx, Op.fixed, applyBlocks]
+    (EvaluatesApply.blockRef (argTys := [Peano.NatTy]) (outTy := Peano.NatTy)
+      double_twice)
 
 theorem twiceIncrement_eval (x : Nat) :
     EvaluatesCall applyCtx "twice"
       ([Val.blockRef "increment" [Peano.NatTy] Peano.NatTy, Val.nat x] : List (Val heapCtx))
       (Val.nat (x + 1 + 1)) := by
-  evaluates_call 300 [heapOpCtx, Op.fixed, applyBlocks]
+  evaluates_call_wp 300 [heapOpCtx, Op.fixed, applyBlocks]
+  use_apply 300 [heapOpCtx, Op.fixed, applyBlocks]
+    (EvaluatesApply.blockRef (argTys := [Peano.NatTy]) (outTy := Peano.NatTy)
+      (increment_call x))
+  use_apply 300 [heapOpCtx, Op.fixed, applyBlocks]
+    (EvaluatesApply.blockRef (argTys := [Peano.NatTy]) (outTy := Peano.NatTy)
+      (increment_call (x + 1)))
 
 /-- `use_call` discharges the call to `twice` from that specification, with the block reference
   travelling through `evaluates_to_all` as an ordinary argument value. -/
 theorem doubleTwice_eval : EvaluatesCall applyCtx "doubleTwice"
     ([Val.nat 5] : List (Val heapCtx)) (Val.nat 20) := by
-  evaluates_call 300 [heapOpCtx, Op.fixed, applyBlocks]
+  evaluates_call_wp 300 [heapOpCtx, Op.fixed, applyBlocks]
   use_call 300 [heapOpCtx, Op.fixed, applyBlocks] twiceDouble_eval
 
 theorem incrementTwice_eval : EvaluatesCall applyCtx "incrementTwice"
     ([Val.nat 5] : List (Val heapCtx)) (Val.nat 7) := by
-  evaluates_call 300 [heapOpCtx, Op.fixed, applyBlocks]
+  evaluates_call_wp 300 [heapOpCtx, Op.fixed, applyBlocks]
   use_call 300 [heapOpCtx, Op.fixed, applyBlocks] twiceIncrement_eval
+
+private abbrev wpFallbackBlocks : BlockCtx.Raw heapCtx :=
+  blocks% [
+    choose() : Nat {
+      ret exit choose nat(1)
+    },
+    chooseCaller() : Nat {
+      ret call choose []
+    }
+  ]
+
+private theorem wpFallbackBlocksValid : BlockCtx.Valid wpFallbackBlocks := by
+  valid_blocks [wpFallbackBlocks]
+
+private abbrev wpFallbackCtx : Ctx := mkCtx wpFallbackBlocks wpFallbackBlocksValid
+
+/-- The WP processor must not use the declaration under construction as its own call rule. -/
+private theorem processEvalWPGoals_noSelfReference :
+    EvaluatesCall wpFallbackCtx "choose" [] (Val.nat 1) := by
+  fail_if_success (process_eval_wp_goals 0 [heapOpCtx, Op.fixed, wpFallbackBlocks] <;> done)
+  evaluates_call 100 [heapOpCtx, Op.fixed, wpFallbackBlocks]
+
+/-- Calls without direct semantic rules retain the machine evaluator fallback. -/
+private theorem processEvalWPGoals_machineFallback (_n : Nat) :
+    EvaluatesCall wpFallbackCtx "choose" [] (Val.nat 1) := by
+  process_eval_wp_goals 100 [heapOpCtx, Op.fixed, wpFallbackBlocks]
+
+/-- A named local call specification is collected before goal preprocessing can prune it. -/
+private theorem processEvalWPGoals_localCallSpec :
+    EvaluatesCall wpFallbackCtx "chooseCaller" [] (Val.nat 1) := by
+  have hchoose : EvaluatesCall wpFallbackCtx "choose" [] (Val.nat 1) := by
+    evaluates_call 100 [heapOpCtx, Op.fixed, wpFallbackBlocks]
+  process_eval_wp_goals 0 [heapOpCtx, Op.fixed, wpFallbackBlocks]
+
+/-! ### instruction-sequence composition -/
+
+/-- A call specification fixes the instruction result before the dependent tail is processed. -/
+example (x : Nat) : EvaluatesInstrs applyCtx
+    [Instr.ofTerm "once" (.call "double" [Term.nat x]),
+      Instr.ofTerm "answer" (.op "add" [.var "once", Term.nat 1])]
+    (.var "answer") [] (Val.nat (x + x + 1)) := by
+  use_call 300 [heapOpCtx, Op.fixed, applyBlocks] (double_call x)
+
+/-- The same sequencing rule works when the instruction reaches the block through `Term.app`. -/
+example (x : Nat) : EvaluatesInstrs applyCtx
+    [Instr.ofTerm "once" (.app (.var "double") [Term.nat x]),
+      Instr.ofTerm "answer" (.op "add" [.var "once", Term.nat 1])]
+    (.var "answer") [] (Val.nat (x + x + 1)) := by
+  use_apply 300 [heapOpCtx, Op.fixed, applyBlocks]
+    (EvaluatesApply.blockRef (argTys := [Peano.NatTy]) (outTy := Peano.NatTy)
+      (double_call x))
 
 /-- The same `twice` block, driven by two different arguments. -/
 example : EvaluatesTo applyCtx [] (.call "twice" [.var "double", Term.nat 3]) (Val.nat 12) := by

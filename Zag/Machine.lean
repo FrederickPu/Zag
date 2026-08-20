@@ -109,6 +109,14 @@ def result? (state : EvalState primCtx) : Option (Val primCtx) :=
       some ⟨Action.apply fn args, env, .opBody k rest env :: stack⟩
 termination_by rest
 
+/-- An eager operator requests evaluation of its next surface-term argument. -/
+theorem driveOp_next_term (resume : Option (Val primCtx) → Op.Body primCtx)
+    (operand : Term primCtx) (rest : List (Op.Arg primCtx)) (env : Env primCtx)
+    (stack : List (Frame primCtx)) :
+    driveOp (.next true resume) (.inl operand :: rest) env stack =
+      some ⟨.eval operand, env, .opBody resume rest env :: stack⟩ := by
+  simp [driveOp]
+
 /-- Begin a block body: the instructions in order, then the returned term. -/
 @[eval_step] def enterInstrs (instrs : List (Instr primCtx)) (result : Term primCtx) (env : Env primCtx)
     (stack : List (Frame primCtx)) : EvalState primCtx :=
@@ -241,6 +249,38 @@ termination_by rest
 | { control := .exit _ _, stack := [], .. } => none
 | { control := .exit blockName value, env, stack := frame :: stack } =>
     unwindFrame frame blockName value env stack
+
+/-- Factor an operator machine step into lookup, body selection, and body execution. -/
+theorem step_op {ctx : Ctx} {name : String} {args : List (Term ctx.primCtx)}
+    {env : Env ctx.primCtx} {stack : List (Frame ctx.primCtx)} {oper : Op ctx.primCtx}
+    {body : Op.Body ctx.primCtx} {next : EvalState ctx.primCtx}
+    (hop : ctx.opCtx.get? name = some oper)
+    (hbody : oper.body name args.length = some body)
+    (hdrive : driveOp body (Op.Arg.ofTerms args) env stack = some next) :
+    step ctx ⟨.eval (.op name args), env, stack⟩ = some next := by
+  simp only [step, evalStep, hop, hbody]
+  exact hdrive
+
+/-- Dispatch an evaluation control without traversing the surrounding machine state. -/
+theorem step_eval (ctx : Ctx) (term : Term ctx.primCtx) (env : Env ctx.primCtx)
+    (stack : List (Frame ctx.primCtx)) :
+    step ctx ⟨.eval term, env, stack⟩ = evalStep ctx term env stack := rfl
+
+/-- Dispatch an application control to the value-application semantics. -/
+theorem step_apply (ctx : Ctx) (fn : Val ctx.primCtx) (args : List (Val ctx.primCtx))
+    (env : Env ctx.primCtx) (stack : List (Frame ctx.primCtx)) :
+    step ctx ⟨.apply fn args, env, stack⟩ = applyValue ctx fn args env stack := rfl
+
+/-- Dispatch a returned value through exactly the top pending frame. -/
+theorem step_ret (ctx : Ctx) (value : Val ctx.primCtx) (env : Env ctx.primCtx)
+    (frame : Frame ctx.primCtx) (stack : List (Frame ctx.primCtx)) :
+    step ctx ⟨.ret value, env, frame :: stack⟩ = resumeFrame ctx frame value stack := rfl
+
+/-- Dispatch an exit through exactly the top pending frame. -/
+theorem step_exit (ctx : Ctx) (name : String) (value : Val ctx.primCtx) (env : Env ctx.primCtx)
+    (frame : Frame ctx.primCtx) (stack : List (Frame ctx.primCtx)) :
+    step ctx ⟨.exit name value, env, frame :: stack⟩ =
+      unwindFrame frame name value env stack := rfl
 
 /-- Run at most `fuel` steps, stopping early if evaluation gets stuck or finishes. -/
 def run (ctx : Ctx) : Nat → EvalState ctx.primCtx → EvalState ctx.primCtx

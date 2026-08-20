@@ -208,6 +208,56 @@ theorem driveOp_apply {ctx : Ctx} {fn : Val ctx.primCtx} {args : List (Val ctx.p
 
 end EvaluatesFrom
 
+/-- Evaluate a surface application from specifications for its function, arguments, and the
+  resulting value application. -/
+theorem EvaluatesTo.app {ctx : Ctx} {fn : Term ctx.primCtx}
+    {args : List (Term ctx.primCtx)} {fnValue : Val ctx.primCtx}
+    {argValues : List (Val ctx.primCtx)} {value : Val ctx.primCtx}
+    {env : Env ctx.primCtx}
+    (hfn : EvaluatesTo ctx env fn fnValue)
+    (hargs : EvaluatesToAll ctx env args argValues)
+    (happly : EvaluatesApply ctx fnValue argValues value) :
+    EvaluatesTo ctx env (.app fn args) value := by
+  apply EvaluatesTo.of_evaluatesFrom
+  apply EvaluatesFrom.step
+    (next := ⟨.eval fn, env, [.args .apply [] args env]⟩)
+    (by simp [EvalState.step, EvalState.evalStep, EvalState.start])
+  apply EvaluatesFrom.bind (EvaluatesTo.weaken hfn (.args .apply [] args env :: []))
+  intro scope
+  cases hargs with
+  | nil =>
+      apply EvaluatesFrom.step
+        (next := ⟨.apply fnValue [], env, []⟩)
+        (by simp [EvalState.step, EvalState.resumeFrame])
+      exact happly env []
+  | @cons arg args argValue argValues harg hrest =>
+      apply EvaluatesFrom.step
+        (next := ⟨.eval arg, env, [.args .apply [fnValue] args env]⟩)
+        (by simp [EvalState.step, EvalState.resumeFrame])
+      obtain ⟨fuel, hsteps⟩ := EvalState.stepN_applyArgs
+        (fn := fnValue) (S := []) args argValues arg argValue [] harg hrest
+      exact EvaluatesFrom.trans_stepN hsteps (happly env [])
+
+namespace EvaluatesInstrs
+
+/-- Consume an application-valued instruction and continue under the value supplied by its
+  application specification. -/
+theorem cons_app {ctx : Ctx} {fn : Term ctx.primCtx} {args : List (Term ctx.primCtx)}
+    {fnValue : Val ctx.primCtx} {argValues : List (Val ctx.primCtx)}
+    {instrName : String} {instrs : List (Instr ctx.primCtx)}
+    {result : Term ctx.primCtx} {env : Env ctx.primCtx}
+    {instrValue value : Val ctx.primCtx}
+    (hfn : EvaluatesTo ctx env fn fnValue)
+    (hargs : EvaluatesToAll ctx env args argValues)
+    (happly : EvaluatesApply ctx fnValue argValues instrValue)
+    (hrest : EvaluatesInstrs ctx instrs result
+      (env ++ [(instrName, instrValue)]) value) :
+    EvaluatesInstrs ctx (Instr.ofTerm instrName (.app fn args) :: instrs)
+      result env value :=
+  .cons (EvaluatesTo.app hfn hargs happly) hrest
+
+end EvaluatesInstrs
+
 namespace PropRefinement
 
 /-- Lift a refinement for evaluating a term through a pending machine continuation. -/

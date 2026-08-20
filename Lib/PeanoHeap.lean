@@ -475,6 +475,22 @@ def stateValueOp : Op heapCtx :=
     ("stateValue", stateValueOp)
   ]
 
+@[eval_step] theorem heapOpCtx_get_add :
+    heapOpCtx.get? "add" = some (Op.natBinary (primCtx := heapCtx) Nat.add) := by
+  rfl
+
+@[eval_step] theorem heapOpCtx_get_sub :
+    heapOpCtx.get? "sub" = some (Op.natBinary (primCtx := heapCtx) Nat.sub) := by
+  rfl
+
+@[eval_step] theorem heapOpCtx_get_gt :
+    heapOpCtx.get? "gt" = some (Op.compare (primCtx := heapCtx) Val.primGt?) := by
+  rfl
+
+@[eval_step] theorem heapOpCtx_get_while :
+    heapOpCtx.get? "while" = some (Op.whileOp (primCtx := heapCtx)) := by
+  rfl
+
 
 abbrev peanoHeapCtx : Ctx where
   primCtx := heapCtx

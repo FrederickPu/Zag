@@ -28,6 +28,18 @@ def EvaluatesTo (ctx : Ctx) (env : Env ctx.primCtx) (term : Term ctx.primCtx)
     (value : Val ctx.primCtx) : Prop :=
   EvaluatesFrom ctx (EvalState.start env term) value []
 
+/-- Evaluate a block body from top to bottom. Each instruction returns a value, that value is
+  bound in the block environment, and the remaining instructions continue under the binding. -/
+inductive EvaluatesInstrs (ctx : Ctx) :
+    List (Instr ctx.primCtx) → Term ctx.primCtx → Env ctx.primCtx → Val ctx.primCtx → Prop where
+| nil {result env value} :
+    EvaluatesTo ctx env result value →
+    EvaluatesInstrs ctx [] result env value
+| cons {instr instrs result env instrValue value} :
+    EvaluatesTo ctx env instr.value instrValue →
+    EvaluatesInstrs ctx instrs result (env ++ [(instr.name, instrValue)]) value →
+    EvaluatesInstrs ctx (instr :: instrs) result env value
+
 /-- Calling `name` on argument *values* produces `value`.
 
   Specs are stated this way, not as `EvaluatesTo … (.call name args) …`, because an induction
@@ -46,6 +58,36 @@ def EvaluatesCall (ctx : Ctx) (name : String) (vargs : List (Val ctx.primCtx))
       ctx.blockCtx.get? name = some block ∧
       EvalState.enterBlock name block vargs env base = some st ∧
       EvalState.stepN ctx fuel st = some ⟨.ret value, scope, base⟩
+
+/-- An executable, sound comparison with one expected evaluation result. Concrete value families
+  provide instances without requiring equality on every possible `Val`. -/
+class EvalResultMatcher {primCtx : PrimitiveCtx} (expected : Val primCtx) where
+  test : Val primCtx → Bool
+  eq_of_test {actual : Val primCtx} : test actual = true → actual = expected
+
+/-- Execute a normally returning block body and compare its result. The caller frame is omitted
+  while computing; `EvaluatesCall.of_runCallBodyMatches` installs it by weakening. -/
+def EvalState.callBodyResult? (name : String) (state : EvalState primCtx) : Option (Val primCtx) :=
+  match state.control, state.stack with
+  | .ret value, [] => some value
+  | .exit target value, [] => if target = name then some value else none
+  | _, _ => none
+
+/-- Execute a block body and compare either its normal result or an exit targeting that block. -/
+def EvalState.runCallBodyMatches (ctx : Ctx) (fuel : Nat) (name : String)
+    (vargs : List (Val ctx.primCtx)) (expected : Val ctx.primCtx)
+    [matcher : EvalResultMatcher expected] : Bool :=
+  match ctx.blockCtx.get? name with
+  | none => false
+  | some block =>
+      if vargs.length = block.params.length then
+        match (EvalState.run ctx fuel
+            (EvalState.enterInstrs block.instrs block.result
+              (block.entryEnv vargs) [])).callBodyResult? name with
+        | some actual => matcher.test actual
+        | none => false
+      else
+        false
 
 namespace EvaluatesFrom
 
@@ -85,6 +127,55 @@ theorem step {ctx : Ctx} {state next : EvalState ctx.primCtx}
   refine ⟨fuel + 1, scope, ?_⟩
   rw [EvalState.stepN_succ, hstep]
   exact hnext
+
+/-- Start a non-operator term, then continue from the resulting machine state. -/
+theorem eval_step {ctx : Ctx} {term : Term ctx.primCtx} {env : Env ctx.primCtx}
+    {stack base : List (Frame ctx.primCtx)} {next : EvalState ctx.primCtx}
+    {value : Val ctx.primCtx}
+    (hstep : EvalState.evalStep ctx term env stack = some next)
+    (hnext : EvaluatesFrom ctx next value base) :
+    EvaluatesFrom ctx ⟨.eval term, env, stack⟩ value base :=
+  EvaluatesFrom.step ((EvalState.step_eval ctx term env stack).trans hstep) hnext
+
+/-- Start an operator through its three semantic phases, then continue from its result. -/
+theorem op_step {ctx : Ctx} {name : String} {args : List (Term ctx.primCtx)}
+    {env : Env ctx.primCtx} {stack base : List (Frame ctx.primCtx)}
+    {oper : Op ctx.primCtx} {body : Op.Body ctx.primCtx} {next : EvalState ctx.primCtx}
+    {value : Val ctx.primCtx}
+    (hop : ctx.opCtx.get? name = some oper)
+    (hbody : oper.body name args.length = some body)
+    (hdrive : EvalState.driveOp body (Op.Arg.ofTerms args) env stack = some next)
+    (hnext : EvaluatesFrom ctx next value base) :
+    EvaluatesFrom ctx ⟨.eval (.op name args), env, stack⟩ value base :=
+  EvaluatesFrom.step (EvalState.step_op hop hbody hdrive) hnext
+
+/-- Apply a value, then continue from the resulting machine state. -/
+theorem apply_step {ctx : Ctx} {fn : Val ctx.primCtx} {args : List (Val ctx.primCtx)}
+    {env : Env ctx.primCtx} {stack base : List (Frame ctx.primCtx)}
+    {next : EvalState ctx.primCtx} {value : Val ctx.primCtx}
+    (hstep : EvalState.applyValue ctx fn args env stack = some next)
+    (hnext : EvaluatesFrom ctx next value base) :
+    EvaluatesFrom ctx ⟨.apply fn args, env, stack⟩ value base :=
+  EvaluatesFrom.step ((EvalState.step_apply ctx fn args env stack).trans hstep) hnext
+
+/-- Resume exactly the top frame, then continue from the resulting machine state. -/
+theorem ret_step {ctx : Ctx} {result : Val ctx.primCtx} {env : Env ctx.primCtx}
+    {frame : Frame ctx.primCtx} {stack base : List (Frame ctx.primCtx)}
+    {next : EvalState ctx.primCtx} {value : Val ctx.primCtx}
+    (hstep : EvalState.resumeFrame ctx frame result stack = some next)
+    (hnext : EvaluatesFrom ctx next value base) :
+    EvaluatesFrom ctx ⟨.ret result, env, frame :: stack⟩ value base :=
+  EvaluatesFrom.step ((EvalState.step_ret ctx result env frame stack).trans hstep) hnext
+
+/-- Unwind exactly the top frame, then continue from the resulting machine state. -/
+theorem exit_step {ctx : Ctx} {name : String} {result : Val ctx.primCtx}
+    {env : Env ctx.primCtx} {frame : Frame ctx.primCtx}
+    {stack base : List (Frame ctx.primCtx)} {next : EvalState ctx.primCtx}
+    {value : Val ctx.primCtx}
+    (hstep : EvalState.unwindFrame frame name result env stack = some next)
+    (hnext : EvaluatesFrom ctx next value base) :
+    EvaluatesFrom ctx ⟨.exit name result, env, frame :: stack⟩ value base :=
+  EvaluatesFrom.step ((EvalState.step_exit ctx name result env frame stack).trans hstep) hnext
 
 theorem trans_stepN {ctx : Ctx} {fuel₀ : Nat} {state mid : EvalState ctx.primCtx}
     {value : Val ctx.primCtx} {base : List (Frame ctx.primCtx)}
@@ -177,6 +268,19 @@ theorem drop_prefix {ctx : Ctx} {fuel₀ : Nat} {state mid : EvalState ctx.primC
 
 end EvaluatesFrom
 
+/-- A successful bounded run supplies an `EvaluatesFrom` witness for an arbitrary start state. -/
+theorem EvaluatesFrom.of_run {ctx : Ctx} {state : EvalState ctx.primCtx}
+    {value : Val ctx.primCtx} {fuel : Nat}
+    (h : (EvalState.run ctx fuel state).result? = some value) :
+    EvaluatesFrom ctx state value [] := by
+  obtain ⟨steps, hsteps⟩ := EvalState.exists_stepN_run fuel state
+  cases hstate : EvalState.run ctx fuel state with
+  | mk control scope stack =>
+      rw [hstate] at hsteps h
+      cases control <;> cases stack <;> simp [EvalState.result?] at h
+      subst h
+      exact ⟨steps, scope, hsteps⟩
+
 theorem EvaluatesFrom.of_evaluatesTo {ctx : Ctx} {env : Env ctx.primCtx}
     {term : Term ctx.primCtx} {value : Val ctx.primCtx}
     (h : EvaluatesTo ctx env term value) :
@@ -195,13 +299,7 @@ theorem EvaluatesTo.of_run {ctx : Ctx} {env : Env ctx.primCtx}
     {term : Term ctx.primCtx} {value : Val ctx.primCtx} {fuel : Nat}
     (h : (EvalState.run ctx fuel (EvalState.start env term)).result? = some value) :
     EvaluatesTo ctx env term value := by
-  obtain ⟨steps, hsteps⟩ := EvalState.exists_stepN_run fuel (EvalState.start env term)
-  cases hstate : EvalState.run ctx fuel (EvalState.start env term) with
-  | mk control scope stack =>
-      rw [hstate] at hsteps h
-      cases control <;> cases stack <;> simp [EvalState.result?] at h
-      subst h
-      exact ⟨steps, scope, hsteps⟩
+  exact EvaluatesTo.of_evaluatesFrom (EvaluatesFrom.of_run h)
 
 theorem EvaluatesTo.iff_run {ctx : Ctx} {env : Env ctx.primCtx}
     {term : Term ctx.primCtx} {value : Val ctx.primCtx} :
@@ -231,6 +329,74 @@ theorem of_evaluatesFrom {ctx : Ctx} {name : String} {vargs : List (Val ctx.prim
   obtain ⟨fuel, scope, hsteps⟩ := hfrom
   exact ⟨block, state, fuel, scope, hblock, henter, hsteps⟩
 
+/-- A native execution of a closed block body proves the full call specification. The closed run
+  is weakened beneath the caller frame, which then handles either a normal return or an exit
+  targeting this call. -/
+theorem of_runCallBodyMatches {ctx : Ctx} {name : String}
+    {vargs : List (Val ctx.primCtx)} {value : Val ctx.primCtx} {fuel : Nat}
+    [matcher : EvalResultMatcher value]
+    (h : EvalState.runCallBodyMatches ctx fuel name vargs value = true) :
+    EvaluatesCall ctx name vargs value := by
+  unfold EvalState.runCallBodyMatches at h
+  cases hblock : ctx.blockCtx.get? name with
+  | none => simp [hblock] at h
+  | some block =>
+      by_cases hargs : vargs.length = block.params.length
+      · let initial := EvalState.enterInstrs block.instrs block.result (block.entryEnv vargs) []
+        cases hresult : (EvalState.run ctx fuel initial).callBodyResult? name with
+        | none => simp [hblock, hargs, initial, hresult] at h
+        | some actual =>
+            have hmatch : matcher.test actual = true := by
+              simpa [hblock, hargs, initial, hresult] using h
+            have hvalue : actual = value := matcher.eq_of_test hmatch
+            subst value
+            obtain ⟨steps, hsteps⟩ := EvalState.exists_stepN_run fuel initial
+            cases hrun : EvalState.run ctx fuel initial with
+            | mk control scope stack =>
+                rw [hrun] at hsteps hresult
+                cases control <;> cases stack <;>
+                  simp [EvalState.callBodyResult?] at hresult
+                · rename_i returned
+                  have hreturned : returned = actual := hresult
+                  intro callerEnv base
+                  let callStack : List (Frame ctx.primCtx) := .call name callerEnv :: base
+                  let state := EvalState.enterInstrs block.instrs block.result
+                    (block.entryEnv vargs) callStack
+                  refine ⟨block, state, steps + 1, callerEnv, hblock, ?_, ?_⟩
+                  · simp [state, callStack, EvalState.enterBlock, hargs]
+                  · have hbodySteps : EvalState.stepN ctx steps state =
+                        some ⟨.ret returned, scope, callStack⟩ := by
+                      have hweaken := EvalState.stepN_weaken callStack hsteps
+                      have hinitial : EvalState.appendStack initial callStack = state :=
+                        EvalState.enterInstrs_appendStack block.instrs block.result
+                          (block.entryEnv vargs) callStack
+                      rw [← hinitial]
+                      exact hweaken
+                    rw [EvalState.stepN_add, hbodySteps]
+                    simp [callStack, EvalState.stepN_succ, EvalState.step,
+                      EvalState.resumeFrame, hreturned]
+                · rename_i target returned
+                  have htarget : target = name := hresult.1
+                  have hreturned : returned = actual := hresult.2
+                  intro callerEnv base
+                  let callStack : List (Frame ctx.primCtx) := .call name callerEnv :: base
+                  let state := EvalState.enterInstrs block.instrs block.result
+                    (block.entryEnv vargs) callStack
+                  refine ⟨block, state, steps + 1, callerEnv, hblock, ?_, ?_⟩
+                  · simp [state, callStack, EvalState.enterBlock, hargs]
+                  · have hbodySteps : EvalState.stepN ctx steps state =
+                        some ⟨.exit target returned, scope, callStack⟩ := by
+                      have hweaken := EvalState.stepN_weaken callStack hsteps
+                      have hinitial : EvalState.appendStack initial callStack = state :=
+                        EvalState.enterInstrs_appendStack block.instrs block.result
+                          (block.entryEnv vargs) callStack
+                      rw [← hinitial]
+                      exact hweaken
+                    rw [EvalState.stepN_add, hbodySteps]
+                    simp [callStack, EvalState.stepN_succ, EvalState.step, EvalState.unwindFrame,
+                      htarget, hreturned]
+      · simp [hblock, hargs] at h
+
 end EvaluatesCall
 
 /-- Evaluation is deterministic, so the fuel is an artefact of the *proof*, not of the statement:
@@ -243,6 +409,24 @@ theorem EvaluatesTo.unique {ctx : Ctx} {env : Env ctx.primCtx} {term : Term ctx.
   obtain ⟨fuel₁, scope₁, hsteps₁⟩ := h₁'
   have htail := EvaluatesFrom.drop_prefix hsteps₁ h₂'
   exact (EvaluatesFrom.ret_empty_eq htail).symm
+
+/-- Once a canonical evaluation is known, any other claimed result is exactly an equality with
+  that result. This packages determinism for semantic reduction lemmas. -/
+theorem EvaluatesTo.iff_eq_of {ctx : Ctx} {env : Env ctx.primCtx}
+    {term : Term ctx.primCtx} {canonical expected : Val ctx.primCtx}
+    (hcanonical : EvaluatesTo ctx env term canonical) :
+    EvaluatesTo ctx env term expected ↔ canonical = expected := by
+  constructor
+  · exact fun h => EvaluatesTo.unique hcanonical h
+  · rintro rfl
+    exact hcanonical
+
+/-- Transport a canonical evaluation result to an equal expected result. -/
+theorem EvaluatesTo.of_eq {ctx : Ctx} {env : Env ctx.primCtx}
+    {term : Term ctx.primCtx} {canonical expected : Val ctx.primCtx}
+    (hcanonical : EvaluatesTo ctx env term canonical) (h : canonical = expected) :
+    EvaluatesTo ctx env term expected :=
+  (EvaluatesTo.iff_eq_of hcanonical).2 h
 
 def Term.Terminates (ctx : Ctx) (env : Env ctx.primCtx) (term : Term ctx.primCtx) : Prop :=
   ∃ v, EvaluatesTo ctx env term v
@@ -294,6 +478,49 @@ theorem EvaluatesTo.weaken {ctx : Ctx} {env : Env ctx.primCtx} {term : Term ctx.
   simpa [EvalState.start, EvalState.appendStack] using
     (EvalState.stepN_weaken (base := base) hsteps)
 
+/-- Install the machine continuations represented by `EvaluatesInstrs`. The relation itself can
+  therefore be used as a block-level WP without repeatedly simplifying `enterInstrs`. -/
+theorem EvaluatesInstrs.to_evaluatesFrom {ctx : Ctx} {instrs : List (Instr ctx.primCtx)}
+    {result : Term ctx.primCtx} {env callerEnv : Env ctx.primCtx}
+    {value : Val ctx.primCtx} {name : String} {base : List (Frame ctx.primCtx)}
+    (h : EvaluatesInstrs ctx instrs result env value) :
+    EvaluatesFrom ctx
+      (EvalState.enterInstrs instrs result env (.call name callerEnv :: base)) value base := by
+  induction h with
+  | nil hresult =>
+      apply EvaluatesFrom.bind (EvaluatesTo.weaken hresult _)
+      intro scope
+      exact EvaluatesFrom.ret_step rfl EvaluatesFrom.done
+  | @cons instr instrs result env instrValue value hinstr hrest ih =>
+      apply EvaluatesFrom.bind (EvaluatesTo.weaken hinstr _)
+      intro scope
+      exact EvaluatesFrom.ret_step rfl ih
+
+namespace EvaluatesCall
+
+/-- A block lookup, arity check, and instruction-sequence WP suffice to prove a call spec. -/
+theorem of_evaluatesInstrs {ctx : Ctx} {name : String} {vargs : List (Val ctx.primCtx)}
+    {value : Val ctx.primCtx} {block : Block ctx.primCtx}
+    (hblock : ctx.blockCtx.get? name = some block)
+    (hargs : vargs.length = block.params.length)
+    (hbody : EvaluatesInstrs ctx block.instrs block.result (block.entryEnv vargs) value) :
+    EvaluatesCall ctx name vargs value := by
+  apply of_evaluatesFrom
+  intro callerEnv base
+  refine ⟨block,
+    EvalState.enterInstrs block.instrs block.result (block.entryEnv vargs)
+      (.call name callerEnv :: base), hblock, ?_, hbody.to_evaluatesFrom⟩
+  simp [EvalState.enterBlock, hargs]
+
+/-- Transport a call specification from its canonical result to an equal expected result. -/
+theorem of_eq {ctx : Ctx} {name : String} {vargs : List (Val ctx.primCtx)}
+    {canonical value : Val ctx.primCtx}
+    (hcall : EvaluatesCall ctx name vargs canonical) (hvalue : canonical = value) :
+    EvaluatesCall ctx name vargs value := by
+  rwa [hvalue] at hcall
+
+end EvaluatesCall
+
 
 /-! ### the calculus, on the machine
 
@@ -337,6 +564,17 @@ theorem EvaluatesTo.var_iff {name : String} {v : Val ctx.primCtx}
       simp [EvalState.step, EvalState.evalStep, EvalState.resumeFrame,
         EvalState.unwindFrame, EvalState.start, hv])
       (EvaluatesFrom.done (ctx := ctx) (value := v) (scope := env) (base := []))
+
+/-- A local binding evaluates directly, independently of whether a block has the same name. -/
+@[eval_semantic] theorem EvaluatesTo.var_local {ctx : Ctx} {env : Env ctx.primCtx}
+    {name : String} {v : Val ctx.primCtx}
+    (hlocal : Scope.get? env name = some v) :
+    EvaluatesTo ctx env (.var name) v := by
+  apply EvaluatesTo.of_evaluatesFrom
+  exact EvaluatesFrom.step (by
+    simp [EvalState.step, EvalState.evalStep, EvalState.resumeFrame,
+      EvalState.unwindFrame, EvalState.start, hlocal])
+    (EvaluatesFrom.done (ctx := ctx) (value := v) (scope := env) (base := []))
 
 /-- A block named where a value is expected evaluates to a reference to it. This is what makes
   `call f [x]` and `app (var f) [x]` agree. -/
@@ -597,6 +835,26 @@ theorem EvaluatesTo.call {ctx : Ctx} {name : String}
   EvaluatesTo.of_evaluatesFrom <|
     EvaluatesFrom.call_then (S := []) (finalBase := []) (block := block)
       (hcall := hcall) hblock hargs (fun _ => EvaluatesFrom.done)
+
+namespace EvaluatesInstrs
+
+/-- Consume a call-valued instruction and continue under the value supplied by its specification.
+  Keeping the tail in this rule prevents automation from exposing it before `hcall` fixes the
+  instruction's result. -/
+theorem cons_call {ctx : Ctx} {name : String} {args : List (Term ctx.primCtx)}
+    {vargs : List (Val ctx.primCtx)} {instrName : String}
+    {instrs : List (Instr ctx.primCtx)} {result : Term ctx.primCtx}
+    {env : Env ctx.primCtx} {instrValue value : Val ctx.primCtx}
+    (hcall : EvaluatesCall ctx name vargs instrValue)
+    (hargs : EvaluatesToAll ctx env args vargs)
+    (hrest : EvaluatesInstrs ctx instrs result
+      (env ++ [(instrName, instrValue)]) value) :
+    EvaluatesInstrs ctx (Instr.ofTerm instrName (.call name args) :: instrs)
+      result env value := by
+  obtain ⟨block, _, _, _, hblock, _, _⟩ := hcall env []
+  exact .cons (EvaluatesTo.call hcall hblock hargs) hrest
+
+end EvaluatesInstrs
 
 
 end Zag

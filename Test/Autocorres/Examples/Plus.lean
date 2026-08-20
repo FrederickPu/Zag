@@ -64,8 +64,18 @@ example : EvaluatesCall plusCtx "plusLoop" ([Val.nat 1, Val.nat 3] : List (Val h
 
 /-- The loop agrees with the one-shot version, which is what `plusMain` checks at runtime. -/
 theorem plusMain_eval : EvaluatesCall plusCtx "plusMain" [] (Val.nat 0) := by
-  evaluates_call [heapOpCtx, Op.fixed, plusBlocks]
+  evaluates_call_wp [heapOpCtx, Op.fixed, plusBlocks]
   use_call [heapOpCtx, Op.fixed, plusBlocks] plus_eval
   use_call [heapOpCtx, Op.fixed, plusBlocks] plusLoop_eval
+  exact EvaluatesFrom.of_evaluatesTo
+    (evaluates_eq_nat (EvaluatesTo.var_local (by rfl)) (EvaluatesTo.var_local (by rfl)))
+  apply EvaluatesInstrs.nil
+  refine EvaluatesTo.op_applyVals
+    (values := [Val.bool true, Val.nat 0, Val.nat 1]) (result := Val.nat 0)
+    (Peano.Model.iteOp (ctx := plusCtx))
+    (EvaluatesToAll.cons (EvaluatesTo.var_local (name := "same") (v := Val.bool true) (by rfl))
+      (EvaluatesToAll.cons (evaluates_nat _ 0)
+        (EvaluatesToAll.cons (evaluates_nat _ 1) EvaluatesToAll.nil)))
+    (by simp [Op.applyValsAt, Op.ite, Op.fixed, Op.Body.applyVals])
 
 end Zag.Test.Autocorres.Examples

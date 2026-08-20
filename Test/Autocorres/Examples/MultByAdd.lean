@@ -71,7 +71,7 @@ example : EvaluatesCall multByAddCtx "multByAddLoop"
 theorem multByAdd_eval (x y : Nat) :
     EvaluatesCall multByAddCtx "multByAdd" ([Val.nat x, Val.nat y] : List (Val heapCtx))
       (Val.nat (x * y)) := by
-  evaluates_call [heapOpCtx, Op.fixed, multByAddBlocks, Nat.mul_comm]
+  evaluates_call_wp [heapOpCtx, Op.fixed, multByAddBlocks, Nat.mul_comm]
   use_call [heapOpCtx, Op.fixed, multByAddBlocks, Nat.mul_comm] multByAddLoop_eval
 
 /-- The same statement at the surface: calling `multByAdd` on two literals. -/

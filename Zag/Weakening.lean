@@ -61,6 +61,12 @@ theorem enterInstrs_stack (instrs : List (Instr primCtx)) (result : Term primCtx
       exact ⟨[.instrs instr.name rest result env], .eval instr.value, env, by
         intro S; simp [enterInstrs]⟩
 
+/-- Installing a stack under a fresh instruction entry state is exactly `appendStack`. -/
+theorem enterInstrs_appendStack (instrs : List (Instr primCtx)) (result : Term primCtx)
+    (env : Env primCtx) (base : List (Frame primCtx)) :
+    appendStack (enterInstrs instrs result env []) base = enterInstrs instrs result env base := by
+  cases instrs <;> rfl
+
 theorem enterBlock_weaken {name : String} {block : Block primCtx}
     {vargs : List (Val primCtx)} {env : Env primCtx} {S : List (Frame primCtx)}
     {c' : Action primCtx} {e' : Env primCtx} {S' : List (Frame primCtx)}

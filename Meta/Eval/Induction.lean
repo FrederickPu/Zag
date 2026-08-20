@@ -17,10 +17,10 @@ macro_rules
 | `(tactic| tail_induction $[$bound?]? [$lemmas,*] $target:ident) =>
     `(tactic|
       (apply_refinement (PropRefinement.natInduction $target)
-       · evaluates_call $[$bound?]? [$lemmas,*]
+       · evaluates_call_machine $[$bound?]? [$lemmas,*]
        ·
          intro $target ih
-         evaluates_call $[$bound?]? [$lemmas,*]
+         evaluates_call_machine $[$bound?]? [$lemmas,*]
          use_call $[$bound?]? [$lemmas,*] ih))
 | `(tactic| tail_induction $[$bound?]? [$lemmas,*] $target:ident generalizing $vars*) =>
     `(tactic|
@@ -28,18 +28,18 @@ macro_rules
        apply_refinement (PropRefinement.natInduction $target)
        ·
          intro $vars*
-         evaluates_call $[$bound?]? [$lemmas,*]
+         evaluates_call_machine $[$bound?]? [$lemmas,*]
        ·
          intro $target ih $vars*
-         evaluates_call $[$bound?]? [$lemmas,*]
+         evaluates_call_machine $[$bound?]? [$lemmas,*]
          use_call $[$bound?]? [$lemmas,*] ih))
 | `(tactic| tail_induction? $[$bound?]? [$lemmas,*] $target:ident) =>
     `(tactic|
       (apply_refinement (PropRefinement.natInduction $target)
-       · evaluates_call? $[$bound?]? [$lemmas,*]
+       · evaluates_call_machine? $[$bound?]? [$lemmas,*]
        ·
          intro $target ih
-         evaluates_call $[$bound?]? [$lemmas,*]
+         evaluates_call_machine $[$bound?]? [$lemmas,*]
          use_call? $[$bound?]? [$lemmas,*] ih))
 | `(tactic| tail_induction? $[$bound?]? [$lemmas,*] $target:ident generalizing $vars*) =>
     `(tactic|
@@ -47,10 +47,10 @@ macro_rules
        apply_refinement (PropRefinement.natInduction $target)
        ·
          intro $vars*
-         evaluates_call? $[$bound?]? [$lemmas,*]
+         evaluates_call_machine? $[$bound?]? [$lemmas,*]
        ·
          intro $target ih $vars*
-         evaluates_call $[$bound?]? [$lemmas,*]
+         evaluates_call_machine $[$bound?]? [$lemmas,*]
          use_call? $[$bound?]? [$lemmas,*] ih))
 
 end Zag

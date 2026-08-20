@@ -81,6 +81,18 @@ theorem eq_bool_of_asBool? {v : Val primCtx} {b : Bool} (h : v.asBool? = some b)
   | blockRef n a o => simp [Val.asBool?, Val.as?] at h
   | opRef n c a o => simp [Val.asBool?, Val.as?] at h
 
+instance (n : Nat) : EvalResultMatcher (Val.nat (primCtx := primCtx) n) where
+  test actual := decide (actual.asNat? = some n)
+  eq_of_test h := by
+    apply eq_nat_of_asNat?
+    simpa using h
+
+instance (b : Bool) : EvalResultMatcher (Val.bool (primCtx := primCtx) b) where
+  test actual := decide (actual.asBool? = some b)
+  eq_of_test h := by
+    apply eq_bool_of_asBool?
+    simpa using h
+
 @[simp] theorem ty_nat (n : Nat) : (Val.nat (primCtx := primCtx) n).ty = Peano.NatTy := rfl
 
 @[simp] theorem ty_bool (b : Bool) : (Val.bool (primCtx := primCtx) b).ty = Peano.BoolTy := rfl
@@ -119,6 +131,18 @@ end Val
 
 /-! ### small-step Peano operator specs -/
 
+@[eval_semantic] theorem evaluates_nat {ctx : Ctx} [Peano.Types ctx.primCtx]
+    (env : Env ctx.primCtx) (n : Nat) :
+    EvaluatesTo ctx env (Term.nat n) (Val.nat n) := by
+  simpa [Term.nat] using
+    (EvaluatesTo.prim (ctx := ctx) (env := env) Peano.NatTy (Ty.ofNat ctx.primCtx n))
+
+@[eval_semantic] theorem evaluates_bool {ctx : Ctx} [Peano.Types ctx.primCtx]
+    (env : Env ctx.primCtx) (b : Bool) :
+    EvaluatesTo ctx env (Term.bool b) (Val.bool b) := by
+  simpa [Term.bool] using
+    (EvaluatesTo.prim (ctx := ctx) (env := env) Peano.BoolTy (Ty.ofBool ctx.primCtx b))
+
 theorem evaluates_natUnary {ctx : Ctx} [Peano.Types ctx.primCtx]
     {env : Env ctx.primCtx} {name : String} {f : Nat → Nat} {a : Term ctx.primCtx}
     {m : Nat} (hop : ctx.opCtx.get? name = some (Op.natUnary (primCtx := ctx.primCtx) f))
@@ -137,6 +161,172 @@ theorem evaluates_natBinary {ctx : Ctx} [Peano.Types ctx.primCtx]
   refine EvaluatesTo.op_applyVals hop
     (EvaluatesToAll.cons ha (EvaluatesToAll.cons hb EvaluatesToAll.nil)) ?_
   simp [Op.applyValsAt, Op.fixed, Op.natBinary, Op.ofVals, Op.Body.applyVals, Op.Body.eager]
+
+@[eval_semantic] theorem evaluates_succ_nat {ctx : Ctx} [Peano.Model ctx]
+    {env : Env ctx.primCtx} {a : Term ctx.primCtx} {m : Nat}
+    (ha : EvaluatesTo ctx env a (Val.nat m)) :
+    EvaluatesTo ctx env (.op "succ" [a]) (Val.nat (m + 1)) := by
+  simpa only [Nat.succ_eq_add_one] using
+    (evaluates_natUnary (Peano.Model.succOp (ctx := ctx)) ha)
+
+@[eval_semantic] theorem evaluates_add_nat {ctx : Ctx} [Peano.Model ctx]
+    {env : Env ctx.primCtx} {a b : Term ctx.primCtx} {m n : Nat}
+    (ha : EvaluatesTo ctx env a (Val.nat m)) (hb : EvaluatesTo ctx env b (Val.nat n)) :
+    EvaluatesTo ctx env (.op "add" [a, b]) (Val.nat (m + n)) :=
+  evaluates_natBinary (Peano.Model.addOp (ctx := ctx)) ha hb
+
+@[eval_semantic] theorem evaluates_sub_nat {ctx : Ctx} [Peano.Model ctx]
+    {env : Env ctx.primCtx} {a b : Term ctx.primCtx} {m n : Nat}
+    (ha : EvaluatesTo ctx env a (Val.nat m)) (hb : EvaluatesTo ctx env b (Val.nat n)) :
+    EvaluatesTo ctx env (.op "sub" [a, b]) (Val.nat (m - n)) :=
+  evaluates_natBinary (Peano.Model.subOp (ctx := ctx)) ha hb
+
+@[eval_semantic] theorem evaluates_mul_nat {ctx : Ctx} [Peano.Model ctx]
+    {env : Env ctx.primCtx} {a b : Term ctx.primCtx} {m n : Nat}
+    (ha : EvaluatesTo ctx env a (Val.nat m)) (hb : EvaluatesTo ctx env b (Val.nat n)) :
+    EvaluatesTo ctx env (.op "mul" [a, b]) (Val.nat (m * n)) :=
+  evaluates_natBinary (Peano.Model.mulOp (ctx := ctx)) ha hb
+
+@[eval_semantic] theorem evaluates_div_nat {ctx : Ctx} [Peano.Model ctx]
+    {env : Env ctx.primCtx} {a b : Term ctx.primCtx} {m n : Nat}
+    (ha : EvaluatesTo ctx env a (Val.nat m)) (hb : EvaluatesTo ctx env b (Val.nat n)) :
+    EvaluatesTo ctx env (.op "div" [a, b]) (Val.nat (m / n)) :=
+  evaluates_natBinary (Peano.Model.divOp (ctx := ctx)) ha hb
+
+theorem evaluates_natUnary_literal_iff {ctx : Ctx} [Peano.Types ctx.primCtx]
+    {env : Env ctx.primCtx} {name : String} {f : Nat → Nat} {a : Nat}
+    {expected : Val ctx.primCtx}
+    (hop : ctx.opCtx.get? name = some (Op.natUnary (primCtx := ctx.primCtx) f)) :
+    EvaluatesTo ctx env (.op name [Term.nat a]) expected ↔
+      Val.nat (f a) = expected := by
+  apply EvaluatesTo.iff_eq_of
+  exact evaluates_natUnary hop (evaluates_nat env a)
+
+theorem evaluates_natBinary_literals_iff {ctx : Ctx} [Peano.Types ctx.primCtx]
+    {env : Env ctx.primCtx} {name : String} {f : Nat → Nat → Nat} {a b : Nat}
+    {expected : Val ctx.primCtx}
+    (hop : ctx.opCtx.get? name = some (Op.natBinary (primCtx := ctx.primCtx) f)) :
+    EvaluatesTo ctx env (.op name [Term.nat a, Term.nat b]) expected ↔
+      Val.nat (f a b) = expected := by
+  apply EvaluatesTo.iff_eq_of
+  exact evaluates_natBinary hop (evaluates_nat env a) (evaluates_nat env b)
+
+theorem evaluates_compare {ctx : Ctx} [Peano.Types ctx.primCtx]
+    {env : Env ctx.primCtx} {name : String}
+    {cmp : Val ctx.primCtx → Val ctx.primCtx → Option Bool}
+    {a b : Term ctx.primCtx} {va vb : Val ctx.primCtx} {result : Bool}
+    (hop : ctx.opCtx.get? name = some (Op.compare cmp))
+    (ha : EvaluatesTo ctx env a va) (hb : EvaluatesTo ctx env b vb)
+    (hty : va.ty = vb.ty) (hcmp : cmp va vb = some result) :
+    EvaluatesTo ctx env (.op name [a, b]) (Val.bool result) := by
+  refine EvaluatesTo.op_applyVals hop
+    (EvaluatesToAll.cons ha (EvaluatesToAll.cons hb EvaluatesToAll.nil)) ?_
+  rw [Op.applyVals_compare name cmp va vb hty, hcmp]
+  rfl
+
+theorem evaluates_compare_nat_literals_iff {ctx : Ctx} [Peano.Types ctx.primCtx]
+    {env : Env ctx.primCtx} {name : String}
+    {cmp : Val ctx.primCtx → Val ctx.primCtx → Option Bool}
+    {a b : Nat} {result expected : Bool}
+    (hop : ctx.opCtx.get? name = some (Op.compare cmp))
+    (hcmp : cmp (Val.nat a) (Val.nat b) = some result) :
+    EvaluatesTo ctx env (.op name [Term.nat a, Term.nat b]) (Val.bool expected) ↔
+      result = expected := by
+  simpa only [Val.bool_inj] using
+    (EvaluatesTo.iff_eq_of (expected := Val.bool expected)
+      (evaluates_compare hop (evaluates_nat env a) (evaluates_nat env b) rfl hcmp))
+
+@[eval_semantic] theorem evaluates_eq_nat {ctx : Ctx} [Peano.Model ctx]
+    {env : Env ctx.primCtx} {a b : Term ctx.primCtx} {m n : Nat}
+    (ha : EvaluatesTo ctx env a (Val.nat m)) (hb : EvaluatesTo ctx env b (Val.nat n)) :
+    EvaluatesTo ctx env (.op "eq" [a, b]) (Val.bool (decide (m = n))) := by
+  exact evaluates_compare (by simpa only [Op.eq] using Peano.Model.eqOp (ctx := ctx))
+    ha hb rfl (Val.primEq?_nat m n)
+
+@[eval_semantic] theorem evaluates_lt_nat {ctx : Ctx} [Peano.Model ctx]
+    {env : Env ctx.primCtx} {a b : Term ctx.primCtx} {m n : Nat}
+    (ha : EvaluatesTo ctx env a (Val.nat m)) (hb : EvaluatesTo ctx env b (Val.nat n)) :
+    EvaluatesTo ctx env (.op "lt" [a, b]) (Val.bool (decide (m < n))) := by
+  exact evaluates_compare (Peano.Model.ltOp (ctx := ctx)) ha hb rfl (Val.primLt?_nat m n)
+
+@[eval_semantic] theorem evaluates_gt_nat {ctx : Ctx} [Peano.Model ctx]
+    {env : Env ctx.primCtx} {a b : Term ctx.primCtx} {m n : Nat}
+    (ha : EvaluatesTo ctx env a (Val.nat m)) (hb : EvaluatesTo ctx env b (Val.nat n)) :
+    EvaluatesTo ctx env (.op "gt" [a, b]) (Val.bool (decide (n < m))) := by
+  exact evaluates_compare (Peano.Model.gtOp (ctx := ctx)) ha hb rfl (Val.primGt?_nat m n)
+
+theorem evaluates_succ_nat_iff {ctx : Ctx} [Peano.Model ctx]
+    {env : Env ctx.primCtx} {a expected : Nat} :
+    EvaluatesTo ctx env (.op "succ" [Term.nat a]) (Val.nat expected) ↔
+      a + 1 = expected := by
+  simpa only [Val.nat_inj, Nat.succ_eq_add_one] using
+    (evaluates_natUnary_literal_iff (env := env) (a := a) (expected := Val.nat expected)
+      (Peano.Model.succOp (ctx := ctx)))
+
+theorem evaluates_add_nat_iff {ctx : Ctx} [Peano.Model ctx]
+    {env : Env ctx.primCtx} {a b expected : Nat} :
+    EvaluatesTo ctx env (.op "add" [Term.nat a, Term.nat b]) (Val.nat expected) ↔
+      a + b = expected := by
+  change EvaluatesTo ctx env (.op "add" [Term.nat a, Term.nat b]) (Val.nat expected) ↔
+    Nat.add a b = expected
+  simpa only [Val.nat_inj] using
+    (evaluates_natBinary_literals_iff (env := env) (a := a) (b := b)
+      (expected := Val.nat expected) (Peano.Model.addOp (ctx := ctx)))
+
+theorem evaluates_sub_nat_iff {ctx : Ctx} [Peano.Model ctx]
+    {env : Env ctx.primCtx} {a b expected : Nat} :
+    EvaluatesTo ctx env (.op "sub" [Term.nat a, Term.nat b]) (Val.nat expected) ↔
+      a - b = expected := by
+  change EvaluatesTo ctx env (.op "sub" [Term.nat a, Term.nat b]) (Val.nat expected) ↔
+    Nat.sub a b = expected
+  simpa only [Val.nat_inj] using
+    (evaluates_natBinary_literals_iff (env := env) (a := a) (b := b)
+      (expected := Val.nat expected) (Peano.Model.subOp (ctx := ctx)))
+
+theorem evaluates_mul_nat_iff {ctx : Ctx} [Peano.Model ctx]
+    {env : Env ctx.primCtx} {a b expected : Nat} :
+    EvaluatesTo ctx env (.op "mul" [Term.nat a, Term.nat b]) (Val.nat expected) ↔
+      a * b = expected := by
+  change EvaluatesTo ctx env (.op "mul" [Term.nat a, Term.nat b]) (Val.nat expected) ↔
+    Nat.mul a b = expected
+  simpa only [Val.nat_inj] using
+    (evaluates_natBinary_literals_iff (env := env) (a := a) (b := b)
+      (expected := Val.nat expected) (Peano.Model.mulOp (ctx := ctx)))
+
+theorem evaluates_div_nat_iff {ctx : Ctx} [Peano.Model ctx]
+    {env : Env ctx.primCtx} {a b expected : Nat} :
+    EvaluatesTo ctx env (.op "div" [Term.nat a, Term.nat b]) (Val.nat expected) ↔
+      a / b = expected := by
+  change EvaluatesTo ctx env (.op "div" [Term.nat a, Term.nat b]) (Val.nat expected) ↔
+    Nat.div a b = expected
+  simpa only [Val.nat_inj] using
+    (evaluates_natBinary_literals_iff (env := env) (a := a) (b := b)
+      (expected := Val.nat expected) (Peano.Model.divOp (ctx := ctx)))
+
+theorem evaluates_eq_nat_iff {ctx : Ctx} [Peano.Model ctx]
+    {env : Env ctx.primCtx} {a b : Nat} {expected : Bool} :
+    EvaluatesTo ctx env (.op "eq" [Term.nat a, Term.nat b]) (Val.bool expected) ↔
+      decide (a = b) = expected := by
+  simpa only [Op.eq, Val.primEq?_nat] using
+    (evaluates_compare_nat_literals_iff (env := env) (a := a) (b := b)
+      (expected := expected) (by simpa only [Op.eq] using Peano.Model.eqOp (ctx := ctx))
+      (Val.primEq?_nat a b))
+
+theorem evaluates_lt_nat_iff {ctx : Ctx} [Peano.Model ctx]
+    {env : Env ctx.primCtx} {a b : Nat} {expected : Bool} :
+    EvaluatesTo ctx env (.op "lt" [Term.nat a, Term.nat b]) (Val.bool expected) ↔
+      decide (a < b) = expected := by
+  simpa only [Val.primLt?_nat] using
+    (evaluates_compare_nat_literals_iff (env := env) (a := a) (b := b)
+      (expected := expected) (Peano.Model.ltOp (ctx := ctx)) (Val.primLt?_nat a b))
+
+theorem evaluates_gt_nat_iff {ctx : Ctx} [Peano.Model ctx]
+    {env : Env ctx.primCtx} {a b : Nat} {expected : Bool} :
+    EvaluatesTo ctx env (.op "gt" [Term.nat a, Term.nat b]) (Val.bool expected) ↔
+      decide (b < a) = expected := by
+  simpa only [Val.primGt?_nat] using
+    (evaluates_compare_nat_literals_iff (env := env) (a := a) (b := b)
+      (expected := expected) (Peano.Model.gtOp (ctx := ctx)) (Val.primGt?_nat a b))
 
 theorem evaluates_eq_same_nat_true {ctx : Ctx} [Peano.Model ctx]
     {env : Env ctx.primCtx} {a b : Term ctx.primCtx} {n : Nat}
