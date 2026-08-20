@@ -258,20 +258,6 @@ theorem cons_app {ctx : Ctx} {fn : Term ctx.primCtx} {args : List (Term ctx.prim
 
 end EvaluatesInstrs
 
-namespace PropRefinement
-
-/-- Lift a refinement for evaluating a term through a pending machine continuation. -/
-def evalThen {ctx : Ctx} {term : Term ctx.primCtx} {value final : Val ctx.primCtx}
-    {env : Env ctx.primCtx} {stack base : List (Frame ctx.primCtx)}
-    (refinement : PropRefinement (EvaluatesTo ctx env term value))
-    (hcont : ∀ scope, EvaluatesFrom ctx ⟨.ret value, scope, stack⟩ final base) :
-    PropRefinement (EvaluatesFrom ctx ⟨.eval term, env, stack⟩ final base) where
-  goals := refinement.goals
-  prove := fun proveSubgoals =>
-    EvaluatesFrom.eval_then (refinement.prove proveSubgoals) hcont
-
-end PropRefinement
-
 /-- An ordinary operator whose body collects all operands can use a relational continuation after
 the collected values have been produced. -/
 theorem EvaluatesTo.op_collect {ctx : Ctx} {env : Env ctx.primCtx}

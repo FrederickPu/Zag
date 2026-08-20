@@ -731,63 +731,6 @@ theorem while_evaluatesTo {ctx : Ctx} [Peano.Types ctx.primCtx]
   exact while_invariant (I := I) (N := N) (loopResult := loopResult)
     hop hheadTy init typed preserved exits
 
-/-- Parameters selected before the Peano while rule exposes its dependent obligations. -/
-structure WhileInductionParams (primCtx : PrimitiveCtx) where
-  invariant : Nat → List (Val primCtx) → Prop
-  stoppingAt : Nat
-  result : Val primCtx
-
-/-- The semantic while rule as a parameterized weakest-precondition refinement. -/
-def whileInduction {ctx : Ctx} [Peano.Types ctx.primCtx]
-    {opName condName bodyName : String} {stateTys : List Ty} {resultTy : Ty}
-    {initial : List (Val ctx.primCtx)}
-    {env : Env ctx.primCtx} {operands : List (Term ctx.primCtx)}
-    (hop : ctx.opCtx.get? opName = some (Op.whileOp (primCtx := ctx.primCtx)))
-    (hargs : EvaluatesToAll ctx env operands
-      ([whileCondRef condName stateTys, whileBodyRef bodyName stateTys resultTy] ++ initial))
-    (hheadTy : stateTys.head? = some resultTy) :
-    WPRefinement (WhileInductionParams ctx.primCtx)
-      (fun params => EvaluatesTo ctx env (.op opName operands) params.result) :=
-  fun ⟨I, N, loopResult⟩ => {
-    goals :=
-      [ ∀ n args, I n args → args.map Val.ty = stateTys
-      , I 0 initial
-      , ∀ n args, n < N → I n args → EvaluatesCall ctx condName args (Val.bool true)
-      , ∀ n args, n < N → I n args →
-          ((∀ nextArgs, I (n + 1) nextArgs →
-              EvaluatesApply ctx (whileRef opName condName bodyName stateTys resultTy)
-                nextArgs loopResult) →
-            EvaluatesCall ctx bodyName
-              (args ++ [whileRef opName condName bodyName stateTys resultTy]) loopResult)
-      , ∀ args, I N args →
-          EvaluatesCall ctx condName args (Val.bool false) ∧ args.head? = some loopResult
-      ]
-    prove := by
-      intro proveSubgoals
-      have typed : ∀ n args, I n args → args.map Val.ty = stateTys :=
-        proveSubgoals _ (by simp)
-      have init : I 0 initial := proveSubgoals _ (by simp)
-      have condition : ∀ n args, n < N → I n args →
-          EvaluatesCall ctx condName args (Val.bool true) := proveSubgoals _ (by simp)
-      have preservation : ∀ n args, n < N → I n args →
-          ((∀ nextArgs, I (n + 1) nextArgs →
-              EvaluatesApply ctx (whileRef opName condName bodyName stateTys resultTy)
-                nextArgs loopResult) →
-            EvaluatesCall ctx bodyName
-              (args ++ [whileRef opName condName bodyName stateTys resultTy]) loopResult) :=
-        proveSubgoals _ (by simp)
-      have termination : ∀ args, I N args →
-          EvaluatesCall ctx condName args (Val.bool false) ∧ args.head? = some loopResult :=
-        proveSubgoals _ (by simp)
-      apply while_evaluatesTo (I := I) (N := N) (loopResult := loopResult)
-        hop hargs hheadTy
-      · exact init
-      · exact typed
-      · intro n args hn hinv
-        exact ⟨condition n args hn hinv, preservation n args hn hinv⟩
-      · exact termination
-  }
-
 end Peano
 
 end Zag

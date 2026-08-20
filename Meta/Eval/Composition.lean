@@ -14,15 +14,9 @@ open Lean Elab Tactic Meta
 syntax (name := evaluatesCallTactic) "evaluates_call" (ppSpace num)?
   " [" Lean.Parser.Tactic.simpLemma,* "]" : tactic
 
-syntax (name := evaluatesCallFinalizingTactic) "evaluates_call" (ppSpace num)?
-  " [" Lean.Parser.Tactic.simpLemma,* "]" " finalizing_at_op " term " with " tactic : tactic
-
 /-- Discharge a stopped call using a known specification, then keep walking. -/
 syntax (name := useCallTactic) "use_call" (ppSpace num)?
   " [" Lean.Parser.Tactic.simpLemma,* "]" ppSpace term : tactic
-
-syntax (name := evaluatesCallQTactic) "evaluates_call?" (ppSpace num)?
-  " [" Lean.Parser.Tactic.simpLemma,* "]" : tactic
 
 /-- Compatibility machine walk used by recursive induction after its measure has been split. -/
 syntax (name := evaluatesCallMachineTactic) "evaluates_call_machine" (ppSpace num)?
@@ -38,53 +32,21 @@ syntax (name := evaluatesCallWPTactic) "evaluates_call_wp" (ppSpace num)?
 syntax (name := useCallQTactic) "use_call?" (ppSpace num)?
   " [" Lean.Parser.Tactic.simpLemma,* "]" ppSpace term : tactic
 
-/-- Apply a semantic refinement to the current term and walk its continuation. -/
-syntax (name := applyEvalRefinementTactic) "apply_eval_refinement" (ppSpace num)?
-  " [" Lean.Parser.Tactic.simpLemma,* "]" ppSpace term " naming" " [" ident,* "]"
-  " with " tactic : tactic
-
 /-- Prove ordinary block instructions in order, stopping when the current term needs a call or
   application specification. -/
 syntax (name := evaluatesInstrsTactic) "evaluates_instrs" (ppSpace num)?
   " [" Lean.Parser.Tactic.simpLemma,* "]" : tactic
 
+syntax (name := useCallCoreTactic) "use_call_core" (ppSpace num)?
+  " [" Lean.Parser.Tactic.simpLemma,* "]" ppSpace term (" discharging " tactic)? : tactic
+
 macro_rules
 | `(tactic| use_call $[$bound?]? [$lemmas,*] $spec) =>
-    `(tactic|
-      first
-      | (apply Zag.EvaluatesInstrs.cons_call
-         case hargs => evaluates_to_all $[$bound?]? [$lemmas,*]
-         case hcall =>
-           first
-           | apply $spec
-           | (apply Zag.EvaluatesCall.of_eq
-              case hcall => apply $spec
-              case hvalue => simp [$lemmas,*])
-         try evaluates_instrs $[$bound?]? [$lemmas,*])
-      | (try simp only [Instr.ofTerm]
-         apply Zag.EvaluatesTo.call
-         case hblock => rfl
-         case hargs => evaluates_to_all $[$bound?]? [$lemmas,*]
-         case hcall =>
-           first
-           | apply $spec
-           | (apply Zag.EvaluatesCall.of_eq
-              case hcall => apply $spec
-              case hvalue => simp [$lemmas,*])
-         try evaluates_instrs $[$bound?]? [$lemmas,*])
-      | (apply Zag.EvaluatesFrom.call_then
-         case hblock => rfl
-         case hargs => evaluates_to_all $[$bound?]? [$lemmas,*]
-         case hcall =>
-           first
-           | apply $spec
-           | (apply Zag.EvaluatesCall.of_eq
-              case hcall => apply $spec
-              case hvalue => simp [$lemmas,*])
-         intro scope
-         evaluates_from $[$bound?]? [$lemmas,*]
-         try evaluates_instrs $[$bound?]? [$lemmas,*]))
+    `(tactic| use_call_core $[$bound?]? [$lemmas,*] $spec)
 | `(tactic| use_call? $[$bound?]? [$lemmas,*] $spec) =>
+    `(tactic| use_call_core $[$bound?]? [$lemmas,*] $spec discharging
+      (try simp only [eval_finish]))
+| `(tactic| use_call_core $[$bound?]? [$lemmas,*] $spec $[discharging $close?]?) =>
     `(tactic|
       first
       | (apply Zag.EvaluatesInstrs.cons_call
@@ -117,31 +79,8 @@ macro_rules
               case hcall => apply $spec
               case hvalue => simp [$lemmas,*])
          intro scope
-         evaluates_from $[$bound?]? [$lemmas,*] discharging
-           (try simp only [eval_finish])
+         evaluates_from $[$bound?]? [$lemmas,*] $[discharging $close?]?
          try evaluates_instrs $[$bound?]? [$lemmas,*]))
-| `(tactic| apply_eval_refinement $[$bound?]? [$lemmas,*] $refinement
-      naming [$names,*] with $premises) =>
-    `(tactic|
-      (apply_refinement
-         (PropRefinement.evalThen $refinement (by
-         intro scope
-         evaluates_from $[$bound?]? [$lemmas,*] discharging
-           (try simp only [eval_finish])))
-         naming [$names,*]
-       $premises))
-| `(tactic| evaluates_call $[$bound?]? [$lemmas,*]
-      finalizing_at_op $op with $finalizer) =>
-    `(tactic|
-      (focus
-        refine Zag.EvaluatesCall.of_evaluatesFrom ?_
-        intro env base
-        set_option linter.unusedSimpArgs false in
-          simp +arith [eval_step, $lemmas,*]
-        evaluates_from $[$bound?]? [$lemmas,*]
-          finalizing_at_op $op with $finalizer))
-| `(tactic| evaluates_call? $[$bound?]? [$lemmas,*]) =>
-    `(tactic| evaluates_call $[$bound?]? [$lemmas,*])
 | `(tactic| evaluates_call_machine $[$bound?]? [$lemmas,*]) =>
     `(tactic|
       (focus
@@ -188,7 +127,38 @@ elab_rules : tactic
 private def containsExit (expr : Expr) : Bool :=
   (expr.find? fun subexpr => subexpr.getAppFn.isConstOf ``Term.exit).isSome
 
-private partial def evaluatesInstrsCore (evalCurrentTactic directTactic : TSyntax `tactic) :
+private def closeDefEqGoal? (goal : MVarId) : MetaM Bool := goal.withContext do
+  if ← goal.isAssigned then return true
+  let target ← instantiateMVars (← goal.getType)
+  unless target.getAppFn.isConstOf ``Eq do return false
+  let args := target.getAppArgs
+  unless args.size >= 3 do return false
+  let lhs := args[args.size - 2]!
+  let rhs := args[args.size - 1]!
+  unless ← isDefEq lhs rhs do return false
+  goal.assign (← mkAppM ``Eq.refl #[lhs])
+  return true
+
+private def isStoppedAtSpec (goal : MVarId) : MetaM Bool := goal.withContext do
+  let target ← instantiateMVars (← goal.getType)
+  let head := target.getAppFn
+  let args := target.getAppArgs
+  let searchTarget :=
+    if head.isConstOf ``EvaluatesFrom && args.size >= 4 then
+      args[args.size - 3]!
+    else if head.isConstOf ``EvaluatesTo && args.size >= 4 then
+      args[args.size - 2]!
+    else
+      target
+  let containsSpec := (searchTarget.find? fun subexpr =>
+    subexpr.getAppFn.isConstOf ``Term.call ||
+      subexpr.getAppFn.isConstOf ``Term.app).isSome
+  return containsSpec && (head.isConstOf ``EvaluatesFrom ||
+    head.isConstOf ``EvaluatesTo || head.isConstOf ``EvaluatesCall ||
+    head.isConstOf ``EvaluatesApply)
+
+private partial def evaluatesInstrsCore (core : EvalCoreContext) (bound : Nat)
+    (lemmas : Array (TSyntax ``Lean.Parser.Tactic.simpLemma)) (close : TSyntax `tactic) :
     TacticM Unit := do
   let goals ← getGoals
   let some root := goals.head? | return
@@ -213,7 +183,7 @@ private partial def evaluatesInstrsCore (evalCurrentTactic directTactic : TSynta
       throwError "evaluates_instrs generated a malformed EvaluatesTo goal"
     let evalFields := evalArgs.extract (evalArgs.size - 4) evalArgs.size
     let evalCtx := evalFields[0]!
-    let evalEnv := evalFields[1]!
+    let evalEnv ← goal.withContext do withTransparency .all <| whnf evalFields[1]!
     let term ← goal.withContext do
       withTransparency .all do
         whnf evalFields[2]!
@@ -221,7 +191,7 @@ private partial def evaluatesInstrsCore (evalCurrentTactic directTactic : TSynta
     let needsSpec := term.getAppFn.isConstOf ``Term.call || term.getAppFn.isConstOf ``Term.app
     if needsSpec then return [goal]
     let saved ← saveState
-    let semanticGoals ← goal.withContext do
+    let machineGoals ← goal.withContext do
       let primCtx ← mkAppM ``Ctx.primCtx #[evalCtx]
       let valueType ← mkAppM ``Val #[primCtx]
       let canonical ← mkFreshExprMVar valueType
@@ -233,53 +203,34 @@ private partial def evaluatesInstrsCore (evalCurrentTactic directTactic : TSynta
         #[evalCtx, evalEnv, term, canonical, expected, hcanonical]
       let proof ← mkAppM ``Iff.mpr #[iffProof, equality]
       goal.assign proof
-      setGoals [hcanonical.mvarId!]
+      let start ← mkAppM ``EvalState.start #[evalEnv, term]
+      let frameType ← mkAppM ``Frame #[primCtx]
+      let base ← mkListLit frameType []
+      let hfromType ← mkAppM ``EvaluatesFrom #[evalCtx, start, canonical, base]
+      let hfrom ← mkFreshExprSyntheticOpaqueMVar hfromType
+      hcanonical.mvarId!.assign (← mkAppM ``EvaluatesTo.of_evaluatesFrom #[hfrom])
+      setGoals [hfrom.mvarId!]
       try
-        evalTactic evalCurrentTactic
+        evaluatesFromCoreWith core bound lemmas close
         if (← getGoals).isEmpty then
-          if ← equality.mvarId!.isAssigned then
+          if ← closeDefEqGoal? equality.mvarId! then
             pure (some [])
           else
-            setGoals [equality.mvarId!]
-            evalTactic (← `(tactic| try rfl))
-            pure (some (← getGoals))
+            pure (some [equality.mvarId!])
         else
           let pending ← getGoals
-          let mut stoppedAtSpec := true
-          for pendingGoal in pending do
-            let pendingTarget ← pendingGoal.withContext do
-              instantiateMVars (← pendingGoal.getType)
-            let head := pendingTarget.getAppFn
-            let pendingArgs := pendingTarget.getAppArgs
-            let searchTarget :=
-              if head.isConstOf ``EvaluatesFrom && pendingArgs.size >= 4 then
-                pendingArgs[pendingArgs.size - 3]!
-              else if head.isConstOf ``EvaluatesTo && pendingArgs.size >= 4 then
-                pendingArgs[pendingArgs.size - 2]!
-              else
-                pendingTarget
-            let containsSpec := (searchTarget.find? fun subexpr =>
-              subexpr.getAppFn.isConstOf ``Term.call ||
-                subexpr.getAppFn.isConstOf ``Term.app).isSome
-            unless containsSpec && (head.isConstOf ``EvaluatesFrom ||
-                head.isConstOf ``EvaluatesTo || head.isConstOf ``EvaluatesCall ||
-                head.isConstOf ``EvaluatesApply) do
-              stoppedAtSpec := false
-          if stoppedAtSpec then
-            let equalityGoals ← if ← equality.mvarId!.isAssigned then
-                pure []
-              else
-                setGoals [equality.mvarId!]
-                evalTactic (← `(tactic| try rfl))
-                getGoals
+          if ← pending.allM fun goal => liftM (isStoppedAtSpec goal) then
+            let equalityGoals := if ← closeDefEqGoal? equality.mvarId! then
+                []
+              else [equality.mvarId!]
             pure (some (pending ++ equalityGoals))
           else
             pure none
       catch _ => pure none
-    if let some generated := semanticGoals then return generated
+    if let some generated := machineGoals then return generated
     restoreState saved
     setGoals [goal]
-    evalTactic directTactic
+    evaluatesCoreWith core bound lemmas
     return ← getGoals
   if instrs.getAppFn.isConstOf ``List.nil then
     let hresultType ← root.withContext do mkAppM ``EvaluatesTo #[ctx, env, result, value]
@@ -315,24 +266,15 @@ private partial def evaluatesInstrsCore (evalCurrentTactic directTactic : TSynta
   let pending ← evalCurrent hinstr.mvarId!
   if pending.isEmpty then
     setGoals (hrest.mvarId! :: rest)
-    evaluatesInstrsCore evalCurrentTactic directTactic
+    evaluatesInstrsCore core bound lemmas close
   else
     setGoals (pending ++ hrest.mvarId! :: rest)
 
 elab_rules : tactic
-| `(tactic| evaluates_instrs $bound:num [$lemmas,*]) => do
-    let tactic ← `(tactic|
-      (simp only [Instr.ofTerm, List.nil_append]
-       apply Zag.EvaluatesTo.of_evaluatesFrom;
-       evaluates_from $bound [$lemmas,*]))
-    let direct ← `(tactic| evaluates $bound [$lemmas,*])
-    evaluatesInstrsCore tactic direct
-| `(tactic| evaluates_instrs [$lemmas,*]) => do
-    let tactic ← `(tactic|
-      (simp only [Instr.ofTerm, List.nil_append]
-       apply Zag.EvaluatesTo.of_evaluatesFrom;
-       evaluates_from [$lemmas,*]))
-    let direct ← `(tactic| evaluates [$lemmas,*])
-    evaluatesInstrsCore tactic direct
+| `(tactic| evaluates_instrs $[$bound?]? [$lemmas,*]) => do
+    let lemmas := lemmas.getElems
+    let close ← `(tactic|
+      try set_option linter.unusedSimpArgs false in simp +arith [$lemmas,*])
+    evaluatesInstrsCore (← mkEvalCoreContext lemmas) (evalBoundOf bound?) lemmas close
 
 end Zag

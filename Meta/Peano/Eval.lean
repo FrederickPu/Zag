@@ -46,9 +46,7 @@ macro_rules
 elab_rules : tactic
 | `(tactic| apply_peano_while_wp $[$bound?]? [$lemmas,*] $I stopping_at $N
       $[returning $result?]?) => do
-    let fuel := match bound? with
-      | some bound => bound.getNat
-      | none => evalStepBound
+    let fuel := evalBoundOf bound?
     let goals ← getGoals
     let some root := goals.head? | return
     let target ← root.withContext do instantiateMVars (← root.getType)

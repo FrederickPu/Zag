@@ -7,8 +7,7 @@ import Meta.Eval.Composition
 /-!
 # Evaluation weakest-precondition composition
 
-Application specifications, parameterized refinement lifting, normalization, and generic
-processing of evaluation WP obligations.
+Application specifications, normalization, and generic processing of evaluation WP obligations.
 -/
 
 namespace Zag
@@ -19,15 +18,6 @@ open Lean.Meta.Sym
 /-- Discharge an application stopped by `stopping_at_apply`, then continue walking. -/
 syntax (name := useApplyTactic) "use_apply" (ppSpace num)?
   " [" Lean.Parser.Tactic.simpLemma,* "]" ppSpace term (" discharging " tactic)? : tactic
-
-/-- The non-closing application form used by obligation processors. -/
-syntax (name := useApplyQTactic) "use_apply?" (ppSpace num)?
-  " [" Lean.Parser.Tactic.simpLemma,* "]" ppSpace term : tactic
-
-/-- Select parameters before lifting one WP refinement through the current continuation. -/
-syntax (name := applyEvalWPRefinementTactic) "apply_eval_wp_refinement" (ppSpace num)?
-  " [" Lean.Parser.Tactic.simpLemma,* "]" ppSpace term " selecting " term
-  " naming" " [" ident,* "]" : tactic
 
 /-- Normalize evaluation wrappers without arithmetic search. -/
 syntax (name := normalizeEvalRefinementGoals) "normalize_eval_refinement_goals"
@@ -42,6 +32,9 @@ syntax (name := processEvalWPGoals) "process_eval_wp_goals" (ppSpace num)?
   " [" Lean.Parser.Tactic.simpLemma,* "]" : tactic
 
 syntax (name := evalDischargeTactic) "eval_discharge " tactic : tactic
+
+syntax (name := finishUseApplyTactic) "finish_use_apply"
+  " [" Lean.Parser.Tactic.simpLemma,* "] " tactic : tactic
 
 /-- One public verification-condition root produced by a direct semantic finalizer. -/
 inductive EvalSemanticRoot where
@@ -71,6 +64,8 @@ macro_rules
     let discharge ← match discharge? with
       | some tactic => pure tactic
       | none => `(tactic| skip)
+    let close ← `(tactic|
+      try set_option linter.unusedSimpArgs false in simp +arith [$lemmas,*])
     `(tactic|
       first
       | (apply Zag.EvaluatesInstrs.cons_app (happly := by apply $spec)
@@ -80,8 +75,7 @@ macro_rules
            | (evaluates $[$bound?]? [$lemmas,*] <;> simp [$lemmas,*])
          case hargs => evaluates_to_all $[$bound?]? [$lemmas,*]
          try evaluates_instrs $[$bound?]? [$lemmas,*]
-         all_goals auto_eval_refinement_goals [$lemmas,*]
-         eval_discharge $discharge)
+         finish_use_apply [$lemmas,*] $discharge)
       | (try simp only [Instr.ofTerm]
          apply Zag.EvaluatesTo.app
          case hfn =>
@@ -91,49 +85,17 @@ macro_rules
          case hargs => evaluates_to_all $[$bound?]? [$lemmas,*]
          case happly => apply $spec
          try evaluates_instrs $[$bound?]? [$lemmas,*]
-         all_goals auto_eval_refinement_goals [$lemmas,*]
-         eval_discharge $discharge)
+         finish_use_apply [$lemmas,*] $discharge)
       | (refine Zag.EvaluatesFrom.apply_then ?_ (by
            intro scope
-           evaluates_from $[$bound?]? [$lemmas,*])
+           evaluates_from $[$bound?]? [$lemmas,*] discharging $close)
          apply $spec
-         all_goals auto_eval_refinement_goals [$lemmas,*]
-         eval_discharge $discharge
+         finish_use_apply [$lemmas,*] $discharge
          try evaluates_instrs $[$bound?]? [$lemmas,*]))
-| `(tactic| use_apply? $[$bound?]? [$lemmas,*] $spec) =>
+| `(tactic| finish_use_apply [$lemmas,*] $discharge) =>
     `(tactic|
-      first
-      | (apply Zag.EvaluatesInstrs.cons_app (happly := by apply $spec)
-         case hfn =>
-           first
-           | exact Zag.EvaluatesTo.var_local (by rfl)
-           | (evaluates $[$bound?]? [$lemmas,*] <;> simp [$lemmas,*])
-         case hargs => evaluates_to_all $[$bound?]? [$lemmas,*]
-         try evaluates_instrs $[$bound?]? [$lemmas,*])
-      | (try simp only [Instr.ofTerm]
-         apply Zag.EvaluatesTo.app
-         case hfn =>
-           first
-           | exact Zag.EvaluatesTo.var_local (by rfl)
-           | (evaluates $[$bound?]? [$lemmas,*] <;> simp [$lemmas,*])
-         case hargs => evaluates_to_all $[$bound?]? [$lemmas,*]
-         case happly => apply $spec
-         try evaluates_instrs $[$bound?]? [$lemmas,*])
-      | (refine Zag.EvaluatesFrom.apply_then ?_ (by
-           intro scope
-           evaluates_from $[$bound?]? [$lemmas,*] discharging
-             (try simp only [eval_finish]))
-         apply $spec
-         try evaluates_instrs $[$bound?]? [$lemmas,*]))
-| `(tactic| apply_eval_wp_refinement $[$bound?]? [$lemmas,*] $refinement
-      selecting $params naming [$names,*]) =>
-    `(tactic|
-      apply_refinement
-        (PropRefinement.evalThen (($refinement) $params) (by
-          intro scope
-          evaluates_from $[$bound?]? [$lemmas,*] discharging
-            (try simp only [eval_finish])))
-        naming [$names,*])
+      (all_goals auto_eval_refinement_goals [$lemmas,*]
+       eval_discharge $discharge))
 | `(tactic| auto_eval_refinement_goals [$lemmas,*]) =>
     `(tactic|
       (all_goals
@@ -193,20 +155,15 @@ private def normalizeEvalGoal (goal : MVarId)
             return (← instantiateMVars (← goal.getType)).getAppFn.isConstOf ``Eq
         else
           pure false
-      if lemmas.isEmpty || preserveEq then
-        evalTactic (← `(tactic|
-          try simp -implicitDefEqProofs only [Nat.sub_self, Nat.not_lt_zero, not_false_eq_true,
-            decide_eq_true_eq, decide_eq_false_iff_not, eval_finish]))
-      else
-        evalTactic (← `(tactic|
-          try simp -implicitDefEqProofs only [Nat.sub_self, Nat.not_lt_zero, not_false_eq_true,
-            decide_eq_true_eq, decide_eq_false_iff_not, $lemmas,*, eval_finish]))
+      let extra := if preserveEq then #[] else lemmas
+      evalTactic (← `(tactic|
+        try simp -implicitDefEqProofs only [Nat.sub_self, Nat.not_lt_zero, not_false_eq_true,
+          decide_eq_true_eq, decide_eq_false_iff_not, $extra,*, eval_finish]))
       normalized := normalized ++ (← getGoals)
   setGoals normalized
   return ← getGoals
 
 private structure EvalWPRules where
-  eqRefl : Sym.BackwardRule
   andIntro : Sym.BackwardRule
   callInstrs : Sym.BackwardRule
   instrsNil : Sym.BackwardRule
@@ -220,7 +177,6 @@ private structure EvalWPRules where
 
 private def mkEvalWPRules : MetaM EvalWPRules := do
   return {
-    eqRefl := ← Sym.mkBackwardRuleFromDecl ``Eq.refl
     andIntro := ← Sym.mkBackwardRuleFromDecl ``And.intro
     callInstrs := ← Sym.mkBackwardRuleFromDecl ``EvaluatesCall.of_evaluatesInstrs
     instrsNil := ← Sym.mkBackwardRuleFromDecl ``EvaluatesInstrs.nil
@@ -366,12 +322,10 @@ mutual
         if assignEqMVars && (← applyEqRefl? goal target) then
           return .success []
       if let some finalizer ← selectedEvalFinalizer? target finalizer? then
-        return ← processEvalFinalizer goal rules finalizer finalizer? (fuel - 1)
+        return ← processEvalFinalizer goal rules finalizer (fuel - 1)
       let localRules := if head == rawHead then rawLocalRules else #[]
       let candidates :=
-        if head.isConstOf ``Eq then
-          if assignEqMVars then #[rules.eqRefl] else #[]
-        else if head.isConstOf ``And then
+        if head.isConstOf ``And then
           #[rules.andIntro]
         else if head.isConstOf ``EvaluatesCall then
           localRules ++ #[rules.callInstrs]
@@ -388,7 +342,7 @@ mutual
       if let some generated ← tryEvalVCRules goal rules candidates finalizer? (fuel - 1) then
         return .success generated
       if head.isConstOf ``EvaluatesTo then
-        if let some generated ← tryEvalResultTransport goal rules finalizer? (fuel - 1) then
+        if let some generated ← tryEvalResultTransport goal target rules finalizer? (fuel - 1) then
           return .success generated
       if isEvaluationHead head then return .blocked goal
       return .success [goal]
@@ -459,15 +413,12 @@ mutual
           set symSaved
     return none
 
-  private partial def tryEvalResultTransport (goal : MVarId) (rules : EvalWPRules)
+  private partial def tryEvalResultTransport (goal : MVarId) (target : Expr) (rules : EvalWPRules)
       (finalizer? : Option EvalSemanticFinalizer) (fuel : Nat) :
       SymM (Option (List MVarId)) := do
     let mctxSaved ← getMCtx
     let symSaved ← get
-    let target ← goal.withContext do instantiateMVarsS (← goal.getType)
     let args := target.getAppArgs
-    unless target.getAppFn.isConstOf ``EvaluatesTo && args.size >= 4 do
-      return none
     let fields := args.extract (args.size - 4) args.size
     let hcanonical ← goal.withContext do
       let primCtx ← mkAppM ``Ctx.primCtx #[fields[0]!]
@@ -496,16 +447,24 @@ mutual
     set symSaved
     return none
 
+  private partial def processNamedEvalRoot (root : MVarId) (name : Name)
+      (rules : EvalWPRules) (finalizer : EvalSemanticFinalizer) (fuel : Nat) :
+      SymM (List MVarId) := do
+    if ← root.isAssigned then return []
+    root.setTag name
+    match ← processEvalVCGoal root rules (some finalizer) fuel with
+    | .success generated => return generated
+    | .blocked blocked => return [blocked]
+
   private partial def processEvalFinalizer (goal : MVarId) (rules : EvalWPRules)
-      (finalizer : EvalSemanticFinalizer) (finalizer? : Option EvalSemanticFinalizer)
-      (fuel : Nat) : SymM EvalVCResult := do
+      (finalizer : EvalSemanticFinalizer) (fuel : Nat) : SymM EvalVCResult := do
     let mctxSaved ← getMCtx
     let symSaved ← get
     let some applied ← finalizer.apply goal
       | setMCtx mctxSaved; set symSaved; return .blocked goal
     for prerequisite in applied.prerequisites do
       if ← prerequisite.isAssigned then continue
-      match ← processEvalVCGoal prerequisite rules finalizer? fuel with
+      match ← processEvalVCGoal prerequisite rules (some finalizer) fuel with
       | .success [] => pure ()
       | _ =>
           setMCtx mctxSaved
@@ -515,11 +474,7 @@ mutual
     for root in applied.roots do
       match root with
       | .goal name root =>
-          if ← root.isAssigned then continue
-          root.setTag name
-          match ← processEvalVCGoal root rules finalizer? fuel with
-          | .success generated => residual := residual ++ generated
-          | .blocked blocked => residual := residual ++ [blocked]
+          residual := residual ++ (← processNamedEvalRoot root name rules finalizer fuel)
       | .residual name root =>
           unless ← root.isAssigned do
             root.setTag name
@@ -542,10 +497,7 @@ mutual
           let [left, right] := children
             | setMCtx mctxSaved; set symSaved; return .blocked goal
           for (name, child) in [(leftName, left), (rightName, right)] do
-            child.setTag name
-            match ← processEvalVCGoal child rules finalizer? fuel with
-            | .success generated => residual := residual ++ generated
-            | .blocked blocked => residual := residual ++ [blocked]
+            residual := residual ++ (← processNamedEvalRoot child name rules finalizer fuel)
     for parameter in applied.parameters do
       unless ← parameter.isAssigned do
         setMCtx mctxSaved
@@ -580,7 +532,7 @@ private def tryEvalCallFallback (goal : MVarId) (bound? : Option (TSyntax `num))
   let saved ← saveState
   setGoals [goal]
   try
-    evalTactic (← `(tactic| evaluates_call? $[$bound?]? [$lemmas,*]))
+    evalTactic (← `(tactic| evaluates_call $[$bound?]? [$lemmas,*]))
     return some (← getGoals)
   catch _ =>
     restoreState saved

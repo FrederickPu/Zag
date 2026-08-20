@@ -55,6 +55,13 @@ private def tryStep (tac : TSyntax `tactic) : TacticM Bool := do
     restoreState saved
     return false
 
+private def closeEvaluatesFromResult? (close : TSyntax `tactic) : TacticM Bool := do
+  if ← tryStep (← `(tactic| exact Zag.EvaluatesFrom.done)) then return true
+  if ← tryStep (← `(tactic| refine Zag.EvaluatesFrom.done_of ?_)) then
+    evalTactic close
+    return true
+  return false
+
 /-- A hook invoked when machine walking reaches a selected operator. -/
 structure EvalFinalizer where
   op : Expr
@@ -71,10 +78,7 @@ private partial def evaluatesFromCoreLegacy (bound : Nat)
   let fold ← `(tactic| try simp only [eval_fold])
   let rec go (remaining : Nat) : TacticM Unit := do
     if (← getGoals).isEmpty then return
-    if ← tryStep (← `(tactic| exact Zag.EvaluatesFrom.done)) then return
-    if ← tryStep (← `(tactic| refine Zag.EvaluatesFrom.done_of ?_)) then
-      evalTactic close
-      return
+    if ← closeEvaluatesFromResult? close then return
     if ← tryStep (← `(tactic| refine Zag.EvaluatesFrom.atCall ?_)) then
       evalTactic fold
       return
@@ -114,14 +118,12 @@ private def appArgs2? (expr : Expr) (head : Name) : Option (Expr × Expr) := do
   return (args[0]!, args[1]!)
 
 private structure EvalStateView where
-  primCtx : Expr
   control : Expr
-  env : Expr
   stack : Expr
 
 private def EvalStateView.ofExpr? (state : Expr) : Option EvalStateView := do
   let args ← trailingAppArgs? state ``EvalState.mk 4
-  return { primCtx := args[0]!, control := args[1]!, env := args[2]!, stack := args[3]! }
+  return { control := args[1]!, stack := args[3]! }
 
 /-- Convert an elaborated ordinary simp set into the structural theorem set used by `Sym.simp`.
   It is used only for equality premises exposed by backward transition rules. -/
@@ -170,7 +172,7 @@ def mkEvalSemanticRules : MetaM (Array Sym.BackwardRule) := do
   let entries := evalSemanticAttr.getEntries (← getEnv)
   entries.mapM Sym.mkBackwardRuleFromDecl
 
-private structure EvalBackwardRules where
+structure EvalBackwardRules where
   evalThen : Sym.BackwardRule
   op : Sym.BackwardRule
   eval : Sym.BackwardRule
@@ -187,6 +189,20 @@ private def mkEvalBackwardRules : MetaM EvalBackwardRules := do
     apply := ← Sym.mkBackwardRuleFromDecl ``EvaluatesFrom.apply_step
     ret := ← Sym.mkBackwardRuleFromDecl ``EvaluatesFrom.ret_step
     exit := ← Sym.mkBackwardRuleFromDecl ``EvaluatesFrom.exit_step
+  }
+
+/-- Cached symbolic rules and simplification methods shared by one evaluator invocation. -/
+structure EvalCoreContext where
+  methods : Sym.Simp.Methods
+  semanticRules : Array Sym.BackwardRule
+  backwardRules : EvalBackwardRules
+
+def mkEvalCoreContext
+    (lemmas : Array (TSyntax ``Lean.Parser.Tactic.simpLemma)) : TacticM EvalCoreContext := do
+  return {
+    methods := ← elabEvalSymSimpMethods lemmas
+    semanticRules := ← mkEvalSemanticRules
+    backwardRules := ← mkEvalBackwardRules
   }
 
 private inductive EvalSymResult where
@@ -212,14 +228,11 @@ private def EvaluatesFromTarget.ofGoal? (goal : MVarId) : SymM (Option Evaluates
   return EvaluatesFromTarget.ofExpr? target
 
 private structure EvaluatesToTarget where
-  ctx : Expr
-  env : Expr
   term : Expr
-  value : Expr
 
 private def EvaluatesToTarget.ofExpr? (target : Expr) : Option EvaluatesToTarget := do
   let args ← trailingAppArgs? target ``EvaluatesTo 4
-  return { ctx := args[0]!, env := args[1]!, term := args[2]!, value := args[3]! }
+  return { term := args[2]! }
 
 /-- Close a side equality by symbolic normalization, retaining the generated proof. -/
 private def solveSemanticEq (goal : MVarId) (methods : Sym.Simp.Methods)
@@ -446,16 +459,18 @@ where
       return .stopped goal
     if remaining = 0 then
       return .stopped goal
-    if let some term := appArg? stateView.control ``Action.eval then
-      if (appArgs2? term ``Term.op).isSome then
+    let evalTerm? := appArg? stateView.control ``Action.eval
+    let isOpEval := evalTerm?.any fun term => (appArgs2? term ``Term.op).isSome
+    if let some term := evalTerm? then
+      if isOpEval then
         if let some applied ← applySemanticTransition? goal backwardRules.evalThen
             semanticRules methods simpState then
           trace[Zag.eval.sym] "semantic evaluation: {term}"
           return ← go applied.goal applied.target applied.target.state (steps + 1)
             (remaining - 1) applied.simpState finalizerOp?
     let rule? :=
-      if let some term := appArg? stateView.control ``Action.eval then
-        if (appArgs2? term ``Term.op).isSome then some backwardRules.op
+      if evalTerm?.isSome then
+        if isOpEval then some backwardRules.op
         else some backwardRules.eval
       else if (appArgs2? stateView.control ``Action.apply).isSome then some backwardRules.apply
       else if (appArg? stateView.control ``Action.ret).isSome then some backwardRules.ret
@@ -470,8 +485,8 @@ where
     go applied.goal applied.target applied.target.state (steps + 1) (remaining - 1)
       applied.simpState finalizerOp?
 
-/-- Walk an `EvaluatesFrom` goal one `step` at a time until it is discharged or nothing applies. -/
-partial def evaluatesFromCore (bound : Nat)
+/-- Walk an `EvaluatesFrom` goal using a cached symbolic evaluator context. -/
+partial def evaluatesFromCoreWith (core : EvalCoreContext) (bound : Nat)
     (lemmas : Array (TSyntax ``Lean.Parser.Tactic.simpLemma))
     (close : TSyntax `tactic) (finalizer? : Option EvalFinalizer := none)
     (stopAtApply : Bool := false) :
@@ -481,21 +496,15 @@ partial def evaluatesFromCore (bound : Nat)
   if ← isConcreteMachineGoal root then
     evaluatesFromCoreLegacy bound lemmas close finalizer? stopAtApply
     return
-  let methods ← elabEvalSymSimpMethods lemmas
-  let semanticRules ← mkEvalSemanticRules
-  let backwardRules ← mkEvalBackwardRules
   let result ← SymM.run <|
-    evaluatesFromVC root bound methods semanticRules backwardRules
+    evaluatesFromVC root bound core.methods core.semanticRules core.backwardRules
       (finalizer?.map (·.op)) stopAtApply
   let setMain (goal : MVarId) := setGoals (goal :: goals.tail)
   match result with
   | .atResult goal remaining =>
       setMain goal
-      if ← tryStep (← `(tactic| exact Zag.EvaluatesFrom.done)) then return
-      if ← tryStep (← `(tactic| refine Zag.EvaluatesFrom.done_of ?_)) then
-        evalTactic close
-        return
-      evaluatesFromCoreLegacy remaining lemmas close finalizer? stopAtApply
+      unless ← closeEvaluatesFromResult? close do
+        evaluatesFromCoreLegacy remaining lemmas close finalizer? stopAtApply
   | .stopped goal =>
       setMain goal
       evalTactic (← `(tactic| try simp only [eval_fold]))
@@ -507,20 +516,32 @@ partial def evaluatesFromCore (bound : Nat)
       setMain goal
       evaluatesFromCoreLegacy remaining lemmas close finalizer? stopAtApply
 
+/-- Walk an `EvaluatesFrom` goal one `step` at a time until it is discharged or nothing applies. -/
+partial def evaluatesFromCore (bound : Nat)
+    (lemmas : Array (TSyntax ``Lean.Parser.Tactic.simpLemma))
+    (close : TSyntax `tactic) (finalizer? : Option EvalFinalizer := none)
+    (stopAtApply : Bool := false) :
+    TacticM Unit := do
+  evaluatesFromCoreWith (← mkEvalCoreContext lemmas) bound lemmas close finalizer? stopAtApply
+
 /-- The bound a caller wrote, or `evalStepBound`. -/
-private def boundOf (bound? : Option (TSyntax `num)) : Nat :=
+def evalBoundOf (bound? : Option (TSyntax `num)) : Nat :=
   match bound? with
   | some n => n.getNat
   | none => evalStepBound
 
-/-- Use registered whole-term semantics before falling back to bounded machine reduction. -/
-private def evaluatesCore (bound : Nat)
+private def evalCloseTactic (close? : Option (TSyntax `tactic))
+    (lemmas : Array (TSyntax ``Lean.Parser.Tactic.simpLemma)) : TacticM (TSyntax `tactic) :=
+  match close? with
+  | some close => pure close
+  | none => `(tactic| try set_option linter.unusedSimpArgs false in simp +arith [$lemmas,*])
+
+/-- Use registered whole-term semantics with a cached context before bounded machine reduction. -/
+def evaluatesCoreWith (core : EvalCoreContext) (bound : Nat)
     (lemmas : Array (TSyntax ``Lean.Parser.Tactic.simpLemma)) : TacticM Unit := do
   let goals ← getGoals
   let some root := goals.head? | return
-  let methods ← elabEvalSymSimpMethods lemmas
-  let rules ← mkEvalSemanticRules
-  if (← SymM.run <| solveSemanticEval root rules methods {}).isSome then
+  if (← SymM.run <| solveSemanticEval root core.semanticRules core.methods {}).isSome then
     setGoals goals.tail
     return
   let fuel := Lean.Syntax.mkNumLit (toString bound)
@@ -532,30 +553,29 @@ private def evaluatesCore (bound : Nat)
        set_option linter.unusedSimpArgs false in
          simp +arith [eval_step, Zag.EvalState.run,
            Zag.EvalState.start, Zag.EvalState.result?, $lemmas,*] <;>
-         try rfl)))
+          try rfl)))
+
+/-- Use registered whole-term semantics before falling back to bounded machine reduction. -/
+def evaluatesCore (bound : Nat)
+    (lemmas : Array (TSyntax ``Lean.Parser.Tactic.simpLemma)) : TacticM Unit := do
+  evaluatesCoreWith (← mkEvalCoreContext lemmas) bound lemmas
 
 elab_rules : tactic
 | `(tactic| evaluates_from $[$bound?]? [$lemmas,*] $[stopping_at_apply%$stopApply?]?
       $[discharging $close?]?) => do
-    let close ← match close? with
-      | some c => pure c
-      | none =>
-          `(tactic| try set_option linter.unusedSimpArgs false in simp +arith [$lemmas,*])
-    evaluatesFromCore (boundOf bound?) lemmas.getElems close
+    let close ← evalCloseTactic close? lemmas.getElems
+    evaluatesFromCore (evalBoundOf bound?) lemmas.getElems close
       (stopAtApply := stopApply?.isSome)
 | `(tactic| evaluates_from $[$bound?]? [$lemmas,*] $[stopping_at_apply%$stopApply?]?
       $[discharging $close?]? finalizing_at_op $op with $finalizer) => do
-    let close ← match close? with
-      | some c => pure c
-      | none =>
-          `(tactic| try set_option linter.unusedSimpArgs false in simp +arith [$lemmas,*])
+    let close ← evalCloseTactic close? lemmas.getElems
     let opExpr ← instantiateMVars (← Term.elabTerm op (some (mkConst ``String)))
     let probe ← `(tactic| refine Zag.EvaluatesFrom.atOp (name := $op) ?_)
-    evaluatesFromCore (boundOf bound?) lemmas.getElems close
+    evaluatesFromCore (evalBoundOf bound?) lemmas.getElems close
       (finalizer? := some { op := opExpr, probe, run := finalizer })
       (stopAtApply := stopApply?.isSome)
 | `(tactic| evaluates $[$bound?]? [$lemmas,*]) =>
-    evaluatesCore (boundOf bound?) lemmas.getElems
+    evaluatesCore (evalBoundOf bound?) lemmas.getElems
 
 private def listView (xs : Expr) : MetaM (Option (Expr × Expr)) := do
   let xs ← whnf xs
