@@ -32,6 +32,9 @@ example : fixtures.lookupPath ("nested" / "deep.txt") ==
     some (.file "deep.txt" "deep body\n") := by
   native_decide
 
+example : (fixtures.filePaths.map (·.toString)).any (· == "nested/deep.txt") = true := by
+  native_decide
+
 /-- Missing paths. -/
 example : (fixtures.lookupContent ("nope" / "missing.txt")).isNone = true := by
   native_decide
@@ -71,6 +74,9 @@ def hand : FileTree :=
   ]
 
 example : hand.lookupContent ("sub" / "b.txt") == some "b\n" := by native_decide
+
+example : FileTree.resolveFrom ⟨"sub/a.txt"⟩ ⟨"../top.txt"⟩ == ⟨"top.txt"⟩ := by
+  native_decide
 
 example :
     (match loadClosure hand ⟨"a.txt"⟩ with

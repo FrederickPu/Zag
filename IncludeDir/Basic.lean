@@ -55,6 +55,13 @@ def child? (t : FileTree) (n : String) : Option FileTree :=
 def components (path : FilePath) : List String :=
   path.components.filter fun s => decide (s ≠ "") && decide (s ≠ ".")
 
+/-- Build a logical tree-relative path independently of the host filesystem separator. -/
+def relativePath (parts : List String) : FilePath :=
+  ⟨String.intercalate "/" parts⟩
+
+private def appendRelative (path : FilePath) (name : String) : FilePath :=
+  relativePath (components path ++ [name])
+
 /-- Lookup by path component list under this tree. -/
 def lookup : FileTree → List String → Option FileTree
   | t, [] => some t
@@ -77,12 +84,12 @@ def lookupContent (t : FileTree) (path : FilePath) : Option String :=
 /-- Flatten to `(relPath, content)` pairs for every file under this node. -/
 partial def filesAt (t : FileTree) (pre : FilePath) : List (FilePath × String) :=
   match t with
-  | .file n c => [(pre / n, c)]
+  | .file n c => [(appendRelative pre n, c)]
   | .dir _ cs =>
       cs.flatMap fun c =>
         match c with
-        | .file n content => [(pre / n, content)]
-        | .dir n _ => filesAt c (pre / n)
+        | .file n content => [(appendRelative pre n, content)]
+        | .dir n _ => filesAt c (appendRelative pre n)
 
 /-- All files with paths relative to this tree's root (root dir name omitted). -/
 def allFiles (t : FileTree) : List (FilePath × String) :=
@@ -112,7 +119,7 @@ def resolveFrom (fromPath rel : FilePath) : FilePath :=
       | [] => acc
       | ".." :: rest => join acc.dropLast rest
       | p :: rest => join (acc ++ [p]) rest
-    System.mkFilePath (join dirParts (components rel))
+    relativePath (join dirParts (components rel))
 
 end FileTree
 
