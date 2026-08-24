@@ -1,4 +1,5 @@
 import Zag.Meta
+import Zag.Loop
 import Lib.Peano.Defs
 
 /-!
@@ -26,6 +27,8 @@ namespace Zag
 namespace Pr
 
 namespace Induction
+
+open EvalTriple.Exact
 
 /-! ### free variables -/
 
@@ -296,7 +299,8 @@ end
 /-! ### the same three facts, lifted to `Pr.interp` -/
 
 theorem interp_instantiate {ctx : Ctx} (ctxTy : Scope Ty) (ctxTerm : Scope (Term ctx.primCtx))
-    (name : String) (t : Term ctx.primCtx) (ht : Term.subst ctxTerm t = t) :
+    {hM : ctx.M = Id} (name : String) (t : Term ctx.primCtx)
+    (ht : Term.subst ctxTerm t = t) :
     ∀ p : Pr (Term ctx.primCtx), quantifierFree p = true →
       (Pr.interp ctx ctxTy (ctxTerm ++ [(name, t)]) p ↔
         Pr.interp ctx ctxTy ctxTerm (instantiate name t p))
@@ -325,7 +329,8 @@ theorem interp_instantiate {ctx : Ctx} (ctxTy : Scope Ty) (ctxTerm : Scope (Term
 | .forallTerm _ _, hqf => by simp [quantifierFree] at hqf
 
 theorem interp_shadowed {ctx : Ctx} (ctxTy : Scope Ty) (ctxTerm : Scope (Term ctx.primCtx))
-    (name yName : String) (u t : Term ctx.primCtx) (hu : Term.subst ctxTerm u = u) :
+    {hM : ctx.M = Id} (name yName : String) (u t : Term ctx.primCtx)
+    (hu : Term.subst ctxTerm u = u) :
     ∀ p : Pr (Term ctx.primCtx), quantifierFree p = true → yName ∉ varNames p →
       (Pr.interp ctx ctxTy (ctxTerm ++ [(name, u), (yName, t)]) p ↔
         Pr.interp ctx ctxTy ctxTerm (instantiate name u p))
@@ -360,7 +365,8 @@ theorem interp_shadowed {ctx : Ctx} (ctxTy : Scope Ty) (ctxTerm : Scope (Term ct
 | .forallTerm _ _, hqf, _ => by simp [quantifierFree] at hqf
 
 theorem interp_instantiate_rename {ctx : Ctx} (ctxTy : Scope Ty)
-    (ctxTerm : Scope (Term ctx.primCtx)) (name yName : String) (hne : ¬ (yName = name))
+    (ctxTerm : Scope (Term ctx.primCtx)) {hM : ctx.M = Id}
+    (name yName : String) (hne : ¬ (yName = name))
     (u t : Term ctx.primCtx) (ht : Term.subst ctxTerm t = t) :
     ∀ p : Pr (Term ctx.primCtx), quantifierFree p = true → yName ∉ varNames p →
       (Pr.interp ctx ctxTy (ctxTerm ++ [(name, u), (yName, t)])
@@ -424,18 +430,21 @@ def natInductionGoals {primCtx : PrimitiveCtx} [Peano.Types primCtx]
 /-- `succName` is a successor operator: it types as `Nat → Nat` and sends a value `m` to `m+1`.
   It used to be a primitive function applied with `Term.app`; primitive functions are now ops, so
   the spec is stated against `Term.op`. -/
-structure SuccSpec (ctx : Ctx) [Peano.Types ctx.primCtx] (succName : String) : Prop where
+structure SuccSpec (ctx : Ctx) [Peano.Types ctx.primCtx] (succName : String)
+    (hM : ctx.M = Id := by first | assumption | rfl) : Prop where
   hasType_op : ∀ (varCtx : VarCtx) (t : Term ctx.primCtx),
     Term.hasType ctx varCtx t Peano.NatTy →
     Term.hasType ctx varCtx (.op succName [t]) Peano.NatTy
   eval_succ : ∀ (env : Env ctx.primCtx) (t : Term ctx.primCtx) (m : Nat),
-    EvaluatesTo ctx env t (Val.nat m) →
-    EvaluatesTo ctx env (.op succName [t]) (Val.nat (m + 1))
+    EvalTriple.Exact.EvaluatesTo ctx env t (Val.nat m) →
+    EvalTriple.Exact.EvaluatesTo ctx env (.op succName [t]) (Val.nat (m + 1))
 
-theorem eval_natLit {ctx : Ctx} [Peano.Types ctx.primCtx] (env : Env ctx.primCtx) (n : Nat) :
-    EvaluatesTo ctx env (Term.nat n) (Val.nat n) := by
+theorem eval_natLit {ctx : Ctx} [Peano.Types ctx.primCtx] {hM : ctx.M = Id}
+    (env : Env ctx.primCtx) (n : Nat) :
+    EvalTriple.Exact.EvaluatesTo ctx env (Term.nat n) (Val.nat n) := by
   simpa [Term.nat] using
-    (EvaluatesTo.prim (ctx := ctx) (env := env) Peano.NatTy (Ty.ofNat ctx.primCtx n))
+    (EvalTriple.Exact.EvaluatesTo.prim
+      (ctx := ctx) (env := env) Peano.NatTy (Ty.ofNat ctx.primCtx n))
 
 theorem subst_natLit {primCtx : PrimitiveCtx} [Peano.Types primCtx]
     (ctxTerm : Scope (Term primCtx)) (n : Nat) :
@@ -457,7 +466,8 @@ theorem subst_var_append {primCtx : PrimitiveCtx} (ctxTerm : Scope (Term primCtx
 
 /- the object-level equation `succ x = y` holds when `x` and `y` are the literals `k` and `k+1` -/
 theorem succEq_natLit {ctx : Ctx} [Peano.Model ctx] {succName : String}
-    (hspec : SuccSpec ctx succName) (ctxTy : Scope Ty) (ctxTerm : Scope (Term ctx.primCtx))
+    {hM : ctx.M = Id} (hspec : SuccSpec ctx succName hM)
+    (ctxTy : Scope Ty) (ctxTerm : Scope (Term ctx.primCtx))
     (name yName : String) (hne : ¬ (yName = name)) (k : Nat) :
     Pr.interp ctx ctxTy (ctxTerm ++ [(name, Term.nat k)] ++ [(yName, Term.nat (k + 1))])
       (succEq name yName succName) := by
@@ -481,45 +491,49 @@ theorem succEq_natLit {ctx : Ctx} [Peano.Model ctx] {succName : String}
   · intro env _
     simp only [Term.subst_op, List.map_cons, List.map_nil, hx, hy,
       Term.subst_prim, Term.bool]
-    have hsucc : EvaluatesTo ctx env (.op succName [Term.nat k]) (Val.nat (k + 1)) :=
+    have hsucc : EvalTriple.Exact.EvaluatesTo ctx env
+        (.op succName [Term.nat k]) (Val.nat (k + 1)) :=
       hspec.eval_succ env (Term.nat k) k (eval_natLit env k)
-    have hlit : EvaluatesTo ctx env (Term.nat (k + 1)) (Val.nat (k + 1)) :=
+    have hlit : EvalTriple.Exact.EvaluatesTo ctx env
+        (Term.nat (k + 1)) (Val.nat (k + 1)) :=
       eval_natLit env (k + 1)
-    have heqTrue : EvaluatesTo ctx env
+    have heqTrue : EvalTriple.Exact.EvaluatesTo ctx env
         (.op "eq" [.op succName [Term.nat k], Term.nat (k + 1)])
         (Val.bool true) := by
-      refine EvaluatesTo.op_applyVals (Peano.Model.eqOp (ctx := ctx))
-        (EvaluatesToAll.cons hsucc (EvaluatesToAll.cons hlit EvaluatesToAll.nil)) ?_
+      refine EvalTriple.Exact.EvaluatesTo.op_applyVals (Peano.Model.eqOp (ctx := ctx))
+        (EvalTriple.Exact.EvaluatesList.cons hsucc
+          (EvalTriple.Exact.EvaluatesList.cons hlit EvalTriple.Exact.EvaluatesList.nil)) ?_
       simpa [Op.eq, Op.applyValsAt, Op.compare, Op.fixed, Val.primEq?] using
-        (Op.applyVals_compare (primCtx := ctx.primCtx) "eq" Val.primEq?
+        (Op.applyVals_compare (primCtx := ctx.primCtx) (M := ctx.M) "eq" Val.primEq?
           (Val.nat (primCtx := ctx.primCtx) (k + 1)) (Val.nat (k + 1)) rfl)
-    have htrue : EvaluatesTo ctx env (Term.bool true) (Val.bool true) := by
+    have htrue : EvalTriple.Exact.EvaluatesTo ctx env
+        (Term.bool true) (Val.bool true) := by
       simpa [Term.bool] using
-        (EvaluatesTo.prim (ctx := ctx) (env := env) Peano.BoolTy
+        (EvalTriple.Exact.EvaluatesTo.prim (ctx := ctx) (env := env) Peano.BoolTy
           (Ty.ofBool ctx.primCtx true))
     intro v
     constructor
     · intro hv
       have hvtrue : v = Val.bool (primCtx := ctx.primCtx) true :=
-        EvaluatesTo.unique hv heqTrue
+        EvalTriple.Exact.EvaluatesTo.unique hv heqTrue
       subst v
       exact htrue
     · intro hv
       have hvtrue : v = Val.bool (primCtx := ctx.primCtx) true :=
-        EvaluatesTo.unique hv htrue
+        EvalTriple.Exact.EvaluatesTo.unique hv htrue
       subst v
       exact heqTrue
 
 theorem natInductionChain {ctx : Ctx} [Peano.Model ctx] {ctxTy : Scope Ty}
     {ctxTerm : Scope (Term ctx.primCtx)} {body : Pr (Term ctx.primCtx)}
-    {name yName succName : String}
-    (hspec : SuccSpec ctx succName)
+    {name yName succName : String} {hM : ctx.M = Id}
+    (hspec : SuccSpec ctx succName hM)
     (hne : ¬ (yName = name))
     (hqf : quantifierFree body = true)
     (hfresh : yName ∉ varNames body)
-    (hbase : Pr.Provable ctx ctxTy ctxTerm (instantiate name (Term.nat 0) body))
-    (hstep : Pr.Provable ctx ctxTy ctxTerm (natStepGoal name yName succName body)) :
-    ∀ n, Pr.Provable ctx ctxTy ctxTerm (instantiate name (Term.nat n) body) := by
+    (hbase : Pr.Provable ctx ctxTy ctxTerm (instantiate name (Term.nat 0) body) hM)
+    (hstep : Pr.Provable ctx ctxTy ctxTerm (natStepGoal name yName succName body) hM) :
+    ∀ n, Pr.Provable ctx ctxTy ctxTerm (instantiate name (Term.nat n) body) hM := by
   cases hstep with
   | ofProof hstepProof =>
       intro n
@@ -555,13 +569,13 @@ theorem natInductionChain {ctx : Ctx} [Peano.Model ctx] {ctxTy : Scope Ty}
 
 def natInductionWithPredicate {ctx : Ctx} [Peano.Model ctx]
     {ctxTy : Scope Ty} {ctxTerm : Scope (Term ctx.primCtx)}
-    (succName : String) (hspec : SuccSpec ctx succName)
+    {hM : ctx.M = Id} (succName : String) (hspec : SuccSpec ctx succName hM)
     (goal body : Pr (Term ctx.primCtx)) (name yName : String) (target : Nat)
     (hne : ¬ (yName = name))
     (hqf : quantifierFree body = true)
     (hfresh : yName ∉ varNames body)
     (hinst : goal = instantiate name (Term.nat target) body) :
-    PrRefinement ctx ctxTy ctxTerm goal where
+    PrRefinement ctx ctxTy ctxTerm goal hM where
   goals := natInductionGoals name yName succName body
   prove := by
     intro proveSubgoals

@@ -12,7 +12,7 @@ of the block named `b` and makes `v` that call's value:
 * naming an enclosing block **breaks out of it**, which is what the old recursor stack allowed
   by calling an outer motive from an inner loop body.
 
-An exit that escapes every enclosing call is stuck, so `EvalState.result?` is `none`.
+An exit that escapes every enclosing call is stuck, so `Machine.result?` is `none`.
 -/
 
 namespace Zag.Test.Exit
@@ -40,8 +40,7 @@ abbrev clampCtx : Ctx where
     simp [clampBlocks, Block.callNames, Term.callNames, Term.nat, Term.ite]⟩
 
 def runClamp (n : Nat) : Option Nat :=
-  (EvalState.run clampCtx 500 (EvalState.start [] (.call "clamp" [Term.nat n]))).result?.bind
-    Val.asNat?
+  (Machine.evalFuel clampCtx 500 [] (.call "clamp" [Term.nat n])).run.bind Val.asNat?
 
 /-- info: [some 0, some 3, some 9, some 10, some 10, some 10] -/
 #guard_msgs in
@@ -73,8 +72,7 @@ abbrev breakCtx : Ctx where
     simp [breakBlocks, Block.callNames, Term.callNames, Term.nat, Term.ite]⟩
 
 def runOuter (n : Nat) : Option Nat :=
-  (EvalState.run breakCtx 500 (EvalState.start [] (.call "outer" [Term.nat n]))).result?.bind
-    Val.asNat?
+  (Machine.evalFuel breakCtx 500 [] (.call "outer" [Term.nat n])).run.bind Val.asNat?
 
 /-- info: [some 100, some 103, some 105, some 0, some 0] -/
 #guard_msgs in
@@ -84,7 +82,6 @@ def runOuter (n : Nat) : Option Nat :=
   evaluation is stuck -/
 /-- info: none -/
 #guard_msgs in
-#eval (EvalState.run breakCtx 500 (EvalState.start [] (.call "inner" [Term.nat 9]))).result?.bind
-  Val.asNat?
+#eval (Machine.evalFuel breakCtx 500 [] (.call "inner" [Term.nat 9])).run.bind Val.asNat?
 
 end Zag.Test.Exit

@@ -1,3 +1,4 @@
-import Meta.Eval.Refinement
+import Meta.Eval.Induction
+import Meta.Eval.VC
 
-/-! Compatibility umbrella for small-step evaluation tactics. -/
+/-! Small-step evaluation tactics, including monadic/relational VC generation. -/

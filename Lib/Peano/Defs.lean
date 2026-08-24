@@ -40,6 +40,18 @@ def toBool (primCtx : PrimitiveCtx) [Peano.Types primCtx]
     toNat primCtx (ofNat primCtx n) = n := by
   simp [toNat, ofNat]
 
+@[simp] theorem toNat_cast_ofNat (primCtx : PrimitiveCtx) [Peano.Types primCtx]
+    (h : Ty.type primCtx Peano.NatTy = Ty.type primCtx Peano.NatTy) (n : Nat) :
+    toNat primCtx (cast h (ofNat primCtx n)) = n := by
+  rw [Subsingleton.elim h rfl]
+  exact toNat_ofNat primCtx n
+
+@[simp] theorem toBool_cast_ofBool (primCtx : PrimitiveCtx) [Peano.Types primCtx]
+    (h : Ty.type primCtx Peano.BoolTy = Ty.type primCtx Peano.BoolTy) (b : Bool) :
+    toBool primCtx (cast h (ofBool primCtx b)) = b := by
+  rw [Subsingleton.elim h rfl]
+  exact toBool_ofBool primCtx b
+
 end Ty
 
 namespace Val
@@ -110,8 +122,8 @@ def compareOut? : List Ty → Option Ty
 | [a, b] => if a = b then some Peano.BoolTy else none
 | _ => none
 
-def compare {primCtx : PrimitiveCtx} [Peano.Types primCtx]
-    (cmp : Val primCtx → Val primCtx → Option Bool) : Op primCtx :=
+def compare {primCtx : PrimitiveCtx} {M : Type → Type} [Peano.Types primCtx]
+    (cmp : Val primCtx → Val primCtx → Option Bool) : Op primCtx M :=
   Op.fixed 2 (fun tys => if tys 0 = tys 1 then some Peano.BoolTy else none) (.next true fun
     | none => .fail
     | some lhs => .next true fun
@@ -123,14 +135,14 @@ def compare {primCtx : PrimitiveCtx} [Peano.Types primCtx]
               | some result => .done (Val.bool result)
             else .fail)
 
-theorem applyVals_compare {primCtx : PrimitiveCtx} [Peano.Types primCtx]
+theorem applyVals_compare {primCtx : PrimitiveCtx} {M : Type → Type} [Peano.Types primCtx]
     (name : String) (cmp : Val primCtx → Val primCtx → Option Bool) (va vb : Val primCtx)
     (hty : va.ty = vb.ty) :
-    Op.applyValsAt name (compare cmp) [va, vb] = (cmp va vb).map Val.bool := by
+    Op.applyValsAt (M := M) name (compare cmp) [va, vb] = (cmp va vb).map Val.bool := by
   simp [Op.applyValsAt, Op.fixed, Op.Body.applyVals, compare, hty]
   cases cmp va vb <;> simp [Op.Body.applyVals]
 
-def eq {primCtx : PrimitiveCtx} [Peano.Types primCtx] : Op primCtx :=
+def eq {primCtx : PrimitiveCtx} {M : Type → Type} [Peano.Types primCtx] : Op primCtx M :=
   compare Val.primEq?
 
 @[simp] private def iteShape? (condTy thenTy elseTy : Ty) :
@@ -139,7 +151,7 @@ def eq {primCtx : PrimitiveCtx} [Peano.Types primCtx] : Op primCtx :=
     some ⟨thenTy, h.1.symm, rfl, h.2⟩
   else none
 
-def ite {primCtx : PrimitiveCtx} [Peano.Types primCtx] : Op primCtx :=
+def ite {primCtx : PrimitiveCtx} {M : Type → Type} [Peano.Types primCtx] : Op primCtx M :=
   Op.fixed 3 (fun tys => (iteShape? (tys 0) (tys 1) (tys 2)).map Subtype.val)
     (.next true fun
       | none => .fail
@@ -156,8 +168,8 @@ def ite {primCtx : PrimitiveCtx} [Peano.Types primCtx] : Op primCtx :=
 
 /- The arithmetic that used to be supplied as primitive functions. A primitive function is now
   just an operator with fixed operand and result types. -/
-def natBinary {primCtx : PrimitiveCtx} [Peano.Types primCtx] (f : Nat → Nat → Nat) :
-    Op primCtx :=
+def natBinary {primCtx : PrimitiveCtx} {M : Type → Type} [Peano.Types primCtx]
+    (f : Nat → Nat → Nat) : Op primCtx M :=
   Op.ofVals [Peano.NatTy, Peano.NatTy] Peano.NatTy fun
   | [lhsVal, rhsVal] => do
       let lhs ← lhsVal.asNat?
@@ -165,7 +177,8 @@ def natBinary {primCtx : PrimitiveCtx} [Peano.Types primCtx] (f : Nat → Nat �
       some (Val.nat (f lhs rhs))
   | _ => none
 
-def natUnary {primCtx : PrimitiveCtx} [Peano.Types primCtx] (f : Nat → Nat) : Op primCtx :=
+def natUnary {primCtx : PrimitiveCtx} {M : Type → Type} [Peano.Types primCtx]
+    (f : Nat → Nat) : Op primCtx M :=
   Op.ofVals [Peano.NatTy] Peano.NatTy fun
   | [v] => do
       let n ← v.asNat?
@@ -209,7 +222,7 @@ def whileBodyFromValues [Peano.Types primCtx] (name : String) (vals : List (Val 
 
 /- A single variadic `while` operator. Applying the continuation returns through the body call,
   so each iteration wraps the next one and remains compatible with the top-frame-only machine. -/
-def whileOp {primCtx : PrimitiveCtx} [Peano.Types primCtx] : Op primCtx where
+def whileOp {primCtx : PrimitiveCtx} {M : Type → Type} [Peano.Types primCtx] : Op primCtx M where
   out := whileResultTy? (primCtx := primCtx)
   body name arity :=
     if 3 ≤ arity then
@@ -218,7 +231,7 @@ def whileOp {primCtx : PrimitiveCtx} [Peano.Types primCtx] : Op primCtx where
 
 end Op
 
-def Peano.opCtx (primCtx : PrimitiveCtx) [Peano.Types primCtx] : OpCtx primCtx :=
+def Peano.opCtx (primCtx : PrimitiveCtx) {M : Type → Type} [Peano.Types primCtx] : OpCtx primCtx M :=
   [("eq", Op.eq), ("lt", Op.compare Val.primLt?), ("gt", Op.compare Val.primGt?),
    ("ite", Op.ite),
    ("add", Op.natBinary Nat.add), ("sub", Op.natBinary Nat.sub),

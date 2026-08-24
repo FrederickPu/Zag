@@ -189,7 +189,7 @@ private def unifyTypeGoals {ctx : Ctx}
 
 private theorem unifyType_sound {ctx : Ctx}
     {ctxTy : Scope Ty} {ctxTerm : Scope (Term ctx.primCtx)}
-    {goal : Pr (Term ctx.primCtx)} :
+    {goal : Pr (Term ctx.primCtx)} {hM : ctx.M = Id} :
     (∀ subgoal, subgoal ∈ unifyTypeGoals (ctx := ctx) ctxTy ctxTerm goal →
       Pr.Provable ctx ctxTy ctxTerm subgoal) →
       Pr.Provable ctx ctxTy ctxTerm goal := by
@@ -231,7 +231,8 @@ private theorem unifyType_sound {ctx : Ctx}
 
 def unifyType {ctx : Ctx}
     {ctxTy : Scope Ty} {ctxTerm : Scope (Term ctx.primCtx)}
-    (goal : Pr (Term ctx.primCtx)) : PrRefinement ctx ctxTy ctxTerm goal where
+    {hM : ctx.M = Id} (goal : Pr (Term ctx.primCtx)) :
+    PrRefinement ctx ctxTy ctxTerm goal hM where
   goals := unifyTypeGoals (ctx := ctx) ctxTy ctxTerm goal
   prove := by
     intro proveSubgoals
@@ -258,8 +259,8 @@ theorem VarCtx.subst_nil : (varCtx : VarCtx) → VarCtx.subst [] varCtx = varCtx
     exact VarCtx.subst_nil rest
 
 theorem hasType_of_provable {ctx : Ctx} {varCtx : VarCtx}
-    {term : Term ctx.primCtx} {ty : Ty}
-    (h : Pr.Provable ctx [] [] (.hasType varCtx term ty)) :
+    {term : Term ctx.primCtx} {ty : Ty} {hM : ctx.M = Id}
+    (h : Pr.Provable ctx [] [] (.hasType varCtx term ty) hM) :
     Term.hasType ctx varCtx term ty := by
   cases h with
   | ofProof proof =>

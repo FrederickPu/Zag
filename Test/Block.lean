@@ -68,8 +68,7 @@ theorem sumToCtx_wellTyped : Ctx.WellTyped sumToCtx := by
   typecheck_ctx
 
 def runSumTo (n : Nat) : Option Nat :=
-  (EvalState.run sumToCtx 1000 (EvalState.start [] (.call "sumTo" [Term.nat n]))).result?.bind
-    Val.asNat?
+  (Machine.evalFuel sumToCtx 1000 [] (.call "sumTo" [Term.nat n])).run.bind Val.asNat?
 
 /-- info: some 10 -/
 #guard_msgs in

@@ -2,7 +2,9 @@ import Test.Autocorres.Examples.MultByAddEvalManual
 
 namespace Zag.Test.Autocorres.Examples
 
-open Zag Zag.Lib.PeanoHeap
+open Zag Zag.Lib.PeanoHeap Zag.EvalTriple.Exact
+
+private abbrev heapOpCtx := pureHeapOpCtx
 
 /-! A direct semantic proof of `multByAdd_eval_call`, using the manual value-level call
 specification and explicit literal evaluation. -/
@@ -12,10 +14,10 @@ theorem multByAdd_eval_call_manual (x y : Nat) :
       (Val.nat (x * y)) := by
   apply EvaluatesTo.call (multByAdd_eval_manual x y)
   · rfl
-  · exact EvaluatesToAll.cons
+  · exact EvaluatesList.cons
       (evaluates_nat _ x)
-      (EvaluatesToAll.cons
+      (EvaluatesList.cons
         (evaluates_nat _ y)
-        EvaluatesToAll.nil)
+        EvaluatesList.nil)
 
 end Zag.Test.Autocorres.Examples

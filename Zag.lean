@@ -5,6 +5,8 @@ import Zag.Theory
 import Zag.Machine
 import Zag.Weakening
 import Zag.EvalState
+import Zag.EvalTriple
+import Zag.VC
 import Zag.Loop
 import Zag.Syntax
 import Zag.Meta

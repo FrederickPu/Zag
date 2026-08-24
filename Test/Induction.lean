@@ -13,6 +13,7 @@ namespace Zag.Test.Autocorres.Examples
 
 open Zag Zag.Lib.PeanoHeap
 open Zag.Pr.Induction
+open Zag.EvalTriple.Exact
 
 /-! ### the same fact, proved inside Zag by induction
 
@@ -77,7 +78,7 @@ theorem plusLoop_eq_of_arg_nat (x : Nat) {t : Term heapCtx}
             unfold plusLoopTerm
             exact EvaluatesTo.call (block := plusBlocks[1].2)
               (hcall := plusLoop_eval x n) hblock
-              (EvaluatesToAll.cons hnatx (EvaluatesToAll.cons hn EvaluatesToAll.nil)),
+              (EvaluatesList.cons hnatx (EvaluatesList.cons hn EvaluatesList.nil)),
           by
             unfold plusAddTerm
             exact evaluates_natBinary (ctx := plusCtx) (name := "add") (f := Nat.add)

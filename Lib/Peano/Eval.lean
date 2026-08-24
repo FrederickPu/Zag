@@ -81,18 +81,6 @@ theorem eq_bool_of_asBool? {v : Val primCtx} {b : Bool} (h : v.asBool? = some b)
   | blockRef n a o => simp [Val.asBool?, Val.as?] at h
   | opRef n c a o => simp [Val.asBool?, Val.as?] at h
 
-instance (n : Nat) : EvalResultMatcher (Val.nat (primCtx := primCtx) n) where
-  test actual := decide (actual.asNat? = some n)
-  eq_of_test h := by
-    apply eq_nat_of_asNat?
-    simpa using h
-
-instance (b : Bool) : EvalResultMatcher (Val.bool (primCtx := primCtx) b) where
-  test actual := decide (actual.asBool? = some b)
-  eq_of_test h := by
-    apply eq_bool_of_asBool?
-    simpa using h
-
 @[simp] theorem ty_nat (n : Nat) : (Val.nat (primCtx := primCtx) n).ty = Peano.NatTy := rfl
 
 @[simp] theorem ty_bool (b : Bool) : (Val.bool (primCtx := primCtx) b).ty = Peano.BoolTy := rfl
@@ -131,27 +119,29 @@ end Val
 
 /-! ### small-step Peano operator specs -/
 
-@[eval_semantic] theorem evaluates_nat {ctx : Ctx} [Peano.Types ctx.primCtx]
+namespace EvalTriple.Exact
+
+@[eval_semantic, zspec] theorem evaluates_nat {ctx : Ctx} {hM : ctx.M = Id} [Peano.Types ctx.primCtx]
     (env : Env ctx.primCtx) (n : Nat) :
     EvaluatesTo ctx env (Term.nat n) (Val.nat n) := by
   simpa [Term.nat] using
     (EvaluatesTo.prim (ctx := ctx) (env := env) Peano.NatTy (Ty.ofNat ctx.primCtx n))
 
-@[eval_semantic] theorem evaluates_bool {ctx : Ctx} [Peano.Types ctx.primCtx]
+@[eval_semantic, zspec] theorem evaluates_bool {ctx : Ctx} {hM : ctx.M = Id} [Peano.Types ctx.primCtx]
     (env : Env ctx.primCtx) (b : Bool) :
     EvaluatesTo ctx env (Term.bool b) (Val.bool b) := by
   simpa [Term.bool] using
     (EvaluatesTo.prim (ctx := ctx) (env := env) Peano.BoolTy (Ty.ofBool ctx.primCtx b))
 
-theorem evaluates_natUnary {ctx : Ctx} [Peano.Types ctx.primCtx]
+theorem evaluates_natUnary {ctx : Ctx} {hM : ctx.M = Id} [Peano.Types ctx.primCtx]
     {env : Env ctx.primCtx} {name : String} {f : Nat → Nat} {a : Term ctx.primCtx}
     {m : Nat} (hop : ctx.opCtx.get? name = some (Op.natUnary (primCtx := ctx.primCtx) f))
     (ha : EvaluatesTo ctx env a (Val.nat m)) :
     EvaluatesTo ctx env (.op name [a]) (Val.nat (f m)) := by
-  refine EvaluatesTo.op_applyVals hop (EvaluatesToAll.cons ha EvaluatesToAll.nil) ?_
+  refine EvaluatesTo.op_applyVals hop (EvaluatesList.cons ha EvaluatesList.nil) ?_
   simp [Op.applyValsAt, Op.fixed, Op.natUnary, Op.ofVals, Op.Body.applyVals, Op.Body.eager]
 
-theorem evaluates_natBinary {ctx : Ctx} [Peano.Types ctx.primCtx]
+theorem evaluates_natBinary {ctx : Ctx} {hM : ctx.M = Id} [Peano.Types ctx.primCtx]
     {env : Env ctx.primCtx} {name : String} {f : Nat → Nat → Nat}
     {a b : Term ctx.primCtx} {m n : Nat}
     (hop : ctx.opCtx.get? name = some (Op.natBinary (primCtx := ctx.primCtx) f))
@@ -159,41 +149,81 @@ theorem evaluates_natBinary {ctx : Ctx} [Peano.Types ctx.primCtx]
     (hb : EvaluatesTo ctx env b (Val.nat n)) :
     EvaluatesTo ctx env (.op name [a, b]) (Val.nat (f m n)) := by
   refine EvaluatesTo.op_applyVals hop
-    (EvaluatesToAll.cons ha (EvaluatesToAll.cons hb EvaluatesToAll.nil)) ?_
+    (EvaluatesList.cons ha (EvaluatesList.cons hb EvaluatesList.nil)) ?_
   simp [Op.applyValsAt, Op.fixed, Op.natBinary, Op.ofVals, Op.Body.applyVals, Op.Body.eager]
 
-@[eval_semantic] theorem evaluates_succ_nat {ctx : Ctx} [Peano.Model ctx]
+@[eval_semantic, zspec] theorem evaluates_succ_nat {ctx : Ctx} {hM : ctx.M = Id} [Peano.Model ctx]
     {env : Env ctx.primCtx} {a : Term ctx.primCtx} {m : Nat}
     (ha : EvaluatesTo ctx env a (Val.nat m)) :
     EvaluatesTo ctx env (.op "succ" [a]) (Val.nat (m + 1)) := by
   simpa only [Nat.succ_eq_add_one] using
     (evaluates_natUnary (Peano.Model.succOp (ctx := ctx)) ha)
 
-@[eval_semantic] theorem evaluates_add_nat {ctx : Ctx} [Peano.Model ctx]
+namespace Op.Body
+
+private def resume? {primCtx : PrimitiveCtx} :
+    Op.Body primCtx → Option (Val primCtx) → Op.Body primCtx
+| .next _ resume => resume
+| _ => fun _ => .fail
+
+end Op.Body
+
+@[eval_semantic, zspec] theorem evaluates_ite_false {ctx : Ctx} {hM : ctx.M = Id} [Peano.Model ctx]
+    {env : Env ctx.primCtx} {conditionTerm thenTerm elseTerm : Term ctx.primCtx}
+    {value : Val ctx.primCtx}
+    (hcondition : EvaluatesTo ctx env conditionTerm (Val.bool false))
+    (helse : EvaluatesTo ctx env elseTerm value) :
+    EvaluatesTo ctx env (Term.ite conditionTerm thenTerm elseTerm) value := by
+  intro base
+  let oper := Op.ite (primCtx := ctx.primCtx) (M := ctx.M)
+  let firstResume := Op.Body.resume?
+    ((oper.body "ite" 3).getD (Op.Body.fail : Op.Body ctx.primCtx))
+  let firstBase := Frame.opBody firstResume (Op.Arg.ofTerms [thenTerm, elseTerm]) env :: base
+  have hopId := Exact.idView_get?_of_get? hM (Peano.Model.iteOp (ctx := ctx))
+  apply EvaluatesFrom.pureStep (next := ⟨.eval conditionTerm, env, firstBase⟩)
+  · simp [Machine.step, Machine.evalTerm, Machine.driveSelectedOp, Machine.ofOption,
+      Term.ite, hopId, firstBase, firstResume, oper, Op.Body.resume?, Op.ite,
+      Op.fixed, Machine.driveOp]
+  apply EvaluatesFrom.bind (hcondition firstBase)
+  intro conditionScope
+  let secondResume := Op.Body.resume?
+    ((Op.Body.resume? (firstResume (some (Val.bool false)))) none)
+  let secondBase := Frame.opBody secondResume [] env :: base
+  apply EvaluatesFrom.pureStep (next := ⟨.eval elseTerm, env, secondBase⟩)
+  · simp [Machine.step, Machine.resumeFrame, Machine.ofOption, Machine.driveOp, firstBase,
+      firstResume, secondBase, secondResume, oper, Op.Body.resume?, Op.ite, Op.fixed]
+  apply EvaluatesFrom.bind (helse secondBase)
+  intro valueScope
+  apply EvaluatesFrom.pureStep (next := ⟨.ret value, env, base⟩)
+  · simp [Machine.step, Machine.resumeFrame, Machine.ofOption, Machine.driveOp, secondBase,
+      secondResume, firstResume, oper, Op.Body.resume?, Op.ite, Op.fixed]
+  exact EvaluatesFrom.done
+
+@[eval_semantic, zspec] theorem evaluates_add_nat {ctx : Ctx} {hM : ctx.M = Id} [Peano.Model ctx]
     {env : Env ctx.primCtx} {a b : Term ctx.primCtx} {m n : Nat}
     (ha : EvaluatesTo ctx env a (Val.nat m)) (hb : EvaluatesTo ctx env b (Val.nat n)) :
     EvaluatesTo ctx env (.op "add" [a, b]) (Val.nat (m + n)) :=
   evaluates_natBinary (Peano.Model.addOp (ctx := ctx)) ha hb
 
-@[eval_semantic] theorem evaluates_sub_nat {ctx : Ctx} [Peano.Model ctx]
+@[eval_semantic, zspec] theorem evaluates_sub_nat {ctx : Ctx} {hM : ctx.M = Id} [Peano.Model ctx]
     {env : Env ctx.primCtx} {a b : Term ctx.primCtx} {m n : Nat}
     (ha : EvaluatesTo ctx env a (Val.nat m)) (hb : EvaluatesTo ctx env b (Val.nat n)) :
     EvaluatesTo ctx env (.op "sub" [a, b]) (Val.nat (m - n)) :=
   evaluates_natBinary (Peano.Model.subOp (ctx := ctx)) ha hb
 
-@[eval_semantic] theorem evaluates_mul_nat {ctx : Ctx} [Peano.Model ctx]
+@[eval_semantic, zspec] theorem evaluates_mul_nat {ctx : Ctx} {hM : ctx.M = Id} [Peano.Model ctx]
     {env : Env ctx.primCtx} {a b : Term ctx.primCtx} {m n : Nat}
     (ha : EvaluatesTo ctx env a (Val.nat m)) (hb : EvaluatesTo ctx env b (Val.nat n)) :
     EvaluatesTo ctx env (.op "mul" [a, b]) (Val.nat (m * n)) :=
   evaluates_natBinary (Peano.Model.mulOp (ctx := ctx)) ha hb
 
-@[eval_semantic] theorem evaluates_div_nat {ctx : Ctx} [Peano.Model ctx]
+@[eval_semantic, zspec] theorem evaluates_div_nat {ctx : Ctx} {hM : ctx.M = Id} [Peano.Model ctx]
     {env : Env ctx.primCtx} {a b : Term ctx.primCtx} {m n : Nat}
     (ha : EvaluatesTo ctx env a (Val.nat m)) (hb : EvaluatesTo ctx env b (Val.nat n)) :
     EvaluatesTo ctx env (.op "div" [a, b]) (Val.nat (m / n)) :=
   evaluates_natBinary (Peano.Model.divOp (ctx := ctx)) ha hb
 
-theorem evaluates_natUnary_literal_iff {ctx : Ctx} [Peano.Types ctx.primCtx]
+theorem evaluates_natUnary_literal_iff {ctx : Ctx} {hM : ctx.M = Id} [Peano.Types ctx.primCtx]
     {env : Env ctx.primCtx} {name : String} {f : Nat → Nat} {a : Nat}
     {expected : Val ctx.primCtx}
     (hop : ctx.opCtx.get? name = some (Op.natUnary (primCtx := ctx.primCtx) f)) :
@@ -202,7 +232,7 @@ theorem evaluates_natUnary_literal_iff {ctx : Ctx} [Peano.Types ctx.primCtx]
   apply EvaluatesTo.iff_eq_of
   exact evaluates_natUnary hop (evaluates_nat env a)
 
-theorem evaluates_natBinary_literals_iff {ctx : Ctx} [Peano.Types ctx.primCtx]
+theorem evaluates_natBinary_literals_iff {ctx : Ctx} {hM : ctx.M = Id} [Peano.Types ctx.primCtx]
     {env : Env ctx.primCtx} {name : String} {f : Nat → Nat → Nat} {a b : Nat}
     {expected : Val ctx.primCtx}
     (hop : ctx.opCtx.get? name = some (Op.natBinary (primCtx := ctx.primCtx) f)) :
@@ -211,7 +241,7 @@ theorem evaluates_natBinary_literals_iff {ctx : Ctx} [Peano.Types ctx.primCtx]
   apply EvaluatesTo.iff_eq_of
   exact evaluates_natBinary hop (evaluates_nat env a) (evaluates_nat env b)
 
-theorem evaluates_compare {ctx : Ctx} [Peano.Types ctx.primCtx]
+theorem evaluates_compare {ctx : Ctx} {hM : ctx.M = Id} [Peano.Types ctx.primCtx]
     {env : Env ctx.primCtx} {name : String}
     {cmp : Val ctx.primCtx → Val ctx.primCtx → Option Bool}
     {a b : Term ctx.primCtx} {va vb : Val ctx.primCtx} {result : Bool}
@@ -220,11 +250,11 @@ theorem evaluates_compare {ctx : Ctx} [Peano.Types ctx.primCtx]
     (hty : va.ty = vb.ty) (hcmp : cmp va vb = some result) :
     EvaluatesTo ctx env (.op name [a, b]) (Val.bool result) := by
   refine EvaluatesTo.op_applyVals hop
-    (EvaluatesToAll.cons ha (EvaluatesToAll.cons hb EvaluatesToAll.nil)) ?_
+    (EvaluatesList.cons ha (EvaluatesList.cons hb EvaluatesList.nil)) ?_
   rw [Op.applyVals_compare name cmp va vb hty, hcmp]
   rfl
 
-theorem evaluates_compare_nat_literals_iff {ctx : Ctx} [Peano.Types ctx.primCtx]
+theorem evaluates_compare_nat_literals_iff {ctx : Ctx} {hM : ctx.M = Id} [Peano.Types ctx.primCtx]
     {env : Env ctx.primCtx} {name : String}
     {cmp : Val ctx.primCtx → Val ctx.primCtx → Option Bool}
     {a b : Nat} {result expected : Bool}
@@ -236,26 +266,26 @@ theorem evaluates_compare_nat_literals_iff {ctx : Ctx} [Peano.Types ctx.primCtx]
     (EvaluatesTo.iff_eq_of (expected := Val.bool expected)
       (evaluates_compare hop (evaluates_nat env a) (evaluates_nat env b) rfl hcmp))
 
-@[eval_semantic] theorem evaluates_eq_nat {ctx : Ctx} [Peano.Model ctx]
+@[eval_semantic, zspec] theorem evaluates_eq_nat {ctx : Ctx} {hM : ctx.M = Id} [Peano.Model ctx]
     {env : Env ctx.primCtx} {a b : Term ctx.primCtx} {m n : Nat}
     (ha : EvaluatesTo ctx env a (Val.nat m)) (hb : EvaluatesTo ctx env b (Val.nat n)) :
     EvaluatesTo ctx env (.op "eq" [a, b]) (Val.bool (decide (m = n))) := by
   exact evaluates_compare (by simpa only [Op.eq] using Peano.Model.eqOp (ctx := ctx))
     ha hb rfl (Val.primEq?_nat m n)
 
-@[eval_semantic] theorem evaluates_lt_nat {ctx : Ctx} [Peano.Model ctx]
+@[eval_semantic, zspec] theorem evaluates_lt_nat {ctx : Ctx} {hM : ctx.M = Id} [Peano.Model ctx]
     {env : Env ctx.primCtx} {a b : Term ctx.primCtx} {m n : Nat}
     (ha : EvaluatesTo ctx env a (Val.nat m)) (hb : EvaluatesTo ctx env b (Val.nat n)) :
     EvaluatesTo ctx env (.op "lt" [a, b]) (Val.bool (decide (m < n))) := by
   exact evaluates_compare (Peano.Model.ltOp (ctx := ctx)) ha hb rfl (Val.primLt?_nat m n)
 
-@[eval_semantic] theorem evaluates_gt_nat {ctx : Ctx} [Peano.Model ctx]
+@[eval_semantic, zspec] theorem evaluates_gt_nat {ctx : Ctx} {hM : ctx.M = Id} [Peano.Model ctx]
     {env : Env ctx.primCtx} {a b : Term ctx.primCtx} {m n : Nat}
     (ha : EvaluatesTo ctx env a (Val.nat m)) (hb : EvaluatesTo ctx env b (Val.nat n)) :
     EvaluatesTo ctx env (.op "gt" [a, b]) (Val.bool (decide (n < m))) := by
   exact evaluates_compare (Peano.Model.gtOp (ctx := ctx)) ha hb rfl (Val.primGt?_nat m n)
 
-theorem evaluates_succ_nat_iff {ctx : Ctx} [Peano.Model ctx]
+theorem evaluates_succ_nat_iff {ctx : Ctx} {hM : ctx.M = Id} [Peano.Model ctx]
     {env : Env ctx.primCtx} {a expected : Nat} :
     EvaluatesTo ctx env (.op "succ" [Term.nat a]) (Val.nat expected) ↔
       a + 1 = expected := by
@@ -263,7 +293,7 @@ theorem evaluates_succ_nat_iff {ctx : Ctx} [Peano.Model ctx]
     (evaluates_natUnary_literal_iff (env := env) (a := a) (expected := Val.nat expected)
       (Peano.Model.succOp (ctx := ctx)))
 
-theorem evaluates_add_nat_iff {ctx : Ctx} [Peano.Model ctx]
+theorem evaluates_add_nat_iff {ctx : Ctx} {hM : ctx.M = Id} [Peano.Model ctx]
     {env : Env ctx.primCtx} {a b expected : Nat} :
     EvaluatesTo ctx env (.op "add" [Term.nat a, Term.nat b]) (Val.nat expected) ↔
       a + b = expected := by
@@ -273,7 +303,7 @@ theorem evaluates_add_nat_iff {ctx : Ctx} [Peano.Model ctx]
     (evaluates_natBinary_literals_iff (env := env) (a := a) (b := b)
       (expected := Val.nat expected) (Peano.Model.addOp (ctx := ctx)))
 
-theorem evaluates_sub_nat_iff {ctx : Ctx} [Peano.Model ctx]
+theorem evaluates_sub_nat_iff {ctx : Ctx} {hM : ctx.M = Id} [Peano.Model ctx]
     {env : Env ctx.primCtx} {a b expected : Nat} :
     EvaluatesTo ctx env (.op "sub" [Term.nat a, Term.nat b]) (Val.nat expected) ↔
       a - b = expected := by
@@ -283,7 +313,7 @@ theorem evaluates_sub_nat_iff {ctx : Ctx} [Peano.Model ctx]
     (evaluates_natBinary_literals_iff (env := env) (a := a) (b := b)
       (expected := Val.nat expected) (Peano.Model.subOp (ctx := ctx)))
 
-theorem evaluates_mul_nat_iff {ctx : Ctx} [Peano.Model ctx]
+theorem evaluates_mul_nat_iff {ctx : Ctx} {hM : ctx.M = Id} [Peano.Model ctx]
     {env : Env ctx.primCtx} {a b expected : Nat} :
     EvaluatesTo ctx env (.op "mul" [Term.nat a, Term.nat b]) (Val.nat expected) ↔
       a * b = expected := by
@@ -293,7 +323,7 @@ theorem evaluates_mul_nat_iff {ctx : Ctx} [Peano.Model ctx]
     (evaluates_natBinary_literals_iff (env := env) (a := a) (b := b)
       (expected := Val.nat expected) (Peano.Model.mulOp (ctx := ctx)))
 
-theorem evaluates_div_nat_iff {ctx : Ctx} [Peano.Model ctx]
+theorem evaluates_div_nat_iff {ctx : Ctx} {hM : ctx.M = Id} [Peano.Model ctx]
     {env : Env ctx.primCtx} {a b expected : Nat} :
     EvaluatesTo ctx env (.op "div" [Term.nat a, Term.nat b]) (Val.nat expected) ↔
       a / b = expected := by
@@ -303,7 +333,7 @@ theorem evaluates_div_nat_iff {ctx : Ctx} [Peano.Model ctx]
     (evaluates_natBinary_literals_iff (env := env) (a := a) (b := b)
       (expected := Val.nat expected) (Peano.Model.divOp (ctx := ctx)))
 
-theorem evaluates_eq_nat_iff {ctx : Ctx} [Peano.Model ctx]
+theorem evaluates_eq_nat_iff {ctx : Ctx} {hM : ctx.M = Id} [Peano.Model ctx]
     {env : Env ctx.primCtx} {a b : Nat} {expected : Bool} :
     EvaluatesTo ctx env (.op "eq" [Term.nat a, Term.nat b]) (Val.bool expected) ↔
       decide (a = b) = expected := by
@@ -312,7 +342,7 @@ theorem evaluates_eq_nat_iff {ctx : Ctx} [Peano.Model ctx]
       (expected := expected) (by simpa only [Op.eq] using Peano.Model.eqOp (ctx := ctx))
       (Val.primEq?_nat a b))
 
-theorem evaluates_lt_nat_iff {ctx : Ctx} [Peano.Model ctx]
+theorem evaluates_lt_nat_iff {ctx : Ctx} {hM : ctx.M = Id} [Peano.Model ctx]
     {env : Env ctx.primCtx} {a b : Nat} {expected : Bool} :
     EvaluatesTo ctx env (.op "lt" [Term.nat a, Term.nat b]) (Val.bool expected) ↔
       decide (a < b) = expected := by
@@ -320,7 +350,7 @@ theorem evaluates_lt_nat_iff {ctx : Ctx} [Peano.Model ctx]
     (evaluates_compare_nat_literals_iff (env := env) (a := a) (b := b)
       (expected := expected) (Peano.Model.ltOp (ctx := ctx)) (Val.primLt?_nat a b))
 
-theorem evaluates_gt_nat_iff {ctx : Ctx} [Peano.Model ctx]
+theorem evaluates_gt_nat_iff {ctx : Ctx} {hM : ctx.M = Id} [Peano.Model ctx]
     {env : Env ctx.primCtx} {a b : Nat} {expected : Bool} :
     EvaluatesTo ctx env (.op "gt" [Term.nat a, Term.nat b]) (Val.bool expected) ↔
       decide (b < a) = expected := by
@@ -328,15 +358,15 @@ theorem evaluates_gt_nat_iff {ctx : Ctx} [Peano.Model ctx]
     (evaluates_compare_nat_literals_iff (env := env) (a := a) (b := b)
       (expected := expected) (Peano.Model.gtOp (ctx := ctx)) (Val.primGt?_nat a b))
 
-theorem evaluates_eq_same_nat_true {ctx : Ctx} [Peano.Model ctx]
+theorem evaluates_eq_same_nat_true {ctx : Ctx} {hM : ctx.M = Id} [Peano.Model ctx]
     {env : Env ctx.primCtx} {a b : Term ctx.primCtx} {n : Nat}
     (ha : EvaluatesTo ctx env a (Val.nat n))
     (hb : EvaluatesTo ctx env b (Val.nat n)) :
     EvaluatesTo ctx env (.op "eq" [a, b]) (Val.bool true) := by
   refine EvaluatesTo.op_applyVals (Peano.Model.eqOp (ctx := ctx))
-    (EvaluatesToAll.cons ha (EvaluatesToAll.cons hb EvaluatesToAll.nil)) ?_
+    (EvaluatesList.cons ha (EvaluatesList.cons hb EvaluatesList.nil)) ?_
   simpa [Op.eq, Op.applyValsAt, Op.compare, Op.fixed, Val.primEq?] using
-    (Op.applyVals_compare (primCtx := ctx.primCtx) "eq" Val.primEq?
+    (Op.applyVals_compare (primCtx := ctx.primCtx) (M := ctx.M) "eq" Val.primEq?
       (Val.nat (primCtx := ctx.primCtx) n) (Val.nat n) rfl)
 
 /-! ### from evaluation to `Term.eq`
@@ -344,7 +374,7 @@ theorem evaluates_eq_same_nat_true {ctx : Ctx} [Peano.Model ctx]
   `Term.eq` quantifies over every environment modelling the scope, so proving two terms equal at
   `Nat` means concretizing both under an arbitrary such environment. -/
 
-theorem term_eq_nat_of_eval {ctx : Ctx} [Peano.Types ctx.primCtx]
+theorem term_eq_nat_of_eval {ctx : Ctx} {hM : ctx.M = Id} [Peano.Types ctx.primCtx]
     {lhs rhs : Term ctx.primCtx}
     (hlhs : Term.hasType ctx [] lhs Peano.NatTy)
     (hrhs : Term.hasType ctx [] rhs Peano.NatTy)
@@ -370,140 +400,145 @@ theorem term_eq_nat_of_eval {ctx : Ctx} [Peano.Types ctx.primCtx]
   `Pr.Induction`'s step goal hands the proof an equation `succ x = y` reflected into Zag. Both
   sides must be `Nat`-valued for the induction to say anything, and that is what this recovers. -/
 
-namespace Op.Body
-
-private def resume? {primCtx : PrimitiveCtx} :
-    Op.Body primCtx → Option (Val primCtx) → Op.Body primCtx
-| .next _ resume => resume
-| _ => fun _ => .fail
-
-end Op.Body
-
-private theorem evaluates_natUnary_result_nat {ctx : Ctx} [Peano.Model ctx]
+private theorem evaluates_natUnary_result_nat {ctx : Ctx} {hM : ctx.M = Id} [Peano.Model ctx]
     {env : Env ctx.primCtx} {name : String} {arg : Term ctx.primCtx} {f : Nat → Nat}
     (hop : ctx.opCtx.get? name = some (Op.natUnary (primCtx := ctx.primCtx) f))
     {value : Val ctx.primCtx}
     (h : EvaluatesTo ctx env (.op name [arg]) value) :
     ∃ n : Nat, value = Val.nat (f n) := by
   let resume := Op.Body.resume?
-    (((Op.natUnary (primCtx := ctx.primCtx) f).body name 1).getD
+    (((Op.natUnary (primCtx := ctx.primCtx) (M := ctx.M) f).body name 1).getD
       (Op.Body.fail : Op.Body ctx.primCtx))
   let base : List (Frame ctx.primCtx) := [Frame.opBody resume [] env]
-  have hfrom := EvaluatesFrom.of_evaluatesTo h
-  have hprefix : EvalState.stepN ctx 1 (EvalState.start env (.op name [arg])) =
-      some (EvalState.appendStack (EvalState.start env arg) base) := by
-    simp [EvalState.stepN_succ, EvalState.step, EvalState.evalStep, EvalState.resumeFrame, EvalState.unwindFrame, EvalState.start, EvalState.driveOp,
-      EvalState.appendStack, hop, base, resume, Op.Body.resume?, Op.natUnary, Op.ofVals,
-      Op.Body.eager, Op.fixed]
-  have hfromArgState := EvaluatesFrom.drop_prefix hprefix hfrom
+  have hopId := Exact.idView_get?_of_get? hM hop
+  have hbodyId : (Exact.idOp ctx hM
+      (Op.natUnary (primCtx := ctx.primCtx) (M := ctx.M) f)).body name 1 =
+      (Op.natUnary (primCtx := ctx.primCtx) (M := ctx.M) f).body name 1 :=
+    Exact.idOp_property ctx hM _
+      (fun _ oper => oper.body name 1 =
+        (Op.natUnary (primCtx := ctx.primCtx) (M := ctx.M) f).body name 1) rfl
+  have hfrom : EvaluatesFrom ctx (Machine.start env (.op name [arg])) value [] := by
+    simpa [Machine.start] using h []
+  have hprefix : Id.run (Machine.nsteps (Exact.idView ctx hM) 1
+      (Machine.start env (.op name [arg]))).run =
+      some (Machine.appendStack (Machine.start env arg) base) := by
+    simp only [Machine.nsteps, Machine.start, Machine.step, Machine.evalTerm,
+      hopId, Machine.driveSelectedOp]
+    simp only [List.length_cons, List.length_nil]
+    rw [hbodyId]
+    simp [Machine.ofOption, Machine.driveOp, Machine.appendStack, base, resume, Op.Body.resume?,
+      Op.natUnary, Op.ofVals, Op.Body.eager, Op.fixed, Id.run,
+      Pure.pure, Bind.bind, OptionT.mk, OptionT.bind, OptionT.pure, OptionT.run]
+  have hfromArgState := EvaluatesFrom.afterNsteps hprefix hfrom
   have hfromArgStateSaved := hfromArgState
-  obtain ⟨fuel, scope, hsteps⟩ := hfromArgState
-  have hrunArgState :
-      (EvalState.run ctx fuel (EvalState.appendStack (EvalState.start env arg) base)).result? =
-        some value := by
-    rw [EvalState.run_eq_of_stepN hsteps]
-    rfl
-  obtain ⟨argVal, hargFrom⟩ := EvaluatesFrom.exists_of_run_append_opBodies
-    (ctx := ctx) (state := EvalState.start env arg) (base := base)
-    (hbase := Frame.OpBodies.cons Frame.OpBodies.nil) (hne := by simp [base]) hrunArgState
-  have harg : EvaluatesTo ctx env arg argVal := EvaluatesTo.of_evaluatesFrom hargFrom
-  obtain ⟨argFuel, argScope, hargSteps⟩ := EvaluatesTo.weaken harg base
-  have hfromRetArg := EvaluatesFrom.drop_prefix hargSteps hfromArgStateSaved
+  obtain ⟨argVal, hargFrom⟩ := EvaluatesFrom.existsOfAppendOpBodies
+    (ctx := ctx) (state := Machine.start env arg) (base := base)
+    (hbase := Frame.OpBodies.cons Frame.OpBodies.nil) (hne := by simp [base])
+    (by simpa [Machine.start, Machine.appendStack] using hfromArgState)
+  have harg : EvaluatesTo ctx env arg argVal := EvaluatesTo.ofEvaluatesFrom hargFrom
+  obtain ⟨argFuel, argScope, hargSteps⟩ := EvaluatesFrom.toNsteps (harg base) trivial
+  have hfromRetArg := EvaluatesFrom.afterNsteps hargSteps hfromArgStateSaved
   cases hm : argVal.asNat? with
   | none =>
-      obtain ⟨retFuel, retScope, hretSteps⟩ := hfromRetArg
-      cases retFuel with
-      | zero => simp [base] at hretSteps
-      | succ retFuel =>
-          rw [EvalState.stepN_succ] at hretSteps
-          simp [EvalState.step, EvalState.evalStep, EvalState.resumeFrame, EvalState.unwindFrame, EvalState.driveOp, base, resume, Op.Body.resume?, Op.natUnary,
-            Op.ofVals, Op.Body.eager, Op.fixed, hm] at hretSteps
+      obtain ⟨next, hnext⟩ := EvaluatesFrom.existsPureStep
+        (hnotDone := by intros; simp [base]) hfromRetArg
+      simp [Machine.step, Machine.ofOption, Machine.resumeFrame, Machine.driveOp,
+        base, resume, Op.Body.resume?, Op.natUnary, Op.ofVals, Op.Body.eager,
+        Op.fixed, hm] at hnext
+      have hfalse := congrArg (fun action => Id.run action.run) hnext
+      simp at hfalse
   | some n =>
       have hargNat : argVal = Val.nat n := Val.eq_nat_of_asNat? hm
       subst argVal
-      have hstepRet : EvalState.step ctx ⟨.ret (Val.nat (primCtx := ctx.primCtx) n),
-          argScope, base⟩ = some ⟨.ret (Val.nat (f n)), env, []⟩ := by
-        simp [EvalState.step, EvalState.evalStep, EvalState.resumeFrame, EvalState.unwindFrame, EvalState.driveOp, base, resume, Op.Body.resume?, Op.natUnary,
-          Op.ofVals, Op.Body.eager, Op.fixed]
-      have hfromResult := EvaluatesFrom.drop_prefix
-        (ctx := ctx) (fuel₀ := 1) (state := ⟨.ret (Val.nat (primCtx := ctx.primCtx) n),
-          argScope, base⟩) (mid := ⟨.ret (Val.nat (f n)), env, []⟩)
-        (by simp [EvalState.stepN_succ, hstepRet]) hfromRetArg
-      have hvalue := EvaluatesFrom.ret_empty_eq hfromResult
+      have hstepRet : Machine.step (Exact.idView ctx hM)
+          ⟨.ret (Val.nat (primCtx := ctx.primCtx) n), argScope, base⟩ =
+          Machine.ofOption (Exact.idView ctx hM)
+            (some ⟨.ret (Val.nat (primCtx := ctx.primCtx) (f n)), env, []⟩) := by
+        simp [Machine.step, Machine.ofOption, Machine.resumeFrame, Machine.driveOp,
+          base, resume, Op.Body.resume?, Op.natUnary, Op.ofVals, Op.Body.eager,
+          Op.fixed]
+      have hfromResult := EvaluatesFrom.afterPureStep
+        (hnotDone := by intros; simp [base]) hstepRet hfromRetArg
+      have hvalue := EvaluatesFrom.retEmptyEq hfromResult
       exact ⟨n, hvalue⟩
 
-theorem eval_nat_of_eq_natUnary_true {ctx : Ctx} [Peano.Model ctx]
+theorem eval_nat_of_eq_natUnary_true {ctx : Ctx} {hM : ctx.M = Id} [Peano.Model ctx]
     {env : Env ctx.primCtx} {name : String} {arg rhs : Term ctx.primCtx} {f : Nat → Nat}
     (hop : ctx.opCtx.get? name = some (Op.natUnary (primCtx := ctx.primCtx) f))
     (h : EvaluatesTo ctx env (.op "eq" [.op name [arg], rhs]) (Val.bool true)) :
     ∃ n : Nat, EvaluatesTo ctx env rhs (Val.nat n) := by
   let lhs := Term.op name [arg]
   let firstResume := Op.Body.resume?
-    (((Op.eq (primCtx := ctx.primCtx)).body "eq" 2).getD
+    (((Op.eq (primCtx := ctx.primCtx) (M := ctx.M)).body "eq" 2).getD
       (Op.Body.fail : Op.Body ctx.primCtx))
   let firstBase : List (Frame ctx.primCtx) :=
     [Frame.opBody firstResume (Op.Arg.ofTerms [rhs]) env]
-  have hfrom := EvaluatesFrom.of_evaluatesTo h
-  have hprefix : EvalState.stepN ctx 1 (EvalState.start env (.op "eq" [lhs, rhs])) =
-      some (EvalState.appendStack (EvalState.start env lhs) firstBase) := by
-    simp [EvalState.stepN_succ, EvalState.step, EvalState.evalStep, EvalState.resumeFrame, EvalState.unwindFrame, EvalState.start, EvalState.driveOp,
-      EvalState.appendStack, Peano.Model.eqOp, firstBase, firstResume, lhs, Op.Body.resume?,
-      Op.eq, Op.compare, Op.fixed]
-  have hfromLhsState := EvaluatesFrom.drop_prefix hprefix hfrom
+  have heqId := Exact.idView_get?_of_get? hM (Peano.Model.eqOp (ctx := ctx))
+  have heqBodyId : (Exact.idOp ctx hM
+      (Op.eq (primCtx := ctx.primCtx) (M := ctx.M))).body "eq" 2 =
+      (Op.eq (primCtx := ctx.primCtx) (M := ctx.M)).body "eq" 2 :=
+    Exact.idOp_property ctx hM _
+      (fun _ oper => oper.body "eq" 2 =
+        (Op.eq (primCtx := ctx.primCtx) (M := ctx.M)).body "eq" 2) rfl
+  have hfrom : EvaluatesFrom ctx (Machine.start env (.op "eq" [lhs, rhs]))
+      (Val.bool true) [] := by
+    simpa [Machine.start, lhs] using h []
+  have hprefix : Id.run (Machine.nsteps (Exact.idView ctx hM) 1
+      (Machine.start env (.op "eq" [lhs, rhs]))).run =
+      some (Machine.appendStack (Machine.start env lhs) firstBase) := by
+    simp only [Machine.nsteps, Machine.start, Machine.step, Machine.evalTerm,
+      heqId, Machine.driveSelectedOp]
+    simp only [List.length_cons, List.length_nil]
+    rw [heqBodyId]
+    simp [Machine.ofOption, Machine.driveOp, Machine.appendStack, firstBase, firstResume, lhs,
+      Op.Body.resume?, Op.eq, Op.compare, Op.fixed, Id.run, Pure.pure,
+      Bind.bind, OptionT.mk, OptionT.bind, OptionT.pure, OptionT.run]
+  have hfromLhsState := EvaluatesFrom.afterNsteps hprefix hfrom
   have hfromLhsStateSaved := hfromLhsState
-  obtain ⟨lhsFuel, lhsScope, hlhsSteps⟩ := hfromLhsState
-  have hrunLhsState :
-      (EvalState.run ctx lhsFuel (EvalState.appendStack (EvalState.start env lhs) firstBase)).result? =
-        some (Val.bool true) := by
-    rw [EvalState.run_eq_of_stepN hlhsSteps]
-    rfl
-  obtain ⟨lhsVal, hlhsFrom⟩ := EvaluatesFrom.exists_of_run_append_opBodies
-    (ctx := ctx) (state := EvalState.start env lhs) (base := firstBase)
-    (hbase := Frame.OpBodies.cons Frame.OpBodies.nil) (hne := by simp [firstBase]) hrunLhsState
-  have hlhs : EvaluatesTo ctx env lhs lhsVal := EvaluatesTo.of_evaluatesFrom hlhsFrom
+  obtain ⟨lhsVal, hlhsFrom⟩ := EvaluatesFrom.existsOfAppendOpBodies
+    (ctx := ctx) (state := Machine.start env lhs) (base := firstBase)
+    (hbase := Frame.OpBodies.cons Frame.OpBodies.nil) (hne := by simp [firstBase])
+    (by simpa [Machine.start, Machine.appendStack] using hfromLhsState)
+  have hlhs : EvaluatesTo ctx env lhs lhsVal := EvaluatesTo.ofEvaluatesFrom hlhsFrom
   obtain ⟨m, hlhsVal⟩ := evaluates_natUnary_result_nat (ctx := ctx) (env := env)
     (name := name) (arg := arg) (f := f) hop (value := lhsVal) hlhs
   subst lhsVal
   let secondResume := Op.Body.resume? (firstResume (some (Val.nat (primCtx := ctx.primCtx) (f m))))
   let secondBase : List (Frame ctx.primCtx) := [Frame.opBody secondResume [] env]
-  obtain ⟨lhsEvalFuel, lhsEvalScope, hlhsEvalSteps⟩ := EvaluatesTo.weaken hlhs firstBase
-  have hfromRetLhs := EvaluatesFrom.drop_prefix hlhsEvalSteps hfromLhsStateSaved
-  have hstepLhsRet : EvalState.step ctx ⟨.ret (Val.nat (primCtx := ctx.primCtx) (f m)),
-      lhsEvalScope, firstBase⟩ = some (EvalState.appendStack (EvalState.start env rhs) secondBase) := by
-    simp [EvalState.step, EvalState.evalStep, EvalState.resumeFrame, EvalState.unwindFrame, EvalState.driveOp, EvalState.appendStack, firstBase, secondBase,
-      EvalState.start, firstResume, secondResume, Op.Body.resume?, Op.eq, Op.compare, Op.fixed]
-  have hfromRhsState := EvaluatesFrom.drop_prefix
-    (ctx := ctx) (fuel₀ := 1) (state := ⟨.ret (Val.nat (primCtx := ctx.primCtx) (f m)),
-      lhsEvalScope, firstBase⟩) (mid := EvalState.appendStack (EvalState.start env rhs) secondBase)
-    (by simp [EvalState.stepN_succ, hstepLhsRet]) hfromRetLhs
+  obtain ⟨lhsEvalFuel, lhsEvalScope, hlhsEvalSteps⟩ :=
+    EvaluatesFrom.toNsteps (hlhs firstBase) trivial
+  have hfromRetLhs := EvaluatesFrom.afterNsteps hlhsEvalSteps hfromLhsStateSaved
+  have hstepLhsRet : Machine.step (Exact.idView ctx hM)
+      ⟨.ret (Val.nat (primCtx := ctx.primCtx) (f m)), lhsEvalScope, firstBase⟩ =
+      Machine.ofOption (Exact.idView ctx hM)
+        (some (Machine.appendStack (Machine.start env rhs) secondBase)) := by
+    simp [Machine.step, Machine.ofOption, Machine.resumeFrame, Machine.driveOp,
+      Machine.appendStack, Machine.start, firstBase, secondBase, firstResume,
+      secondResume, Op.Body.resume?, Op.eq, Op.compare, Op.fixed]
+  have hfromRhsState := EvaluatesFrom.afterPureStep
+    (hnotDone := by intros; simp [firstBase]) hstepLhsRet hfromRetLhs
   have hfromRhsStateSaved := hfromRhsState
-  obtain ⟨rhsFuel, rhsScope, hrhsSteps⟩ := hfromRhsState
-  have hrunRhsState :
-      (EvalState.run ctx rhsFuel (EvalState.appendStack (EvalState.start env rhs) secondBase)).result? =
-        some (Val.bool true) := by
-    rw [EvalState.run_eq_of_stepN hrhsSteps]
-    rfl
-  obtain ⟨rhsVal, hrhsFrom⟩ := EvaluatesFrom.exists_of_run_append_opBodies
-    (ctx := ctx) (state := EvalState.start env rhs) (base := secondBase)
-    (hbase := Frame.OpBodies.cons Frame.OpBodies.nil) (hne := by simp [secondBase]) hrunRhsState
-  have hrhs : EvaluatesTo ctx env rhs rhsVal := EvaluatesTo.of_evaluatesFrom hrhsFrom
-  obtain ⟨rhsEvalFuel, rhsEvalScope, hrhsEvalSteps⟩ := EvaluatesTo.weaken hrhs secondBase
-  have hfromRetRhs := EvaluatesFrom.drop_prefix hrhsEvalSteps hfromRhsStateSaved
-  obtain ⟨retFuel, retScope, hretSteps⟩ := hfromRetRhs
-  cases retFuel with
-  | zero => simp [secondBase] at hretSteps
-  | succ retFuel =>
-      rw [EvalState.stepN_succ] at hretSteps
-      by_cases hty : (Val.nat (primCtx := ctx.primCtx) (f m)).ty = rhsVal.ty
-      · have hrhsTy : rhsVal.ty = Peano.NatTy := by simpa using hty.symm
-        obtain ⟨n, hn⟩ := Val.exists_nat_of_ty hrhsTy
-        exact ⟨n, by simpa [hn] using hrhs⟩
-      · simp [EvalState.step, EvalState.evalStep, EvalState.resumeFrame, EvalState.unwindFrame, EvalState.driveOp, secondBase, secondResume, firstResume,
-          Op.Body.resume?, Op.eq, Op.compare, Op.fixed,
-          show ¬ Peano.NatTy = rhsVal.ty by simpa using hty]
-          at hretSteps
+  obtain ⟨rhsVal, hrhsFrom⟩ := EvaluatesFrom.existsOfAppendOpBodies
+    (ctx := ctx) (state := Machine.start env rhs) (base := secondBase)
+    (hbase := Frame.OpBodies.cons Frame.OpBodies.nil) (hne := by simp [secondBase])
+    (by simpa [Machine.start, Machine.appendStack] using hfromRhsState)
+  have hrhs : EvaluatesTo ctx env rhs rhsVal := EvaluatesTo.ofEvaluatesFrom hrhsFrom
+  obtain ⟨rhsEvalFuel, rhsEvalScope, hrhsEvalSteps⟩ :=
+    EvaluatesFrom.toNsteps (hrhs secondBase) trivial
+  have hfromRetRhs := EvaluatesFrom.afterNsteps hrhsEvalSteps hfromRhsStateSaved
+  by_cases hty : (Val.nat (primCtx := ctx.primCtx) (f m)).ty = rhsVal.ty
+  · have hrhsTy : rhsVal.ty = Peano.NatTy := by simpa using hty.symm
+    obtain ⟨n, hn⟩ := Val.exists_nat_of_ty hrhsTy
+    exact ⟨n, by simpa [hn] using hrhs⟩
+  · obtain ⟨next, hnext⟩ := EvaluatesFrom.existsPureStep
+      (hnotDone := by intros; simp [secondBase]) hfromRetRhs
+    simp [Machine.step, Machine.ofOption, Machine.resumeFrame, Machine.driveOp,
+      secondBase, secondResume, firstResume, Op.Body.resume?, Op.eq, Op.compare,
+      Op.fixed, show ¬ Peano.NatTy = rhsVal.ty by simpa using hty] at hnext
+    have hfalse := congrArg (fun action => Id.run action.run) hnext
+    simp at hfalse
 
-theorem eval_nat_of_reflected_natUnary_eq {ctx : Ctx} [Peano.Model ctx]
+theorem eval_nat_of_reflected_natUnary_eq {ctx : Ctx} {hM : ctx.M = Id} [Peano.Model ctx]
     {name : String} {f : Nat → Nat} {arg rhs : Term ctx.primCtx}
     (hop : ctx.opCtx.get? name = some (Op.natUnary (primCtx := ctx.primCtx) f))
     (heq : Term.eq ctx [] Peano.BoolTy (.op "eq" [.op name [arg], rhs]) (Term.bool true)) :
@@ -517,9 +552,24 @@ theorem eval_nat_of_reflected_natUnary_eq {ctx : Ctx} [Peano.Model ctx]
         (Ty.ofBool ctx.primCtx true))
   exact (heq.eq env henv (Val.bool true)).mpr htrue
 
+end EvalTriple.Exact
+
+export EvalTriple.Exact (evaluates_nat evaluates_bool evaluates_natUnary evaluates_natBinary
+  evaluates_succ_nat evaluates_add_nat evaluates_sub_nat evaluates_mul_nat evaluates_div_nat
+  evaluates_natUnary_literal_iff evaluates_natBinary_literals_iff evaluates_compare
+  evaluates_compare_nat_literals_iff evaluates_eq_nat evaluates_lt_nat evaluates_gt_nat
+  evaluates_succ_nat_iff evaluates_add_nat_iff evaluates_sub_nat_iff evaluates_mul_nat_iff
+  evaluates_div_nat_iff evaluates_eq_nat_iff evaluates_lt_nat_iff evaluates_gt_nat_iff
+  evaluates_eq_same_nat_true term_eq_nat_of_eval eval_nat_of_eq_natUnary_true
+  eval_nat_of_reflected_natUnary_eq)
+
 /-! ### continuation-passing `while` -/
 
 namespace Peano
+
+namespace Exact
+
+open EvalTriple.Exact
 
 variable {primCtx : PrimitiveCtx} [Peano.Types primCtx]
 
@@ -538,7 +588,7 @@ def whileRef (opName condName bodyName : String) (stateTys : List Ty) (resultTy 
   continuation as its final argument. Its premise is continuation-parametric: after proving the
   simultaneous next state satisfies the invariant, the body may use the supplied application
   specification and return the recursive answer through its own call frame. -/
-theorem while_invariant {ctx : Ctx} [Peano.Types ctx.primCtx]
+theorem while_invariant {ctx : Ctx} {hM : ctx.M = Id} [Peano.Types ctx.primCtx]
     {opName condName bodyName : String} {stateTys : List Ty} {resultTy : Ty}
     {I : Nat → List (Val ctx.primCtx) → Prop} {N : Nat}
     {initial : List (Val ctx.primCtx)} {loopResult : Val ctx.primCtx}
@@ -547,17 +597,19 @@ theorem while_invariant {ctx : Ctx} [Peano.Types ctx.primCtx]
     (init : I 0 initial)
     (typed : ∀ n args, I n args → args.map Val.ty = stateTys)
     (preserved : ∀ n args, n < N → I n args →
-      EvaluatesCall ctx condName args (Val.bool true) ∧
+      EvalTriple.Exact.EvaluatesCallValues ctx condName args (Val.bool true) ∧
       ((∀ nextArgs, I (n + 1) nextArgs →
-          EvaluatesApply ctx (whileRef opName condName bodyName stateTys resultTy)
+          EvalTriple.Exact.EvaluatesApply ctx
+            (whileRef opName condName bodyName stateTys resultTy)
             nextArgs loopResult) →
-        EvaluatesCall ctx bodyName
+        EvalTriple.Exact.EvaluatesCallValues ctx bodyName
           (args ++ [whileRef opName condName bodyName stateTys resultTy]) loopResult))
     (exits : ∀ args, I N args →
-      EvaluatesCall ctx condName args (Val.bool false) ∧ args.head? = some loopResult) :
-    EvaluatesApply ctx (whileRef opName condName bodyName stateTys resultTy)
+      EvalTriple.Exact.EvaluatesCallValues ctx condName args (Val.bool false) ∧
+        args.head? = some loopResult) :
+    EvalTriple.Exact.EvaluatesApply ctx (whileRef opName condName bodyName stateTys resultTy)
       initial loopResult := by
-  apply EvaluatesApply.loop init
+  apply EvalTriple.Exact.EvaluatesApply.loop init
   · intro n args hn hI hnext
     obtain ⟨hcond, hbody⟩ := preserved n args hn hI
     have htys := typed n args hI
@@ -571,19 +623,25 @@ theorem while_invariant {ctx : Ctx} [Peano.Types ctx.primCtx]
       | nil => exact (hne rfl).elim
       | cons head tail => exact ⟨head, tail, rfl⟩
     have hhead : args.head? = some head := by simp [hargs]
-    have hcondApply : EvaluatesApply ctx (whileCondRef condName stateTys) args
-        (Val.bool true) := EvaluatesApply.blockRef hcond
-    have hbodyApply : EvaluatesApply ctx (whileBodyRef bodyName stateTys resultTy)
+    have hcondApply : EvalTriple.Exact.EvaluatesApply ctx
+        (whileCondRef condName stateTys) args (Val.bool true) :=
+      EvalTriple.Exact.EvaluatesApply.blockRef hcond
+    have hbodyApply : EvalTriple.Exact.EvaluatesApply ctx
+        (whileBodyRef bodyName stateTys resultTy)
         (args ++ [whileRef opName condName bodyName stateTys resultTy]) loopResult :=
-      EvaluatesApply.blockRef (hbody hnext)
-    apply EvaluatesApply.opRef
+      EvalTriple.Exact.EvaluatesApply.blockRef (hbody hnext)
+    apply EvalTriple.Exact.EvaluatesApply.opRef
       (body := Op.Body.collect (Op.whileBodyFromValues (primCtx := ctx.primCtx) opName)
         (2 + args.length) []) hop
+    · rfl
     · have hthree : 3 ≤ 2 + args.length := by
         cases args with
         | nil => exact (hne rfl).elim
         | cons => simp; omega
-      simp [Op.whileOp, hthree]
+      change (if 3 ≤ 2 + args.length then
+        some (Op.Body.collect (Op.whileBodyFromValues (primCtx := ctx.primCtx) opName)
+          (2 + args.length) []) else none) = _
+      rw [if_pos hthree]
     · intro env base
       have hout : Op.whileResultTy? (primCtx := ctx.primCtx)
           (.func stateTys Peano.BoolTy ::
@@ -591,12 +649,15 @@ theorem while_invariant {ctx : Ctx} [Peano.Types ctx.primCtx]
             some resultTy := by
         simp [Op.whileResultTy?, hheadTy]
       obtain ⟨bodyStart, hbodyDrive, hbodyFrom⟩ :=
-        EvaluatesFrom.driveOp_apply (env := env) (stack := base) (operands := [])
+        EvalTriple.Exact.EvaluatesFrom.driveOp_apply
+          (env := env) (stack := base) (operands := [])
           (resume := fun value => .done value) hbodyApply
-          (hdrive := by simp [EvalState.driveOp])
-          (EvaluatesFrom.done (ctx := ctx) (value := loopResult) (scope := env) (base := base))
+          (hdrive := by simp [Machine.driveOp])
+          (EvalTriple.Exact.EvaluatesFrom.done
+            (ctx := ctx) (value := loopResult) (scope := env) (base := base))
       obtain ⟨condStart, hcondDrive, hcondFrom⟩ :=
-        EvaluatesFrom.driveOp_apply (env := env) (stack := base) (operands := [])
+        EvalTriple.Exact.EvaluatesFrom.driveOp_apply
+          (env := env) (stack := base) (operands := [])
           (resume := fun condition =>
             match condition.asBool? with
             | some false => .done head
@@ -610,7 +671,7 @@ theorem while_invariant {ctx : Ctx} [Peano.Types ctx.primCtx]
       have hlen :
           ([whileCondRef condName stateTys, whileBodyRef bodyName stateTys resultTy] ++ args).length =
             2 + args.length := by simp; omega
-      rw [EvalState.driveOp_collect _ _ _ hlen]
+      rw [Machine.driveOp_collect _ _ _ hlen]
       have hfinish :
           Op.whileBodyFromValues (primCtx := ctx.primCtx) opName
               ([whileCondRef condName stateTys, whileBodyRef bodyName stateTys resultTy] ++ args) =
@@ -637,16 +698,21 @@ theorem while_invariant {ctx : Ctx} [Peano.Types ctx.primCtx]
       intro hnil
       subst args
       simp at hhead
-    have hcondApply : EvaluatesApply ctx (whileCondRef condName stateTys) args
-        (Val.bool false) := EvaluatesApply.blockRef hcond
-    apply EvaluatesApply.opRef
+    have hcondApply : EvalTriple.Exact.EvaluatesApply ctx
+        (whileCondRef condName stateTys) args (Val.bool false) :=
+      EvalTriple.Exact.EvaluatesApply.blockRef hcond
+    apply EvalTriple.Exact.EvaluatesApply.opRef
       (body := Op.Body.collect (Op.whileBodyFromValues (primCtx := ctx.primCtx) opName)
         (2 + args.length) []) hop
+    · rfl
     · have hthree : 3 ≤ 2 + args.length := by
         cases args with
         | nil => exact (hne rfl).elim
         | cons => simp; omega
-      simp [Op.whileOp, hthree]
+      change (if 3 ≤ 2 + args.length then
+        some (Op.Body.collect (Op.whileBodyFromValues (primCtx := ctx.primCtx) opName)
+          (2 + args.length) []) else none) = _
+      rw [if_pos hthree]
     · intro env base
       have hout : Op.whileResultTy? (primCtx := ctx.primCtx)
           (.func stateTys Peano.BoolTy ::
@@ -654,7 +720,8 @@ theorem while_invariant {ctx : Ctx} [Peano.Types ctx.primCtx]
             some resultTy := by
         simp [Op.whileResultTy?, hheadTy]
       obtain ⟨condStart, hcondDrive, hcondFrom⟩ :=
-        EvaluatesFrom.driveOp_apply (env := env) (stack := base) (operands := [])
+        EvalTriple.Exact.EvaluatesFrom.driveOp_apply
+          (env := env) (stack := base) (operands := [])
           (resume := fun condition =>
             match condition.asBool? with
             | some false => .done loopResult
@@ -662,13 +729,14 @@ theorem while_invariant {ctx : Ctx} [Peano.Types ctx.primCtx]
                 .apply (whileBodyRef bodyName stateTys resultTy)
                   (args ++ [whileRef opName condName bodyName stateTys resultTy]) .done
             | none => .fail) hcondApply
-          (hdrive := by simp only [Val.asBool?_bool, EvalState.driveOp])
-          (EvaluatesFrom.done (ctx := ctx) (value := loopResult) (scope := env) (base := base))
+          (hdrive := by simp only [Val.asBool?_bool, Machine.driveOp])
+          (EvalTriple.Exact.EvaluatesFrom.done
+            (ctx := ctx) (value := loopResult) (scope := env) (base := base))
       refine ⟨condStart, ?_, hcondFrom⟩
       have hlen :
           ([whileCondRef condName stateTys, whileBodyRef bodyName stateTys resultTy] ++ args).length =
             2 + args.length := by simp; omega
-      rw [EvalState.driveOp_collect _ _ _ hlen]
+      rw [Machine.driveOp_collect _ _ _ hlen]
       have hfinish :
           Op.whileBodyFromValues (primCtx := ctx.primCtx) opName
               ([whileCondRef condName stateTys, whileBodyRef bodyName stateTys resultTy] ++ args) =
@@ -691,27 +759,29 @@ theorem while_invariant {ctx : Ctx} [Peano.Types ctx.primCtx]
 
 /- The term-level entry rule for `while`. The initial operands are evaluated by the enclosing
 operator; recursive iterations use the continuation specification from `while_invariant`. -/
-theorem while_evaluatesTo {ctx : Ctx} [Peano.Types ctx.primCtx]
+@[eval_semantic, zspec] theorem while_evaluatesTo {ctx : Ctx} {hM : ctx.M = Id} [Peano.Types ctx.primCtx]
     {opName condName bodyName : String} {stateTys : List Ty} {resultTy : Ty}
     {I : Nat → List (Val ctx.primCtx) → Prop} {N : Nat}
     {initial : List (Val ctx.primCtx)} {loopResult : Val ctx.primCtx}
     {env : Env ctx.primCtx} {operands : List (Term ctx.primCtx)}
     (hop : ctx.opCtx.get? opName = some (Op.whileOp (primCtx := ctx.primCtx)))
-    (hargs : EvaluatesToAll ctx env operands
+    (hargs : EvalTriple.Exact.EvaluatesList ctx env operands
       ([whileCondRef condName stateTys, whileBodyRef bodyName stateTys resultTy] ++ initial))
     (hheadTy : stateTys.head? = some resultTy)
     (init : I 0 initial)
     (typed : ∀ n args, I n args → args.map Val.ty = stateTys)
     (preserved : ∀ n args, n < N → I n args →
-      EvaluatesCall ctx condName args (Val.bool true) ∧
+      EvalTriple.Exact.EvaluatesCallValues ctx condName args (Val.bool true) ∧
       ((∀ nextArgs, I (n + 1) nextArgs →
-          EvaluatesApply ctx (whileRef opName condName bodyName stateTys resultTy)
+          EvalTriple.Exact.EvaluatesApply ctx
+            (whileRef opName condName bodyName stateTys resultTy)
             nextArgs loopResult) →
-        EvaluatesCall ctx bodyName
+        EvalTriple.Exact.EvaluatesCallValues ctx bodyName
           (args ++ [whileRef opName condName bodyName stateTys resultTy]) loopResult))
     (exits : ∀ args, I N args →
-      EvaluatesCall ctx condName args (Val.bool false) ∧ args.head? = some loopResult) :
-    EvaluatesTo ctx env (.op opName operands) loopResult := by
+      EvalTriple.Exact.EvaluatesCallValues ctx condName args (Val.bool false) ∧
+        args.head? = some loopResult) :
+    EvalTriple.Exact.EvaluatesTo ctx env (.op opName operands) loopResult := by
   have htys := typed 0 initial init
   have hne : initial ≠ [] := by
     intro hnil
@@ -722,14 +792,16 @@ theorem while_evaluatesTo {ctx : Ctx} [Peano.Types ctx.primCtx]
     cases initial with
     | nil => exact (hne rfl).elim
     | cons => simp
-  apply EvaluatesTo.op_collect_of_opRef
+  apply EvalTriple.Exact.EvaluatesTo.op_collect_of_opRef
       (captured := [whileCondRef condName stateTys,
         whileBodyRef bodyName stateTys resultTy])
       (args := initial) (argTys := stateTys) (outTy := resultTy)
       (finish := Op.whileBodyFromValues (primCtx := ctx.primCtx) opName)
-      hop (by simp [Op.whileOp]; omega) hargs
+      hop rfl (by simp [Op.whileOp]; omega) hargs
   exact while_invariant (I := I) (N := N) (loopResult := loopResult)
     hop hheadTy init typed preserved exits
+
+end Exact
 
 end Peano
 
