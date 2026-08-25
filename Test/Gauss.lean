@@ -67,8 +67,7 @@ def sumTo : Nat → Nat
 | n + 1 => sumTo n + (n + 1)
 
 def runGauss (n : Nat) : Option Nat :=
-  (EvalState.run gaussCtx 2000 (EvalState.start [] (.call "gauss" [Term.nat n]))).result?.bind
-    Val.asNat?
+  (Machine.evalFuel gaussCtx 2000 [] (.call "gauss" [Term.nat n])).run.bind Val.asNat?
 
 /-- info: [some 0, some 1, some 3, some 6, some 10, some 15, some 21, some 28] -/
 #guard_msgs in

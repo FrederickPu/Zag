@@ -157,15 +157,21 @@ example : EvaluatesInstrs peanoCtx
 
 open Zag.Test.Gauss in
 example : EvaluatesTo gaussCtx [] (.call "gauss" [Term.nat 3]) (Val.nat 6) (hM := rfl) := by
+  have hgauss := Rec.gauss_eval 3
+  change EvalTriple.Exact.EvaluatesCallValues (hM := rfl) gaussCtx "gauss"
+    ([Val.nat 3] : List (Val natCtx)) (Val.nat (Rec.sumTo 3)) at hgauss
   refine EvaluatesTo.call
-    (EvaluatesCallValues.of_eq (Rec.gauss_eval 3) (by
+    (EvaluatesCallValues.of_eq hgauss (by
       rw [show Rec.sumTo 3 = 6 by decide])) rfl ?_
   exact EvaluatesList.cons (evaluates_nat _ 3) EvaluatesList.nil
 
 open Zag.Test.Gauss in
 example : EvaluatesTo gaussCtx [] (.call "gauss" [Term.nat 5]) (Val.nat 15) (hM := rfl) := by
+  have hgauss := Rec.gauss_eval 5
+  change EvalTriple.Exact.EvaluatesCallValues (hM := rfl) gaussCtx "gauss"
+    ([Val.nat 5] : List (Val natCtx)) (Val.nat (Rec.sumTo 5)) at hgauss
   refine EvaluatesTo.call
-    (EvaluatesCallValues.of_eq (Rec.gauss_eval 5) (by
+    (EvaluatesCallValues.of_eq hgauss (by
       rw [show Rec.sumTo 5 = 15 by decide])) rfl ?_
   exact EvaluatesList.cons (evaluates_nat _ 5) EvaluatesList.nil
 

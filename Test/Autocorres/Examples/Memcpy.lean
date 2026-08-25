@@ -1,5 +1,4 @@
 import Test.Autocorres.Examples.Common
-import HeapAlgebra.Peano
 
 /-!
 Upstream C / AutoCorres `memcpy` example.
@@ -103,9 +102,6 @@ theorem memcpyLoopModel_eq_copy (h : Heap) (dst src : Ptr) (len : Nat) :
 
 /-! ### HeapAlgebra meaning of `Heap.copy` (loop's net effect) -/
 
-def range (base len : Nat) : Region :=
-  Set.Ico base (base + len)
-
 def MemcpySeparated (dst src : Ptr) (len : Nat) : Prop :=
   noOverlap (range dst.addr len) (range src.addr len)
 
@@ -185,24 +181,6 @@ theorem Heap.read_copy_dst (h : Heap) (dst src : Ptr) (len i : Nat)
           have : dst.addr + (i + 1) = dst.addr + 1 + i := by omega
           rw [this]; exact ih''.trans hsrc'
 
-def segment (base len : Nat) (contents : Nat → Nat) :
-    HProp Heap OwnedPtr Region (fun _ => Nat) where
-  region := range base len
-  holds h := ∀ i, i < len → Heap.read h ⟨base + i⟩ = contents i
-  supported := by
-    intro h h' hd
-    constructor
-    · intro hh i hi
-      have hmem : base + i ∈ range base len := by simp [range, Set.mem_Ico]; omega
-      have : Heap.read h ⟨base + i⟩ = Heap.read h' ⟨base + i⟩ := by
-        by_contra hneq; exact Set.disjoint_right.mp hd hmem hneq
-      exact this ▸ hh i hi
-    · intro hh i hi
-      have hmem : base + i ∈ range base len := by simp [range, Set.mem_Ico]; omega
-      have : Heap.read h ⟨base + i⟩ = Heap.read h' ⟨base + i⟩ := by
-        by_contra hneq; exact Set.disjoint_right.mp hd hmem hneq
-      exact this ▸ hh i hi
-
 /-- `src`-span holds `contents`, `dst`-span holds `dstOld` (only ownership of `dst` matters). -/
 def memcpyPre (dst src : Ptr) (len : Nat) (contents dstOld : Nat → Nat) :
     HProp Heap OwnedPtr Region (fun _ => Nat) :=
@@ -212,17 +190,6 @@ def memcpyPre (dst src : Ptr) (len : Nat) (contents dstOld : Nat → Nat) :
 def memcpyPost (dst src : Ptr) (len : Nat) (contents : Nat → Nat) :
     HProp Heap OwnedPtr Region (fun _ => Nat) :=
   segment dst.addr len contents ∗ segment src.addr len contents
-
-/-- 1-cell owned pointer — enables HeapAlgebra `↦`. -/
-def cell (p : Ptr) : OwnedPtr :=
-  ⟨p, 1, Nat.one_pos⟩
-
-/-- One-cell points-to via HeapAlgebra `↦` (value type `Nat`). -/
-abbrev pointsToVal (p : Ptr) (v : Nat) : HProp Heap OwnedPtr Region (fun _ => Nat) :=
-  HProp.pointsTo (Value := fun _ : OwnedPtr => Nat) (cell p) v
-
-/-- Local `↦` on plain `Ptr` cells (desugars to `cell p ↦ v`). -/
-scoped infix:55 " ↦ " => pointsToVal
 
 theorem memcpy_correct_sep (dst src : Ptr) (len : Nat) (contents dstOld : Nat → Nat)
     (h : Heap) (hp : (memcpyPre dst src len contents dstOld).holds h) :
@@ -558,10 +525,6 @@ private theorem memcpyInt_evaluates_state (heap : Heap) (dst src : Ptr) :
             Block.entryEnv, Scope.get?, Term.nat, termPtr, valPtr, valUnit, asPtr?,
             sizeof_int]
         rfl
-
-private theorem cell_pointsTo_holds (p : Ptr) (v : Nat) (h : Heap) :
-    (pointsToVal p v).holds h ↔ Heap.read h p = v := by
-  simp [pointsToVal, HProp.pointsTo, cell, HeapAlgebra.load]
 
 private theorem cell_span (p : Ptr) :
     (cell p).span = range p.addr 1 := by

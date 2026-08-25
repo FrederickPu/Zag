@@ -1,84 +1,147 @@
 import Meta.UnifyType
-import Meta.Eval
+import Meta.Eval.VC
 import Lib.PeanoHeap
 
 /-!
-`State(a)` is one arity-1 primitive, not a family of hand-rolled result types. What that buys is
-checked here: a single `mkState`/`stateHeap`/`stateValue` triple types at every payload,
-including payloads (`Bool`, `Array`, a nested `State`) that no program in the tree returns and
-for which no operator was ever written.
-
-These are typing checks. Evaluating the state operators is not checked, here or anywhere: their
-`Op.Signature` decodes the payload from the operand type, so running one goes through a `cast`
-across `Ty.type`, which is `Type`-valued and well-founded and therefore does not reduce. The
-nine operators these three replaced had no evaluation tests either.
+Regression tests for the ambient Peano heap. Heap state is supplied only to `StateM`; block
+parameters and results are ordinary object-language payloads.
 -/
 
 namespace Zag.Test.Heap
 
 open Zag Zag.Lib.PeanoHeap
 
-abbrev heapProgram : Ctx := mkCtx [] (by decide)
-
-/-! ### the payload is decoded from the operand type -/
-
-example : heapProgram.opCtx.outTy? "mkState" [HeapTy, NatTy] = some (StateTy NatTy) := by rfl
-example : heapProgram.opCtx.outTy? "mkState" [HeapTy, BoolTy] = some (StateTy BoolTy) := by rfl
-example : heapProgram.opCtx.outTy? "mkState" [HeapTy, PtrTy] = some (StateTy PtrTy) := by rfl
-example : heapProgram.opCtx.outTy? "mkState" [HeapTy, ArrayTy] = some (StateTy ArrayTy) := by rfl
-
-/-- Nothing about the payload is special-cased, so a `State` may carry a `State`. -/
-example : heapProgram.opCtx.outTy? "mkState" [HeapTy, StateTy BoolTy] =
-    some (StateTy (StateTy BoolTy)) := by rfl
-
-example : heapProgram.opCtx.outTy? "stateHeap" [StateTy NatTy] = some HeapTy := by rfl
-example : heapProgram.opCtx.outTy? "stateHeap" [StateTy ArrayTy] = some HeapTy := by rfl
-example : heapProgram.opCtx.outTy? "stateValue" [StateTy NatTy] = some NatTy := by rfl
-example : heapProgram.opCtx.outTy? "stateValue" [StateTy PtrTy] = some PtrTy := by rfl
-example : heapProgram.opCtx.outTy? "stateValue" [StateTy (StateTy PtrTy)] =
-    some (StateTy PtrTy) := by rfl
-
-/-! ### and it is still a real constraint -/
-
-/-- The first operand of `mkState` must be a heap. -/
-example : heapProgram.opCtx.outTy? "mkState" [NatTy, NatTy] = none := by rfl
-
-/-- A projection's operand must be a `State`, not merely anything. -/
-example : heapProgram.opCtx.outTy? "stateValue" [NatTy] = none := by rfl
-example : heapProgram.opCtx.outTy? "stateHeap" [HeapTy] = none := by rfl
-
-/-- Arity is still checked. -/
-example : heapProgram.opCtx.outTy? "mkState" [HeapTy] = none := by rfl
-example : heapProgram.opCtx.outTy? "stateValue" [StateTy NatTy, NatTy] = none := by rfl
-
-/-! ### a block returning `State(a)` type-checks at more than one payload -/
-
-abbrev stateBlocks : BlockCtx.Raw heapCtx :=
+abbrev heapBlocks : BlockCtx.Raw heapCtx :=
   blocks% [
-    storeThenRead(heap : Heap, ptr : Ptr, value : Nat) : State[Nat] {
-      written := op "store"[heap, ptr, value];
-      readBack := op "load"[written, ptr];
-      ret op "mkState"[written, readBack]
+    storeThenRead(ptr : Ptr, value : Nat) : Nat {
+      ignored := op "store"[ptr, value];
+      ret op "load"[ptr]
     },
-    allocThenReturn(heap : Heap, size : Nat) : State[Ptr] {
-      ptr := op "allocPtr"[heap, size];
-      grown := op "allocHeap"[heap, size];
-      ret op "mkState"[grown, ptr]
-    },
-    unwrap(state : State[Nat]) : Nat {
-      ret op "stateValue"[state]
-    },
-    rewrap(state : State[Nat]) : State[Nat] {
-      heap := op "stateHeap"[state];
-      value := op "stateValue"[state];
-      ret op "mkState"[heap, op "add"[value, nat(1)]]
+    allocStoreRead(size : Nat, value : Nat) : Nat {
+      ptr := op "allocPtr"[size];
+      ignored := op "store"[ptr, value];
+      ret op "load"[ptr]
     }
   ]
 
-theorem stateBlocksValid : BlockCtx.Valid stateBlocks := by valid_blocks [stateBlocks]
+theorem heapBlocksValid : BlockCtx.Valid heapBlocks := by
+  valid_blocks [heapBlocks]
 
-abbrev stateCtx : Ctx := mkCtx stateBlocks stateBlocksValid
+abbrev heapProgram : Ctx := mkCtx heapBlocks heapBlocksValid
 
-theorem stateCtx_wellTyped : Ctx.WellTyped stateCtx := by typecheck_ctx
+theorem heapProgram_wellTyped : Ctx.WellTyped heapProgram := by
+  typecheck_ctx
+
+example : heapProgram.opCtx.outTy? "load" [PtrTy] = some NatTy := by rfl
+example : heapProgram.opCtx.outTy? "store" [PtrTy, NatTy] = some UnitTy := by rfl
+example : heapProgram.opCtx.outTy? "allocPtr" [NatTy] = some PtrTy := by rfl
+example : heapProgram.opCtx.outTy? "load" [PtrTy, NatTy] = none := by rfl
+example : heapProgram.opCtx.outTy? "store" [PtrTy] = none := by rfl
+
+/-- The machine sequences allocation, write, and read through `OptionT.bind`. -/
+private def allocStoreReadRun : Option (Val heapCtx) × Heap :=
+  (Machine.evalFuel heapProgram 100 []
+    (.call "allocStoreRead" [.nat 2, .nat 41])).run Heap.empty
+
+theorem allocStoreReadRun_eq :
+    (match allocStoreReadRun with
+      | (some value, heap) => (value.asNat?, heap)
+      | (none, heap) => (none, heap)) =
+    (some 41, Heap.write (Heap.allocHeap Heap.empty 2) (Heap.allocPtr Heap.empty) 41) := by
+  native_decide
+
+private theorem allocStoreReadRun_raw :
+    allocStoreReadRun =
+      (some (Val.nat 41),
+        Heap.write (Heap.allocHeap Heap.empty 2) (Heap.allocPtr Heap.empty) 41) := by
+  have h := allocStoreReadRun_eq
+  cases hrun : allocStoreReadRun with
+  | mk value? heap =>
+      cases value? with
+      | none => simp [hrun] at h
+      | some value =>
+          simp [hrun] at h
+          have hvalue : value.asNat? = some 41 := h.1
+          have hheap : heap =
+              Heap.write (Heap.allocHeap Heap.empty 2) (Heap.allocPtr Heap.empty) 41 := h.2
+          rw [Val.eq_nat_of_asNat? hvalue, hheap]
+
+/-- The bounded execution certifies an effectful surface call, including its final heap. -/
+theorem allocStoreRead_evaluates :
+    EvalTriple.State.EvaluatesCall heapCtx heapOpCtx
+      (checkedBlocks heapBlocks heapBlocksValid)
+      "allocStoreRead" [.nat 2, .nat 41] Heap.empty (Val.nat 41)
+      (Heap.write (Heap.allocHeap Heap.empty 2) (Heap.allocPtr Heap.empty) 41) := by
+  apply EvalTriple.State.EvaluatesFrom.of_evalConfigFuel
+  change allocStoreReadRun = _
+  exact allocStoreReadRun_raw
+
+/-! ### Non-local exits -/
+
+private abbrev exitBlocks : BlockCtx.Raw heapCtx :=
+  blocks% [
+    target() : Nat {
+      ret nat(0)
+    },
+    matching() : Nat {
+      ptr := op "allocPtr"[nat(1)];
+      before := op "store"[ptr, nat(41)];
+      escaped := exit matching (op "load"[ptr]);
+      after := op "store"[ptr, nat(99)];
+      ret nat(0)
+    },
+    escaping() : Nat {
+      ptr := op "allocPtr"[nat(1)];
+      before := op "store"[ptr, nat(7)];
+      escaped := exit target (op "load"[ptr]);
+      after := op "store"[ptr, nat(99)];
+      ret nat(0)
+    }
+  ]
+
+private theorem exitBlocksValid : BlockCtx.Valid exitBlocks := by
+  valid_blocks [exitBlocks]
+
+private abbrev exitProgram : Ctx := mkCtx exitBlocks exitBlocksValid
+
+private def observeHeapRun (run : Option (Val heapCtx) × Heap) : Option Nat × Heap :=
+  match run with
+  | (some value, heap) => (value.asNat?, heap)
+  | (none, heap) => (none, heap)
+
+private abbrev matchingFinalHeap : Heap :=
+  Heap.write (Heap.allocHeap Heap.empty 1) (Heap.allocPtr Heap.empty) 41
+
+private abbrev escapingFinalHeap : Heap :=
+  Heap.write (Heap.allocHeap Heap.empty 1) (Heap.allocPtr Heap.empty) 7
+
+/-- A matching exit returns its evaluated payload and skips both the later store and block result. -/
+theorem matchingExit_machine_run :
+    observeHeapRun
+      ((Machine.evalFuel exitProgram 100 [] (.call "matching" [])).run Heap.empty) =
+      (some 41, matchingFinalHeap) := by
+  native_decide
+
+/-- A nonmatching exit reaches the public boundary as failure after retaining prior heap effects. -/
+theorem nonmatchingExit_machine_failure_preserves_heap :
+    observeHeapRun
+      ((Machine.evalFuel exitProgram 100 [] (.call "escaping" [])).run Heap.empty) =
+      (none, escapingFinalHeap) := by
+  native_decide
+
+/-- The same state transition stated without exposing any machine fuel. -/
+private def heapSequence : StateM Heap Nat := do
+  let ptr ← alloc 2
+  store ptr 41
+  load ptr
+
+@[zspec] theorem heapSequence_spec :
+    Std.Do.Triple heapSequence
+      (fun heap => ULift.up (heap = Heap.empty))
+      (Std.Do.PostCond.noThrow (ps := .arg Heap .pure) fun result finalHeap =>
+        ULift.up (result = 41 ∧
+          finalHeap = Heap.write (Heap.allocHeap Heap.empty 2) (Heap.allocPtr Heap.empty) 41)) := by
+  zvcgen [heapSequence, alloc, store, load, Heap.read, Heap.write, Heap.allocPtr,
+    Heap.allocHeap, Heap.zeroCells, Heap.empty]
 
 end Zag.Test.Heap

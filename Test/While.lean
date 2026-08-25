@@ -1,4 +1,5 @@
 import Test.Autocorres.Examples.Common
+import Meta.Peano.Eval
 
 /-!
  Loops written as ordinary resumable operators rather than as self-recursive blocks.
@@ -7,7 +8,7 @@ As in `plusLoop` from `Plus.lean`, re-entry comes from an `opRef` passed to the 
 `while` operator applies the condition, then the body applies that continuation to its next state.
 
 `tail_induction` has nothing to say about such a loop -- there is no recursive call to induct on.
-`while_induction` is its replacement: an invariant indexed by the iteration, plus the iteration
+`zspec whileInduction` handles it with an invariant indexed by the iteration, plus the iteration
 count at which the condition goes false, supplied separately rather than extracted from a
 decreasing measure.
 -/
@@ -15,6 +16,9 @@ decreasing measure.
 namespace Zag.Test.While
 
 open Zag Zag.Lib.PeanoHeap
+open Zag.EvalTriple.Exact
+
+private abbrev heapOpCtx := Zag.Test.Autocorres.Examples.pureHeapOpCtx
 
 /-! ### counting down
 
@@ -38,38 +42,88 @@ abbrev whileBlocks : BlockCtx.Raw heapCtx :=
 
 theorem whileBlocksValid : BlockCtx.Valid whileBlocks := by valid_blocks [whileBlocks]
 
-abbrev whileCtx : Ctx := mkCtx whileBlocks whileBlocksValid
+abbrev whileCtx : Ctx := Zag.Test.Autocorres.Examples.mkPureCtx whileBlocks whileBlocksValid
 
 theorem whileCtx_wellTyped : Ctx.WellTyped whileCtx := by typecheck_ctx
-
-/-- Counting `5` down to `0`: five iterations of `cond`/`body`, then `cond` answers `false` and
-   the operator finishes with the current state value. Concrete, so the machine can
-  simply be run. -/
-theorem countDown_eval :
-    EvaluatesCall whileCtx "countDown" ([Val.nat 5] : List (Val heapCtx)) (Val.nat 0) := by
-  evaluates_call [heapOpCtx, Op.fixed, Op.whileOp, Op.Body.collect,
-    Op.whileBodyFromValues, Op.whileAfterCondition, Op.whileResultTy?, whileBlocks]
 
 /-- The same loop from a *symbolic* start, which no amount of running will settle. The invariant
   is `start - k` after `k` iterations; termination is `start` iterations. Nothing but `init` is
   left over, and no machine state is ever surfaced. -/
 theorem countDown_eval_gen (s : Nat) :
-    EvaluatesCall whileCtx "countDown" ([Val.nat s] : List (Val heapCtx)) (Val.nat 0) := by
-  while_induction [heapOpCtx, Op.fixed, whileBlocks]
-    (fun k args => args = [Val.nat (s - k)]) stopping_at s returning (Val.nat 0)
+    EvaluatesCallValues whileCtx "countDown" ([Val.nat s] : List (Val heapCtx)) (Val.nat 0) := by
+  apply EvaluatesCallValues.of_evaluatesInstrs
+  · rfl
+  · rfl
+  dsimp [whileBlocks, Block.entryEnv]
+  apply EvaluatesInstrs.cons
+  · apply Peano.Exact.while_evaluatesTo (hM := rfl)
+      (condName := "countDownCond") (bodyName := "countDownBody")
+      (stateTys := [Peano.NatTy]) (resultTy := Peano.NatTy)
+      (I := fun k args => args = [Val.nat (s - k)]) (N := s)
+      (initial := [Val.nat s]) (loopResult := Val.nat 0)
+    auto_eval_refinement_goals [heapOpCtx, Op.fixed, whileBlocks]
+    all_goals try rfl
+    · exact EvaluatesList.cons (by
+        apply EvaluatesTo.of_eq
+          (EvaluatesTo.var_block (ctx := whileCtx) (env := [("start", Val.nat s)])
+            (name := "countDownCond") (hM := rfl) (by rfl) (by rfl))
+        rfl)
+        (EvaluatesList.cons (by
+          apply EvaluatesTo.of_eq
+            (EvaluatesTo.var_block (ctx := whileCtx) (env := [("start", Val.nat s)])
+              (name := "countDownBody") (hM := rfl) (by rfl) (by rfl))
+          rfl)
+          (EvaluatesList.cons (EvaluatesTo.var_local (hM := rfl) (by rfl)) EvaluatesList.nil))
+    · intro k hk
+      constructor
+      · apply EvaluatesCallValues.of_evaluatesInstrs
+        · rfl
+        · rfl
+        dsimp [whileBlocks, Block.entryEnv]
+        apply EvaluatesInstrs.nil
+        apply EvaluatesTo.of_eq
+          (evaluates_gt_nat
+            (EvaluatesTo.var_local (hM := rfl) (by rfl))
+            (evaluates_nat (hM := rfl) _ 0))
+        simp
+        omega
+      · intro hloop
+        apply EvaluatesCallValues.of_evaluatesInstrs
+        · rfl
+        · rfl
+        dsimp [whileBlocks, Block.entryEnv]
+        refine EvaluatesInstrs.cons (instrValue := Val.nat (s - (k + 1))) ?_ ?_
+        · apply EvaluatesTo.of_eq
+            (evaluates_sub_nat
+              (EvaluatesTo.var_local (hM := rfl) (by rfl))
+              (evaluates_nat (hM := rfl) _ 1))
+          simp [Nat.sub_sub]
+        apply EvaluatesInstrs.nil
+        exact EvaluatesTo.app
+          (EvaluatesTo.var_local (hM := rfl) (by rfl))
+          (EvaluatesList.cons (EvaluatesTo.var_local (hM := rfl) (by rfl)) EvaluatesList.nil)
+          hloop
+    · apply EvaluatesCallValues.of_evaluatesInstrs
+      · rfl
+      · rfl
+      dsimp [whileBlocks, Block.entryEnv]
+      apply EvaluatesInstrs.nil
+      simpa using evaluates_gt_nat
+        (ctx := whileCtx) (env := [("n", Val.nat 0)])
+        (EvaluatesTo.var_local (ctx := whileCtx) (env := [("n", Val.nat 0)])
+          (name := "n") (value := Val.nat 0) (hM := rfl) (by rfl))
+        (evaluates_nat (ctx := whileCtx) (env := [("n", Val.nat 0)]) (hM := rfl) 0)
+  · exact EvaluatesInstrs.nil (EvaluatesTo.var_local (by rfl))
 
-/-- `while_induction?` walks exactly as `while_induction` does but stops at the obligations
-  instead of discharging them. What it shows is stated in `Nat`: no `EvaluatesFrom`, no machine
-  state, no `Val` wrappers. -/
+/-- Counting `5` down to `0`, as a concrete specialization of the symbolic loop proof. -/
+theorem countDown_eval :
+    EvaluatesCallValues whileCtx "countDown" ([Val.nat 5] : List (Val heapCtx)) (Val.nat 0) := by
+  exact countDown_eval_gen 5
+
+/-- The symbolic exact proof packages all machine details behind the arithmetic invariant. -/
 example (s : Nat) :
-    EvaluatesCall whileCtx "countDown" ([Val.nat s] : List (Val heapCtx)) (Val.nat 0) := by
-  while_induction? [heapOpCtx, Op.fixed, whileBlocks]
-    (fun k args => args = [Val.nat (s - k)]) stopping_at s returning (Val.nat 0)
-  -- ⊢ s - s = 0, ⊢ s - iter - 1 = s - (iter + 1), ⊢ 1 ≤ s - iter, ⊢ s = s - 0
-  case init => omega
-  case step.condition => omega
-  case step.preservation => all_goals omega
-  case termination => all_goals omega
+    EvaluatesCallValues whileCtx "countDown" ([Val.nat s] : List (Val heapCtx)) (Val.nat 0) := by
+  exact countDown_eval_gen s
 
 /-! ### an invariant that is not arithmetic
 
@@ -94,7 +148,7 @@ abbrev halveBlocks : BlockCtx.Raw heapCtx :=
 
 theorem halveBlocksValid : BlockCtx.Valid halveBlocks := by valid_blocks [halveBlocks]
 
-abbrev halveCtx : Ctx := mkCtx halveBlocks halveBlocksValid
+abbrev halveCtx : Ctx := Zag.Test.Autocorres.Examples.mkPureCtx halveBlocks halveBlocksValid
 
 theorem halveCtx_wellTyped : Ctx.WellTyped halveCtx := by typecheck_ctx
 
@@ -106,17 +160,74 @@ def halveIter (start : Nat) : Nat → Nat
 theorem halve_eval (s n : Nat)
     (running : ∀ k, k < n → 1 < halveIter s k)
     (stops : halveIter s n = 1) :
-    EvaluatesCall halveCtx "halve" ([Val.nat s] : List (Val heapCtx)) (Val.nat 1) := by
+    EvaluatesCallValues halveCtx "halve" ([Val.nat s] : List (Val heapCtx)) (Val.nat 1) := by
   -- `stops` is picked up by arithmetic cleanup; the running fact and definitional preservation
   -- remain ordinary named premises.
-  while_induction [heapOpCtx, Op.fixed, halveBlocks, halveIter]
-    (fun k args => args = [Val.nat (halveIter s k)]) stopping_at n returning (Val.nat 1)
-  case step.condition => exact running _ ‹_›
-  case step.preservation => change Nat.div _ 2 = Nat.div _ 2; rfl
+  apply EvaluatesCallValues.of_evaluatesInstrs
+  · rfl
+  · rfl
+  dsimp [halveBlocks, Block.entryEnv]
+  apply EvaluatesInstrs.cons
+  · apply Peano.Exact.while_evaluatesTo (hM := rfl)
+      (condName := "halveCond") (bodyName := "halveBody")
+      (stateTys := [Peano.NatTy]) (resultTy := Peano.NatTy)
+      (I := fun k args => args = [Val.nat (halveIter s k)]) (N := n)
+      (initial := [Val.nat s]) (loopResult := Val.nat 1)
+    auto_eval_refinement_goals [heapOpCtx, Op.fixed, halveBlocks, halveIter]
+    all_goals try rfl
+    · exact EvaluatesList.cons (by
+        apply EvaluatesTo.of_eq
+          (EvaluatesTo.var_block (ctx := halveCtx) (env := [("start", Val.nat s)])
+            (name := "halveCond") (hM := rfl) (by rfl) (by rfl))
+        rfl)
+        (EvaluatesList.cons (by
+          apply EvaluatesTo.of_eq
+            (EvaluatesTo.var_block (ctx := halveCtx) (env := [("start", Val.nat s)])
+              (name := "halveBody") (hM := rfl) (by rfl) (by rfl))
+          rfl)
+          (EvaluatesList.cons (EvaluatesTo.var_local (hM := rfl) (by rfl)) EvaluatesList.nil))
+    · intro k hk
+      constructor
+      · apply EvaluatesCallValues.of_evaluatesInstrs
+        · rfl
+        · rfl
+        dsimp [halveBlocks, Block.entryEnv]
+        apply EvaluatesInstrs.nil
+        apply EvaluatesTo.of_eq
+          (evaluates_gt_nat
+            (EvaluatesTo.var_local (hM := rfl) (by rfl))
+            (evaluates_nat (hM := rfl) _ 1))
+        simp
+        exact running k hk
+      · intro hloop
+        apply EvaluatesCallValues.of_evaluatesInstrs
+        · rfl
+        · rfl
+        dsimp [halveBlocks, Block.entryEnv]
+        refine EvaluatesInstrs.cons (instrValue := Val.nat (halveIter s (k + 1))) ?_ ?_
+        · simpa [halveIter] using evaluates_div_nat
+            (EvaluatesTo.var_local (hM := rfl) (by rfl))
+            (evaluates_nat (hM := rfl) _ 2)
+        apply EvaluatesInstrs.nil
+        exact EvaluatesTo.app
+          (EvaluatesTo.var_local (hM := rfl) (by rfl))
+          (EvaluatesList.cons (EvaluatesTo.var_local (hM := rfl) (by rfl)) EvaluatesList.nil)
+          hloop
+    · apply EvaluatesCallValues.of_evaluatesInstrs
+      · rfl
+      · rfl
+      dsimp [halveBlocks, Block.entryEnv]
+      apply EvaluatesInstrs.nil
+      simpa using evaluates_gt_nat
+        (ctx := halveCtx) (env := [("n", Val.nat 1)])
+        (EvaluatesTo.var_local (ctx := halveCtx) (env := [("n", Val.nat 1)])
+          (name := "n") (value := Val.nat 1) (hM := rfl) (by rfl))
+        (evaluates_nat (ctx := halveCtx) (env := [("n", Val.nat 1)]) (hM := rfl) 1)
+  · exact EvaluatesInstrs.nil (EvaluatesTo.var_local (by rfl))
 
 /-- Instantiated: from `100`, six halvings reach `1`. The hypotheses are ordinary `Nat` facts,
   decided here, and nothing about the machine appears in them. -/
-example : EvaluatesCall halveCtx "halve" ([Val.nat 100] : List (Val heapCtx)) (Val.nat 1) :=
+example : EvaluatesCallValues halveCtx "halve" ([Val.nat 100] : List (Val heapCtx)) (Val.nat 1) :=
   halve_eval 100 6 (by decide) (by decide)
 
 /-! ### what ordinary operator typing rejects

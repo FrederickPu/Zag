@@ -1,3 +1,5 @@
+import Std.Do
+
 /-!
 All objects are either a type: `Zag.Ty`
 Or a term: `Zag.Term`
@@ -14,8 +16,8 @@ Everything a term can compute is either an `op` (semantics supplied by the conte
 (semantics supplied by the program). Variables, ops, blocks and primitives are all named by
 `String`; there are no de Bruijn indices.
 
-Typing is a predicate. Evaluation is partial and returns `Option`; termination is expressed by
-successful evaluation, i.e. `∃ v, eval ... = some v`.
+Typing and evaluation are predicates. Termination is characterized by the deep evaluation
+relation.
 -/
 
 namespace Zag
@@ -335,15 +337,17 @@ inductive Op.Body (primCtx : PrimitiveCtx) where
 | apply (fn : Val primCtx) (args : List (Val primCtx))
     (resume : Val primCtx → Op.Body primCtx)
 
-structure Op (primCtx : PrimitiveCtx) where
+structure Op (primCtx : PrimitiveCtx) (M : Type → Type := Id) where
   out : List Ty → Option Ty
   /- The lookup name is supplied so a continuation can re-enter the same context entry. -/
   body : String → Nat → Option (Op.Body primCtx)
+  /- An ambient action consumes already-evaluated operands. Pure operators leave this absent. -/
+  action : String → List (Val primCtx) → Option (M (Option (Val primCtx))) := fun _ _ => none
 
 /- A fixed-arity operator. This keeps ordinary pure operators concise while `body` remains able to
   start variadic operators such as `while`. -/
-def Op.fixed {primCtx : PrimitiveCtx} (arity : Nat) (out : (Fin arity → Ty) → Option Ty)
-    (body : Op.Body primCtx) : Op primCtx where
+def Op.fixed {primCtx : PrimitiveCtx} {M : Type → Type} (arity : Nat)
+    (out : (Fin arity → Ty) → Option Ty) (body : Op.Body primCtx) : Op primCtx M where
   out tys := if h : tys.length = arity then out fun i => tys.get (i.cast h.symm) else none
   body _ actualArity := if actualArity = arity then some body else none
 
@@ -365,6 +369,23 @@ def Op.Body.collect {primCtx : PrimitiveCtx} (finish : List (Val primCtx) → Op
 | remaining + 1, vals => .next true fun
     | some value => collect finish remaining (vals ++ [value])
     | none => .fail
+
+/- An operator whose result is supplied by an action in the context's base monad. Its ordinary
+  body evaluates every operand and then applies an operator reference; `applyValue` performs the
+  action at that point. Thus operand effects happen first and the ambient action runs exactly once. -/
+def Op.effectful {primCtx : PrimitiveCtx} {M : Type → Type} (arity : Nat)
+    (out : (Fin arity → Ty) → Option Ty)
+    (run : List (Val primCtx) → M (Option (Val primCtx))) : Op primCtx M where
+  out tys := if h : tys.length = arity then out fun i => tys.get (i.cast h.symm) else none
+  body name actualArity := if h : actualArity = arity then
+    some (Op.Body.collect (fun vals =>
+      if hvals : vals.length = arity then
+        match out fun i => (vals.get (i.cast hvals.symm)).ty with
+        | some outTy => .apply (.opRef name [] (vals.map Val.ty) outTy) vals .done
+        | none => .fail
+      else .fail) arity [])
+    else none
+  action _ vals := if vals.length = arity then some (run vals) else none
 
 /- type shape and semantics of an operator -/
 structure Op.Signature (primCtx : PrimitiveCtx) (arity : Nat) where
@@ -395,8 +416,8 @@ def eagerBody {primCtx : PrimitiveCtx} {arity : Nat} (sig : Signature primCtx ar
     Nat → List (Val primCtx) → Op.Body primCtx :=
   Op.Body.eager sig.apply
 
-@[simp] def toOp {primCtx : PrimitiveCtx} {arity : Nat} (sig : Signature primCtx arity) :
-    Op primCtx :=
+@[simp] def toOp {primCtx : PrimitiveCtx} {M : Type → Type} {arity : Nat}
+    (sig : Signature primCtx arity) : Op primCtx M :=
   Op.fixed arity (fun tys => (sig.decode tys).map sig.output) (eagerBody sig arity [])
 
 @[simp] def unary {primCtx : PrimitiveCtx} (output : Ty → Ty)
@@ -468,7 +489,7 @@ end Op.Signature
   function": such a function is now just an op, so a term has only one kind of named
   context-supplied operation. -/
 def Op.ofVals {primCtx : PrimitiveCtx} (argTys : List Ty) (outTy : Ty)
-    (interp : List (Val primCtx) → Option (Val primCtx)) : Op primCtx :=
+    {M : Type → Type} (interp : List (Val primCtx) → Option (Val primCtx)) : Op primCtx M :=
   Op.fixed argTys.length (fun tys => if List.ofFn tys = argTys then some outTy else none)
     (Op.Body.eager (fun vals =>
     if vals.map Val.ty = argTys then do
@@ -477,14 +498,14 @@ def Op.ofVals {primCtx : PrimitiveCtx} (argTys : List Ty) (outTy : Ty)
     else none) argTys.length [])
 
 /- operator context: the named operators a term may use -/
-abbrev OpCtx (primCtx : PrimitiveCtx) := List (String × Op primCtx)
+abbrev OpCtx (primCtx : PrimitiveCtx) (M : Type → Type := Id) := List (String × Op primCtx M)
 
-def OpCtx.get? {primCtx : PrimitiveCtx} (opCtx : OpCtx primCtx) (name : String) :
-    Option (Op primCtx) :=
+def OpCtx.get? {primCtx : PrimitiveCtx} {M : Type → Type} (opCtx : OpCtx primCtx M)
+    (name : String) : Option (Op primCtx M) :=
   (opCtx.find? (·.1 = name)).map (·.2)
 
 /- infer an operator's output type -/
-def OpCtx.outTy? {primCtx : PrimitiveCtx} (opCtx : OpCtx primCtx)
+def OpCtx.outTy? {primCtx : PrimitiveCtx} {M : Type → Type} (opCtx : OpCtx primCtx M)
     (name : String) (tys : List Ty) : Option Ty :=
   match opCtx.get? name with
   | some op => op.out tys
@@ -595,8 +616,30 @@ end BlockCtx
   blocks. Later fields may depend on the earlier contexts. -/
 structure Ctx where
   primCtx : PrimitiveCtx
-  opCtx : OpCtx primCtx
+  M : Type → Type := Id
+  monad : Monad M := by infer_instance
+  opCtx : OpCtx primCtx M
   blockCtx : BlockCtx primCtx := .empty
+  postShape : Std.Do.PostShape := .pure
+  wpMonad : @Std.Do.WPMonad M postShape monad := by infer_instance
+
+namespace Ctx
+
+instance (ctx : Ctx) : Monad ctx.M := ctx.monad
+
+instance (ctx : Ctx) : Std.Do.WPMonad ctx.M ctx.postShape := ctx.wpMonad
+
+/-- Assertions used by the context's ambient monad and Zag's relational specifications. -/
+abbrev Assertion (ctx : Ctx) := Std.Do.Assertion ctx.postShape
+
+end Ctx
+
+namespace Machine
+
+/-- The machine adds stuck/no-derivation to the context's ambient effects. -/
+abbrev Effect (ctx : Ctx) (α : Type) := OptionT ctx.M α
+
+end Machine
 
 namespace Term
 

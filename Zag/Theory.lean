@@ -4,8 +4,8 @@ import Zag.Data
 `Zag`'s syntax determines which propositions can be stated (only first order statements about terms and types)
 but allows the meta-theory (in this case lean) to determine which of those statements are provable.
 Meaning that depending on the consistency strength of the metatheory different programs will
-provably terminate (see goodstein sequence). Evaluation itself lives in `Zag.EvalState` as a
-fuelled small-step machine.
+provably terminate (see goodstein sequence). Evaluation is defined by the monadic small-step
+machine in `Zag.Machine`.
 -/
 
 namespace Zag
@@ -47,7 +47,7 @@ termination_by _ vals => vals.length
 
 /- Purely apply a named operator along a path that makes no machine application. This is the
   concretization fast path; an executed `Body.apply` returns `none`. -/
-def Op.applyValsAt {primCtx : PrimitiveCtx} (name : String) (oper : Op primCtx)
+def Op.applyValsAt {primCtx : PrimitiveCtx} {M : Type → Type} (name : String) (oper : Op primCtx M)
     (vals : List (Val primCtx)) :
     Option (Val primCtx) :=
   match oper.body name vals.length with
@@ -58,13 +58,13 @@ def Op.applyValsAt {primCtx : PrimitiveCtx} (name : String) (oper : Op primCtx)
     (output : Ty → Ty)
     (run : (input : Ty) → Ty.type primCtx input → Ty.type primCtx (output input))
     (input : Ty) (value : Ty.type primCtx input) :
-    Op.applyValsAt name (Signature.unary output run).toOp [Val.mk input value] =
+    Op.applyValsAt (M := Id) name (Signature.unary output run).toOp [Val.mk input value] =
       some (Val.mk (output input) (run input value)) := by
   simp [Op.applyValsAt, Op.fixed, Signature.toOp, Signature.unary, Signature.eagerBody,
     Op.Body.eager, Signature.apply, Op.Body.applyVals]
 
 /- Apply a *primitive* function value. A block reference or an operator continuation declines here:
-  running either needs the machine, so `EvalState.step` intercepts it before this is reached. -/
+  running either needs the machine, so `Machine.step` intercepts it before this is reached. -/
 def Term.evalApp {primCtx : PrimitiveCtx} (fn : Val primCtx) (args : List (Val primCtx)) :
     Option (Val primCtx) :=
   match fn with

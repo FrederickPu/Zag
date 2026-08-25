@@ -61,3 +61,32 @@ def EvalSemanticAttribute.getEntries (attr : EvalSemanticAttribute)
     (env : Environment) : Array Name :=
   let state := attr.ext.toEnvExtension.getState env
   state.importedEntries.flatMap id ++ state.state
+
+structure ZSpecAttribute where
+  attr : AttributeImpl
+  ext : PersistentEnvExtension Name Name (Array Name)
+deriving Inhabited
+
+/-- Deeply embedded evaluation specifications used by Zag's own VC generator. -/
+initialize zspecAttr : ZSpecAttribute ← do
+  let ext ← registerPersistentEnvExtension {
+    name := `zspecExtension
+    mkInitial := pure #[]
+    addImportedFn := fun _ => pure #[]
+    addEntryFn := fun entries name => entries.push name
+    exportEntriesFn := fun entries => entries
+  }
+  let attr : AttributeImpl := {
+    name := `zspec
+    descr := "register a deeply embedded Zag evaluation specification"
+    add := fun decl stx kind => do
+      Attribute.Builtin.ensureNoArgs stx
+      unless kind == AttributeKind.global do throwAttrMustBeGlobal `zspec kind
+      modifyEnv fun env => ext.addEntry env decl
+  }
+  registerBuiltinAttribute attr
+  pure { attr, ext }
+
+def ZSpecAttribute.getEntries (attr : ZSpecAttribute) (env : Environment) : Array Name :=
+  let state := attr.ext.toEnvExtension.getState env
+  state.importedEntries.flatMap id ++ state.state

@@ -1,4 +1,4 @@
-import Zag.EvalState
+import Zag.EvalTriple
 
 namespace Zag
 
@@ -82,12 +82,14 @@ def ofTerm [Language.Reflects primCtx E] (p : Pr (Term primCtx)) : Pr E :=
 end Pr
 
 def Language.Provable (ctx : Ctx) {E : Type} [Language ctx.primCtx E]
-    (ctxTy : Scope Ty) (ctxTerm : Scope (Term ctx.primCtx)) (p : Pr E) : Prop :=
-  ∃ termPr, p.toTerm? = some termPr ∧ Pr.Provable ctx ctxTy ctxTerm termPr
+    (ctxTy : Scope Ty) (ctxTerm : Scope (Term ctx.primCtx)) (p : Pr E)
+    (hM : ctx.M = Id := by first | assumption | rfl) : Prop :=
+  ∃ termPr, p.toTerm? = some termPr ∧ Pr.Provable ctx ctxTy ctxTerm termPr hM
 
 @[simp] theorem Language.Provable_term {ctx : Ctx} (ctxTy : Scope Ty)
-    (ctxTerm : Scope (Term ctx.primCtx)) (p : Pr (Term ctx.primCtx)) :
-    Language.Provable ctx ctxTy ctxTerm p ↔ Pr.Provable ctx ctxTy ctxTerm p := by
+    (ctxTerm : Scope (Term ctx.primCtx)) (p : Pr (Term ctx.primCtx))
+    {hM : ctx.M = Id} :
+    Language.Provable ctx ctxTy ctxTerm p hM ↔ Pr.Provable ctx ctxTy ctxTerm p hM := by
   simp [Language.Provable]
 
 end Zag

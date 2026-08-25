@@ -76,8 +76,11 @@ theorem plusLoop_eq_of_arg_nat (x : Nat) {t : Term heapCtx}
         ⟨x + n,
           by
             unfold plusLoopTerm
+            have hcall := plusLoop_eval x n
+            change EvalTriple.Exact.EvaluatesCallValues (hM := rfl) plusCtx "plusLoop"
+              ([Val.nat x, Val.nat n] : List (Val heapCtx)) (Val.nat (x + n)) at hcall
             exact EvaluatesTo.call (block := plusBlocks[1].2)
-              (hcall := plusLoop_eval x n) hblock
+              (hcall := hcall) hblock
               (EvaluatesList.cons hnatx (EvaluatesList.cons hn EvaluatesList.nil)),
           by
             unfold plusAddTerm

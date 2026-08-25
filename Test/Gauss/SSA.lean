@@ -10,6 +10,7 @@ namespace Zag.Test.Gauss.SSA
 
 open Zag Zag.Lib.Peano
 open Zag.Test.Gauss
+open Zag.EvalTriple.Exact
 
 abbrev SSAExpr (primCtx : PrimitiveCtx) := Term primCtx
 

@@ -66,10 +66,11 @@ private def loadSpecs : MetaM (Array Name) := do
   pure (evalSemanticAttr.getEntries env ++ zspecAttr.getEntries env |>.reverse)
 
 private def judgmentHeadOf (e : Expr) : MetaM Name := do
-  -- Cheap head (no whnf): peel outer foralls only.
-  let mut t := (← instantiateMVars e).consumeMData
-  while t.isForall do t := t.bindingBody!.consumeMData
-  pure (t.getAppFn.constName?.getD Name.anonymous)
+  let t ← instantiateMVars e
+  withTransparency .reducible do
+    let (_, _, body) ← forallMetaTelescopeReducing t
+    let body ← whnf body.consumeMData
+    pure (body.getAppFn.constName?.getD Name.anonymous)
 
 private def keepProps (gs : List MVarId) : MetaM (List MVarId) := do
   let mut out : List MVarId := []
@@ -97,10 +98,16 @@ private def keepProps (gs : List MVarId) : MetaM (List MVarId) := do
       out := out ++ [g]
   return out
 
-private def tryApply (goal : MVarId) (c : Expr) : MetaM (Option (List MVarId)) := do
+private def tryApply (goal : MVarId) (c : Expr) (rejectOpenEq : Bool := false) :
+    MetaM (Option (List MVarId)) := do
   let saved ← saveState
   try
-    return some (← keepProps (← goal.apply c { newGoals := .all }))
+    let gs ← keepProps (← goal.apply c { newGoals := .all })
+    if rejectOpenEq then
+      for g in gs do
+        let ty ← g.withContext do instantiateMVars (← g.getType)
+        if ty.isAppOfArity ``Eq 3 then restoreState saved; return none
+    return some gs
   catch _ =>
     restoreState saved
     return none
@@ -115,20 +122,21 @@ private def refineOnce (goal : MVarId) (specs : Array Name) :
     let hHead ← judgmentHeadOf ldecl.type
     if hHead == gHead || hHead == Name.anonymous then
       if let some gs ← tryApply goal (mkFVar ldecl.fvarId) then return some gs
-  for name in specs do
-    -- Skip open-ended combinators (they loop under naive apply).
-    let s := name.toString
-    -- Open combinators that recreate the same judgment head (loop under naive apply).
-    if s.endsWith ".bind" || s.endsWith ".split" || s.endsWith ".subst" ||
-        s.endsWith ".consequence" then
-      continue
-    try
-      let c ← mkConstWithFreshMVarLevels name
-      let cHead ← judgmentHeadOf (← inferType c)
-      unless cHead == gHead || cHead == Name.anonymous do continue
-      if let some gs ← tryApply goal c then return some gs
-    catch _ => pure ()
-  let ty := (← instantiateMVars (← goal.getType)).consumeMData
+  for rejectOpenEq in [true, false] do
+    for name in specs do
+      -- Open combinators that recreate the same judgment head loop under naive apply.
+      let s := name.toString
+      if s.endsWith ".bind" || s.endsWith ".split" || s.endsWith ".subst" ||
+          s.endsWith ".consequence" then
+        continue
+      try
+        let c ← mkConstWithFreshMVarLevels name
+        let cHead ← judgmentHeadOf (← inferType c)
+        unless cHead == gHead || cHead == Name.anonymous do continue
+        if let some gs ← tryApply goal c rejectOpenEq then return some gs
+      catch _ => pure ()
+  let ty ← withTransparency .all <|
+    whnf (← instantiateMVars (← goal.getType)).consumeMData
   if ty.isForall then
     let (_, g) ← goal.introNP 1
     return some [g]

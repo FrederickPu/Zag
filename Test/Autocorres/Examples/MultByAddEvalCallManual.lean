@@ -2,7 +2,9 @@ import Test.Autocorres.Examples.MultByAddEvalManual
 
 namespace Zag.Test.Autocorres.Examples
 
-open Zag Zag.Lib.PeanoHeap Zag.EvalTriple.Exact
+open Zag Zag.Lib.PeanoHeap Zag.EvalTriple
+open Zag.EvalTriple.Exact
+open scoped Std.Do
 
 private abbrev heapOpCtx := pureHeapOpCtx
 
@@ -10,9 +12,13 @@ private abbrev heapOpCtx := pureHeapOpCtx
 specification and explicit literal evaluation. -/
 
 theorem multByAdd_eval_call_manual (x y : Nat) :
-    EvaluatesTo multByAddCtx [] (.call "multByAdd" [Term.nat x, Term.nat y])
+    Exact.EvaluatesTo multByAddCtx [] (.call "multByAdd" [Term.nat x, Term.nat y])
       (Val.nat (x * y)) := by
-  apply EvaluatesTo.call (multByAdd_eval_manual x y)
+  have h : Exact.EvaluatesCallValues multByAddCtx "multByAdd"
+      ([Val.nat x, Val.nat y] : List (Val heapCtx)) (Val.nat (x * y)) := by
+    simpa [Exact.EvaluatesCallValues, Exact.pre, Exact.post, Singleton.idPre, Singleton.idPost]
+      using multByAdd_eval_manual x y
+  apply EvaluatesTo.call h
   · rfl
   · exact EvaluatesList.cons
       (evaluates_nat _ x)

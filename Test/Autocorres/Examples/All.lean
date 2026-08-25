@@ -1,55 +1,18 @@
-import Test.Autocorres.Examples.ACRename
-import Test.Autocorres.Examples.Alloc
-import Test.Autocorres.Examples.BinarySearch
-import Test.Autocorres.Examples.CList
-import Test.Autocorres.Examples.ConditionGuard
-import Test.Autocorres.Examples.FactorialTest
-import Test.Autocorres.Examples.FibProof
-import Test.Autocorres.Examples.FunctionInfoDemo
-import Test.Autocorres.Examples.HeapWrap
-import Test.Autocorres.Examples.Incremental
-import Test.Autocorres.Examples.IsPrime
-import Test.Autocorres.Examples.Kmalloc
-import Test.Autocorres.Examples.ListRev
-import Test.Autocorres.Examples.Memcpy
-import Test.Autocorres.Examples.Memset
-import Test.Autocorres.Examples.MultByAdd
-import Test.Autocorres.Examples.Plus
-import Test.Autocorres.Examples.Quicksort
-import Test.Autocorres.Examples.SchorrWaite
-import Test.Autocorres.Examples.Simple
-import Test.Autocorres.Examples.Str2Long
-import Test.Autocorres.Examples.Suzuki
-import Test.Autocorres.Examples.Swap
-import Test.Autocorres.Examples.TraceDemo
-import Test.Autocorres.Examples.WordAbs
-import Test.Autocorres.Examples.TypeStrengthenTricks
+import Test.Autocorres.Examples.AllWellTypedFirst
+import Test.Autocorres.Examples.AllWellTypedSecondFirst
+import Test.Autocorres.Examples.AllWellTypedSecondLast
 
 namespace Zag.Test.Autocorres.Examples
 
-open Zag.Lib.PeanoHeap
-
-abbrev autocorresBlocks : BlockCtx.Raw heapCtx :=
-  plusBlocks ++ multByAddBlocks ++ factorialBlocks ++ fibBlocks ++ simpleBlocks ++
-  isPrimeBlocks ++ binarySearchBlocks ++ memcpyBlocks ++ memsetBlocks ++ quicksortBlocks ++
-  swapBlocks ++ allocBlocks ++ kmallocBlocks ++ listBlocks ++ listRevBlocks ++ schorrWaiteBlocks ++
-  heapWrapBlocks ++ conditionGuardBlocks ++ suzukiBlocks ++ traceDemoBlocks ++ str2longBlocks ++
-  renameBlocks ++ functionInfoBlocks ++ typeStrengthenBlocks ++ wordAbsBlocks
-
-theorem autocorresBlocksValid : BlockCtx.Valid autocorresBlocks := by
-  valid_blocks [autocorresBlocks, plusBlocks, multByAddBlocks, factorialBlocks, fibBlocks,
-    simpleBlocks, isPrimeBlocks, binarySearchBlocks, memcpyBlocks, memsetBlocks, quicksortBlocks,
-    swapBlocks, allocBlocks, kmallocBlocks, listBlocks, listRevBlocks, schorrWaiteBlocks,
-    heapWrapBlocks, conditionGuardBlocks, suzukiBlocks, traceDemoBlocks, str2longBlocks,
-    renameBlocks, functionInfoBlocks, typeStrengthenBlocks, wordAbsBlocks]
-  -- quicksort's blocks call each other, which leaves the same propositional residue as in
-  -- `Quicksort.lean`: every name called is among the names declared.
-  intro name h
-  rcases h with (h | h) | h <;> simp [h]
-
-abbrev autocorresCtx : Ctx := mkCtx autocorresBlocks autocorresBlocksValid
-
 theorem autocorresCtx_wellTyped : Ctx.WellTyped autocorresCtx := by
-  typecheck_ctx
+  intro entry hentry
+  have hgroups : entry ∈ autocorresBlocksFirst ++ autocorresBlocksSecond := hentry
+  rcases List.mem_append.mp hgroups with hfirst | hsecond
+  · exact autocorresBlocksFirstWellTyped entry hfirst
+  · have hsecondGroups :
+        entry ∈ autocorresBlocksSecondFirst ++ autocorresBlocksSecondLast := hsecond
+    rcases List.mem_append.mp hsecondGroups with hsecondFirst | hsecondLast
+    · exact autocorresBlocksSecondFirstWellTyped entry hsecondFirst
+    · exact autocorresBlocksSecondLastWellTyped entry hsecondLast
 
 end Zag.Test.Autocorres.Examples

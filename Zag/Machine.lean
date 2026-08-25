@@ -4,13 +4,13 @@ import Zag.Theory
 /-!
 # The abstract machine
 
-A state is `⟨control, env, stack⟩`. `control` is what is happening *now*; the stack is the
-pending work, innermost first. `step` dispatches on the control and, when a value is being handed
+A configuration is `⟨control, env, stack⟩`. `control` is what is happening *now*; the stack is the
+pending work, innermost first. `Machine.step` dispatches on the control and, when a value is handed
 back, on the **top frame only** -- never deeper. That single property is what `Zag/Weakening.lean`
 turns into `step_weaken`, and everything compositional rests on it.
 
 This file is the execution behaviour and nothing else. Its metatheory is in `Zag/Weakening.lean`,
-the relations built on it are in `Zag/EvalState.lean`, and the loop rule is in `Zag/Loop.lean`.
+the relations built on it are in `Zag/EvalTriple.lean`, and the loop rule is in `Zag/Loop.lean`.
 -/
 
 namespace Zag
@@ -67,33 +67,33 @@ inductive OpBodies {primCtx : PrimitiveCtx} : List (Frame primCtx) → Prop wher
 
 end Frame
 
+namespace Machine
+
 /-- What it is doing, the scope, and the work still pending. -/
-structure EvalState (primCtx : PrimitiveCtx) where
+structure Config (primCtx : PrimitiveCtx) where
   control : Action primCtx
   env : Env primCtx
   stack : List (Frame primCtx)
 
-namespace EvalState
-
 variable {primCtx : PrimitiveCtx}
 
 /-- Start evaluating `term` in `env` with nothing pending. -/
-def start (env : Env primCtx) (term : Term primCtx) : EvalState primCtx :=
+def start (env : Env primCtx) (term : Term primCtx) : Config primCtx :=
   { control := .eval term, env := env, stack := [] }
 
 /-- Add frames under the work already represented by `state`. -/
-def appendStack (state : EvalState primCtx) (base : List (Frame primCtx)) : EvalState primCtx :=
+def appendStack (state : Config primCtx) (base : List (Frame primCtx)) : Config primCtx :=
   { state with stack := state.stack ++ base }
 
 /-- Evaluation has finished when it is handing a value back and nothing is waiting for it. -/
-def result? (state : EvalState primCtx) : Option (Val primCtx) :=
+def result? (state : Config primCtx) : Option (Val primCtx) :=
   match state.control, state.stack with
   | .ret value, [] => some value
   | _, _ => none
 
 /-- Feed terms or already-produced values to an operator until it suspends, finishes, or fails. -/
 @[eval_step] def driveOp (body : Op.Body primCtx) (rest : List (Op.Arg primCtx)) (env : Env primCtx)
-    (stack : List (Frame primCtx)) : Option (EvalState primCtx) :=
+    (stack : List (Frame primCtx)) : Option (Config primCtx) :=
   match body, rest with
   | .fail, _ => none
   | .done value, _ => some { control := .ret value, env := env, stack := stack }
@@ -119,7 +119,7 @@ theorem driveOp_next_term (resume : Option (Val primCtx) → Op.Body primCtx)
 
 /-- Begin a block body: the instructions in order, then the returned term. -/
 @[eval_step] def enterInstrs (instrs : List (Instr primCtx)) (result : Term primCtx) (env : Env primCtx)
-    (stack : List (Frame primCtx)) : EvalState primCtx :=
+    (stack : List (Frame primCtx)) : Config primCtx :=
   match instrs with
   | [] => { control := .eval result, env := env, stack := stack }
   | instr :: rest =>
@@ -128,18 +128,19 @@ theorem driveOp_next_term (resume : Option (Val primCtx) → Op.Body primCtx)
 
 /-- Enter `block` with the given arguments, pushing the frame an `exit` can target. -/
 @[eval_step] def enterBlock (blockName : String) (block : Block primCtx) (vargs : List (Val primCtx))
-    (callerEnv : Env primCtx) (stack : List (Frame primCtx)) : Option (EvalState primCtx) :=
+    (callerEnv : Env primCtx) (stack : List (Frame primCtx)) : Option (Config primCtx) :=
   if vargs.length = block.params.length then
     some (enterInstrs block.instrs block.result (block.entryEnv vargs)
       (.call blockName callerEnv :: stack))
   else none
 
 
-/-- Finish an application: a primitive function value is applied purely, a block reference is
+/-- Calculate an application transition that cannot invoke an ambient action. A primitive function
+  value is applied purely, a block reference is
   entered, and an operator continuation restarts its operator on the values it captured with
   the arguments it was applied to. The single calling convention. -/
-@[eval_step] def applyValue (ctx : Ctx) (fn : Val ctx.primCtx) (vargs : List (Val ctx.primCtx))
-    (env : Env ctx.primCtx) (stack : List (Frame ctx.primCtx)) : Option (EvalState ctx.primCtx) :=
+@[eval_step] def applyValueImmediate (ctx : Ctx) (fn : Val ctx.primCtx) (vargs : List (Val ctx.primCtx))
+    (env : Env ctx.primCtx) (stack : List (Frame ctx.primCtx)) : Option (Config ctx.primCtx) :=
   match fn with
   | .blockRef name _ _ =>
       match ctx.blockCtx.get? name with
@@ -159,9 +160,10 @@ theorem driveOp_next_term (resume : Option (Val primCtx) → Op.Body primCtx)
 
 
 
-/-- Start work on a term. Never inspects the pending stack -- only pushes onto it. -/
-@[eval_step] def evalStep (ctx : Ctx) (term : Term ctx.primCtx) (env : Env ctx.primCtx)
-    (stack : List (Frame ctx.primCtx)) : Option (EvalState ctx.primCtx) :=
+/-- Calculate term dispatch that cannot invoke an ambient action. Never inspects the pending stack
+  -- only pushes onto it. -/
+@[eval_step] def evalTermImmediate (ctx : Ctx) (term : Term ctx.primCtx) (env : Env ctx.primCtx)
+    (stack : List (Frame ctx.primCtx)) : Option (Config ctx.primCtx) :=
   match term with
   | .prim ty value => some { control := .ret (Val.mk ty value), env := env, stack := stack }
   | .var name =>
@@ -202,7 +204,7 @@ theorem driveOp_next_term (resume : Option (Val primCtx) → Op.Body primCtx)
 /-- The current action is finished and produced `value`; `frame` becomes the current action,
   resumed with it. Never inspects a term -- there is none left. -/
 @[eval_step] def resumeFrame (ctx : Ctx) (frame : Frame ctx.primCtx) (value : Val ctx.primCtx)
-    (stack : List (Frame ctx.primCtx)) : Option (EvalState ctx.primCtx) :=
+    (stack : List (Frame ctx.primCtx)) : Option (Config ctx.primCtx) :=
   match frame with
   | .opBody k rest env => driveOp (k (some value)) rest env stack
   | .args sink done rest env =>
@@ -227,7 +229,7 @@ theorem driveOp_next_term (resume : Option (Val primCtx) → Op.Body primCtx)
 
 /-- Unwinding: discard one frame. Only a `call` frame naming the target stops it. -/
 @[eval_step] def unwindFrame (frame : Frame primCtx) (blockName : String) (value : Val primCtx)
-    (env : Env primCtx) (stack : List (Frame primCtx)) : Option (EvalState primCtx) :=
+    (env : Env primCtx) (stack : List (Frame primCtx)) : Option (Config primCtx) :=
   match frame with
   | .call target callerEnv =>
       if blockName = target then
@@ -236,74 +238,219 @@ theorem driveOp_next_term (resume : Option (Val primCtx) → Op.Body primCtx)
         some { control := .exit blockName value, env := callerEnv, stack := stack }
   | _ => some { control := .exit blockName value, env := env, stack := stack }
 
-/-- One step, in three modes: start a term, resume the top frame with a value, or unwind past it.
+/-! ### Effect sequencing
 
-  Only the `ret` and `exit` modes look at the stack, and only at its head. A value with an empty
-  stack is a finished state -- see `EvalState.result?`. -/
-@[eval_step] def step (ctx : Ctx) : EvalState ctx.primCtx → Option (EvalState ctx.primCtx)
-| { control := .stuck, .. } => none
-| { control := .eval term, env, stack } => evalStep ctx term env stack
-| { control := .apply fn args, env, stack } => applyValue ctx fn args env stack
-| { control := .ret _, stack := [], .. } => none
-| { control := .ret value, stack := frame :: stack, .. } => resumeFrame ctx frame value stack
-| { control := .exit _ _, stack := [], .. } => none
-| { control := .exit blockName value, env, stack := frame :: stack } =>
-    unwindFrame frame blockName value env stack
+The `Immediate` helpers calculate transitions that cannot invoke ambient actions. The canonical
+helpers inject those transitions into `Machine.Effect` and execute `Op.action` after its operands
+have been evaluated, so every machine continuation is sequenced by the monad. -/
 
-/-- Factor an operator machine step into lookup, body selection, and body execution. -/
-theorem step_op {ctx : Ctx} {name : String} {args : List (Term ctx.primCtx)}
-    {env : Env ctx.primCtx} {stack : List (Frame ctx.primCtx)} {oper : Op ctx.primCtx}
-    {body : Op.Body ctx.primCtx} {next : EvalState ctx.primCtx}
-    (hop : ctx.opCtx.get? name = some oper)
-    (hbody : oper.body name args.length = some body)
-    (hdrive : driveOp body (Op.Arg.ofTerms args) env stack = some next) :
-    step ctx ⟨.eval (.op name args), env, stack⟩ = some next := by
-  simp only [step, evalStep, hop, hbody]
-  exact hdrive
+/-- Inject a pure partial transition into the evaluation monad. -/
+def ofOption (ctx : Ctx) (next : Option α) : Effect ctx α :=
+  OptionT.mk (pure next)
 
-/-- Dispatch an evaluation control without traversing the surrounding machine state. -/
-theorem step_eval (ctx : Ctx) (term : Term ctx.primCtx) (env : Env ctx.primCtx)
-    (stack : List (Frame ctx.primCtx)) :
-    step ctx ⟨.eval term, env, stack⟩ = evalStep ctx term env stack := rfl
+/-- Run an operator's ordinary body. Effectful operators use such a body to evaluate operands and
+eventually apply an operator reference, where `applyValue` runs the ambient action. -/
+def driveSelectedOp (ctx : Ctx) (oper : Op ctx.primCtx ctx.M) (name : String) (arity : Nat)
+    (rest : List (Op.Arg ctx.primCtx)) (env : Env ctx.primCtx)
+    (stack : List (Frame ctx.primCtx)) : Effect ctx (Config ctx.primCtx) :=
+  match oper.body name arity with
+  | some body => ofOption ctx (driveOp body rest env stack)
+  | none => OptionT.fail
 
-/-- Dispatch an application control to the value-application semantics. -/
-theorem step_apply (ctx : Ctx) (fn : Val ctx.primCtx) (args : List (Val ctx.primCtx))
+/-- Canonical value application. Operator references may invoke ambient actions; all other
+transitions come from `applyValueImmediate` and are injected into `Machine.Effect`. -/
+def applyValue (ctx : Ctx) (fn : Val ctx.primCtx) (vargs : List (Val ctx.primCtx))
     (env : Env ctx.primCtx) (stack : List (Frame ctx.primCtx)) :
-    step ctx ⟨.apply fn args, env, stack⟩ = applyValue ctx fn args env stack := rfl
+    Effect ctx (Config ctx.primCtx) :=
+  match fn with
+  | .opRef name captured _ _ =>
+      match ctx.opCtx.get? name with
+      | none => OptionT.fail
+      | some oper =>
+          let values := captured ++ vargs
+          match oper.action name values with
+          | some action => do
+              let value? ← monadLift action
+              match value? with
+              | some value => pure ⟨.ret value, env, stack⟩
+              | none => OptionT.fail
+          | none =>
+              driveSelectedOp ctx oper name values.length (Op.Arg.ofVals values) env stack
+  | _ => ofOption ctx (applyValueImmediate ctx fn vargs env stack)
 
-/-- Dispatch a returned value through exactly the top pending frame. -/
-theorem step_ret (ctx : Ctx) (value : Val ctx.primCtx) (env : Env ctx.primCtx)
-    (frame : Frame ctx.primCtx) (stack : List (Frame ctx.primCtx)) :
-    step ctx ⟨.ret value, env, frame :: stack⟩ = resumeFrame ctx frame value stack := rfl
+/-- Canonical term dispatch. Operator operands are driven by their ordinary body; ambient actions
+run only when that body applies its operator reference. Other transitions come from
+`evalTermImmediate` and are injected into `Machine.Effect`. -/
+def evalTerm (ctx : Ctx) (term : Term ctx.primCtx) (env : Env ctx.primCtx)
+    (stack : List (Frame ctx.primCtx)) : Effect ctx (Config ctx.primCtx) :=
+  match term with
+  | .op name args =>
+      match ctx.opCtx.get? name with
+      | none => OptionT.fail
+      | some oper =>
+          driveSelectedOp ctx oper name args.length (Op.Arg.ofTerms args) env stack
+  | _ => ofOption ctx (evalTermImmediate ctx term env stack)
 
-/-- Dispatch an exit through exactly the top pending frame. -/
-theorem step_exit (ctx : Ctx) (name : String) (value : Val ctx.primCtx) (env : Env ctx.primCtx)
-    (frame : Frame ctx.primCtx) (stack : List (Frame ctx.primCtx)) :
-    step ctx ⟨.exit name value, env, frame :: stack⟩ =
-      unwindFrame frame name value env stack := rfl
+/-- One machine step. Immediate transitions are injected into `Machine.Effect`; an ambient action
+uses `monadLift`, and the surrounding `OptionT` records a stuck transition. -/
+def step (ctx : Ctx) : Config ctx.primCtx → Effect ctx (Config ctx.primCtx)
+| { control := .stuck, .. } => OptionT.fail
+| { control := .eval term, env, stack } => evalTerm ctx term env stack
+| { control := .apply fn args, env, stack } => applyValue ctx fn args env stack
+| { control := .ret _, stack := [], .. } => OptionT.fail
+| { control := .ret value, stack := frame :: stack, .. } =>
+    ofOption ctx (resumeFrame ctx frame value stack)
+| { control := .exit _ _, stack := [], .. } => OptionT.fail
+| { control := .exit blockName value, env, stack := frame :: stack } =>
+    ofOption ctx (unwindFrame frame blockName value env stack)
 
-/-- Run at most `fuel` steps, stopping early if evaluation gets stuck or finishes. -/
-def run (ctx : Ctx) : Nat → EvalState ctx.primCtx → EvalState ctx.primCtx
-| 0, state => state
-| fuel + 1, state =>
-    match step ctx state with
-    | none => state
-    | some next => run ctx fuel next
+/-- Execute exactly `fuel` machine transitions. This bounded API is executable and intended for
+testing and proof construction, not as the public logical denotation. -/
+def nsteps (ctx : Ctx) : Nat → Config ctx.primCtx → Effect ctx (Config ctx.primCtx)
+| 0, state => pure state
+| fuel + 1, state => step ctx state >>= nsteps ctx fuel
 
+/-- Split an effectful bounded run at an intermediate machine state. -/
+theorem nsteps_add (ctx : Ctx) (fuel₀ fuel₁ : Nat) (state : Config ctx.primCtx) :
+    nsteps ctx (fuel₀ + fuel₁) state = nsteps ctx fuel₀ state >>= nsteps ctx fuel₁ := by
+  induction fuel₀ generalizing state with
+  | zero => simp [nsteps]
+  | succ fuel₀ ih =>
+      have ih' : nsteps ctx (fuel₀ + fuel₁) = fun state =>
+          nsteps ctx fuel₀ state >>= nsteps ctx fuel₁ := funext ih
+      rw [show fuel₀ + 1 + fuel₁ = (fuel₀ + fuel₁) + 1 by omega, nsteps, ih']
+      simp [nsteps, bind_assoc]
 
-/-- Exactly `fuel` steps, failing if any of them is stuck. Unlike `run`, which stops early and
-  returns the last state, this is `none` the moment a step does not apply -- which is what makes
-  it compose: `stepN_add` splits a run at any point. -/
-def stepN (ctx : Ctx) : Nat → EvalState ctx.primCtx → Option (EvalState ctx.primCtx)
-| 0, state => some state
-| fuel + 1, state => (step ctx state).bind (stepN ctx fuel)
+/-- Run until a value is returned or the supplied executable bound is exhausted. Every
+instruction, call, application, and operator continuation is crossed through `OptionT.bind`. -/
+def evalConfigFuel (ctx : Ctx) : Nat → Config ctx.primCtx → Effect ctx (Val ctx.primCtx)
+| fuel, state =>
+    match result? state with
+    | some value => pure value
+    | none =>
+        match fuel with
+        | 0 => OptionT.fail
+        | fuel + 1 => step ctx state >>= evalConfigFuel ctx fuel
 
-@[simp] theorem stepN_zero (state : EvalState ctx.primCtx) : stepN ctx 0 state = some state := rfl
+/-- Executable effectful evaluation from a surface term. Fuel remains confined to this machine
+API; `Zag.eval` below remains the fuel-independent logical relation bridge. -/
+def evalFuel (ctx : Ctx) (fuel : Nat) (env : Env ctx.primCtx) (term : Term ctx.primCtx) :
+    Effect ctx (Val ctx.primCtx) :=
+  evalConfigFuel ctx fuel (start env term)
 
-theorem stepN_succ (fuel : Nat) (state : EvalState ctx.primCtx) :
-    stepN ctx (fuel + 1) state = (step ctx state).bind (stepN ctx fuel) := rfl
+/-! ### StateM machine view -/
 
+/-- Build a context whose ambient effect is one state. This specialized view avoids pretending
+that an arbitrary `Ctx.M` can be inspected or cast to `StateM`. -/
+abbrev stateCtx (primCtx : PrimitiveCtx) (opCtx : OpCtx primCtx (StateM σ))
+    (blockCtx : BlockCtx primCtx := .empty) : Ctx where
+  primCtx := primCtx
+  M := StateM σ
+  monad := StateT.instMonad
+  opCtx := opCtx
+  blockCtx := blockCtx
+  postShape := .arg σ .pure
+  wpMonad := inferInstance
 
-end EvalState
+private theorem stateT_run_apply (x : StateM σ α) (state : σ) :
+    Id.run (StateT.run x state) = Id.run (x state) := by
+  unfold StateT.run
+  rfl
+
+theorem stateM_pure_run (value : α) (state : σ) :
+    Id.run ((pure value : StateM σ α) state) = (value, state) := by
+  rfl
+
+theorem optionT_state_bind_run (x : OptionT (StateM σ) α)
+    (f : α → OptionT (StateM σ) β) (state : σ) :
+    Id.run ((x >>= f).run state) =
+      match Id.run (x.run state) with
+      | (none, nextState) => (none, nextState)
+      | (some value, nextState) => Id.run ((f value).run nextState) := by
+  rw [OptionT.run_bind]
+  unfold Option.elimM
+  change Id.run (StateT.run (x.run >>= fun value? =>
+    value?.elim (pure none) fun value => (f value).run) state) = _
+  rw [StateT.run_bind]
+  cases hstate : Id.run (x.run state) with
+  | mk value? nextState =>
+      cases value? <;> simp [Id.run_bind, StateT.run, stateM_pure_run, hstate]
+
+/-- Expose exactly one unfinished StateM machine transition without unfolding the remaining run. -/
+theorem evalConfigFuel_run_succ_of_none (primCtx : PrimitiveCtx)
+    (opCtx : OpCtx primCtx (StateM σ)) (blockCtx : BlockCtx primCtx)
+    (fuel : Nat) (state : Config primCtx) (initial : σ)
+    (hresult : result? state = none) :
+    Id.run ((evalConfigFuel (stateCtx primCtx opCtx blockCtx) (fuel + 1) state).run initial) =
+      match Id.run ((step (stateCtx primCtx opCtx blockCtx) state).run initial) with
+      | (none, nextState) => (none, nextState)
+      | (some next, nextState) =>
+          Id.run ((evalConfigFuel (stateCtx primCtx opCtx blockCtx) fuel next).run nextState) := by
+  simp only [evalConfigFuel, hresult]
+  change Id.run ((step (stateCtx primCtx opCtx blockCtx) state >>=
+    evalConfigFuel (stateCtx primCtx opCtx blockCtx) fuel).run initial) = _
+  rw [optionT_state_bind_run]
+  cases hstep : Id.run ((step (stateCtx primCtx opCtx blockCtx) state).run initial) with
+  | mk value? nextState => cases value? <;> simp
+
+/-- Rewrite one unfinished StateM run when its next transition is already known. -/
+theorem evalConfigFuel_run_succ_of_step (primCtx : PrimitiveCtx)
+    (opCtx : OpCtx primCtx (StateM σ)) (blockCtx : BlockCtx primCtx)
+    (fuel : Nat) (state next : Config primCtx) (initial nextState : σ)
+    (hresult : result? state = none)
+    (hstep : Id.run ((step (stateCtx primCtx opCtx blockCtx) state).run initial) =
+      (some next, nextState)) :
+    Id.run ((evalConfigFuel (stateCtx primCtx opCtx blockCtx) (fuel + 1) state).run initial) =
+      Id.run ((evalConfigFuel (stateCtx primCtx opCtx blockCtx) fuel next).run nextState) := by
+  rw [evalConfigFuel_run_succ_of_none primCtx opCtx blockCtx fuel state initial hresult,
+    hstep]
+
+private theorem result?_eq_none_of_step_run_some (primCtx : PrimitiveCtx)
+    (opCtx : OpCtx primCtx (StateM σ)) (blockCtx : BlockCtx primCtx)
+    (state next : Config primCtx) (initial final : σ)
+    (hstep : (step (stateCtx primCtx opCtx blockCtx) state).run initial =
+      (some next, final)) : result? state = none := by
+  cases state with
+  | mk control env stack =>
+      cases control <;> cases stack <;>
+        simp [result?, step, OptionT.fail] at hstep ⊢
+      have hfalse := congrArg Prod.fst hstep
+      contradiction
+
+/-- A finite effectful segment ending at an empty-stack return is a successful bounded run. -/
+theorem evalConfigFuel_run_of_nsteps_result (primCtx : PrimitiveCtx)
+    (opCtx : OpCtx primCtx (StateM σ)) (blockCtx : BlockCtx primCtx)
+    (fuel : Nat) (state : Config primCtx) (initial final : σ)
+    (value : Val primCtx) (scope : Env primCtx)
+    (hsteps : (nsteps (stateCtx primCtx opCtx blockCtx) fuel state).run initial =
+      (some ⟨.ret value, scope, []⟩, final)) :
+    (evalConfigFuel (stateCtx primCtx opCtx blockCtx) fuel state).run initial =
+      (some value, final) := by
+  induction fuel generalizing state initial with
+  | zero =>
+      simp only [nsteps] at hsteps
+      change (some state, initial) = (some ⟨.ret value, scope, []⟩, final) at hsteps
+      obtain ⟨rfl, rfl⟩ := hsteps
+      rfl
+  | succ fuel ih =>
+      simp only [nsteps] at hsteps
+      change Id.run (((step (stateCtx primCtx opCtx blockCtx) state >>=
+        nsteps (stateCtx primCtx opCtx blockCtx) fuel).run initial)) = _ at hsteps
+      rw [optionT_state_bind_run] at hsteps
+      cases hstep : (step (stateCtx primCtx opCtx blockCtx) state).run initial with
+      | mk next? middle =>
+          cases next? with
+          | none => simp [hstep, Id.run] at hsteps
+          | some next =>
+              simp only [hstep, Id.run] at hsteps
+              have hresult := result?_eq_none_of_step_run_some primCtx opCtx blockCtx
+                state next initial middle hstep
+              change Id.run ((evalConfigFuel (stateCtx primCtx opCtx blockCtx)
+                (fuel + 1) state).run initial) = _
+              rw [evalConfigFuel_run_succ_of_step primCtx opCtx blockCtx fuel state next
+                initial middle hresult hstep]
+              exact ih next middle hsteps
+
+end Machine
 
 end Zag

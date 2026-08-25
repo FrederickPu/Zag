@@ -10,6 +10,8 @@ the `PrimitiveCtx`, exactly as before -- it is just no longer a field of it.
 
 namespace Zag.Test.Monad
 
+open Zag EvalTriple.Exact
+
 abbrev M : Type → Type := StateM Nat
 
 /- `m(α)`: a computation in `M` that may get stuck, which is what `Ty.m` used to mean -/
@@ -129,7 +131,7 @@ theorem bind_hasType (n : Nat) :
 
 /- evaluate a term of type `m(Nat)` and run the resulting `StateM Nat` computation -/
 def runM (term : Term stateCtx) (state : Nat) : Option (Option Nat × Nat) := do
-  let value <- (EvalState.run ctx 100 (EvalState.start [] term)).result?
+  let value <- (Machine.evalFuel ctx 100 [] term).run
   let computation <- value.as? (MTy NatTy)
   let (result, state) := (toM NatTy computation).run state
   some (result.map (Ty.toNat stateCtx), state)
@@ -148,7 +150,7 @@ theorem lift_eval_val (n : Nat) :
   · constructor
     · simpa [Term.nat] using
         (EvaluatesTo.prim (ctx := ctx) (env := []) NatTy (Ty.ofNat stateCtx n))
-    · exact EvaluatesToAll.nil
+    · exact EvaluatesList.nil
   · simpa [Op.applyValsAt, Op.fixed, pureOp] using Op.Signature.applyVals_unary "pure" MTy
       (fun ty value => ofM ty (Pure.pure (some value))) NatTy (Ty.ofNat stateCtx n)
 
@@ -166,7 +168,7 @@ theorem bind_eval (n : Nat) :
       · simpa [identityContinuation] using
           (EvaluatesTo.prim (ctx := ctx) (env := []) (.func [NatTy] (MTy NatTy))
             identityContinuationValue)
-      · exact EvaluatesToAll.nil
+      · exact EvaluatesList.nil
   · set_option linter.unusedSimpArgs false in
       simp [Op.applyValsAt, Op.fixed, bindOp, bindShape?, Op.Signature.apply,
         Op.Signature.eagerBody, Op.Body.eager, Op.Body.applyVals, MTy, NatTy, ofM, toM, type_m,

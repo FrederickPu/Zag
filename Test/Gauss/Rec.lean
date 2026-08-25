@@ -5,6 +5,8 @@ namespace Zag.Test.Gauss.Rec
 
 open Zag Zag.Lib.Peano
 open Zag.Test.Gauss
+open Zag.EvalTriple
+open Zag.EvalTriple.Exact
 
 def sumTo : Nat → Nat
 | 0 => 0
@@ -72,23 +74,118 @@ theorem sumDown_self (i : Nat) : sumDown i i = sumTo i := by
   simpa [sumTo] using sumDown_add_sumTo i i (Nat.le_refl i)
 
 theorem loop_eval (i acc : Nat) :
-    EvaluatesCall gaussCtx "loop" ([Val.nat i, Val.nat acc] : List (Val natCtx))
-      (Val.nat (acc + sumTo i)) := by
-  while_induction [natOpCtx, Op.fixed, gaussBlocks, sumDown, sumDown_succ, sumDown_self]
-    (fun k args => args = [Val.nat (acc + sumDown i k), Val.nat (i - k)]) stopping_at i
-    returning (Val.nat (acc + sumTo i))
+    Zag.EvaluatesCallValues gaussCtx "loop" ([Val.nat i, Val.nat acc] : List (Val natCtx))
+      (Singleton.idPre True)
+      (Singleton.idPost (· = Val.nat (acc + sumTo i))) := by
+  change Exact.EvaluatesCallValues (hM := rfl) gaussCtx "loop"
+    ([Val.nat i, Val.nat acc] : List (Val natCtx)) (Val.nat (acc + sumTo i))
+  apply EvaluatesCallValues.of_evaluatesInstrs
+  · rfl
+  · rfl
+  dsimp [gaussBlocks, Block.entryEnv]
+  apply EvaluatesInstrs.cons
+  · apply Peano.Exact.while_evaluatesTo (hM := rfl)
+      (condName := "gaussCond") (bodyName := "gaussBody")
+      (stateTys := [Peano.NatTy, Peano.NatTy]) (resultTy := Peano.NatTy)
+      (I := fun k args => args = [Val.nat (acc + sumDown i k), Val.nat (i - k)])
+      (N := i) (initial := [Val.nat acc, Val.nat i])
+      (loopResult := Val.nat (acc + sumTo i))
+    auto_eval_refinement_goals [natOpCtx, Op.fixed, gaussBlocks, sumDown,
+      sumDown_succ, sumDown_self]
+    case hargs =>
+      exact EvaluatesList.cons (by
+        apply EvaluatesTo.of_eq
+          (EvaluatesTo.var_block (ctx := gaussCtx)
+            (env := [("i", Val.nat i), ("acc", Val.nat acc)])
+            (name := "gaussCond") (hM := rfl) (by rfl) (by rfl))
+        rfl)
+        (EvaluatesList.cons (by
+          apply EvaluatesTo.of_eq
+            (EvaluatesTo.var_block (ctx := gaussCtx)
+              (env := [("i", Val.nat i), ("acc", Val.nat acc)])
+              (name := "gaussBody") (hM := rfl) (by rfl) (by rfl))
+          rfl)
+          (EvaluatesList.cons (EvaluatesTo.var_local (hM := rfl) (by rfl))
+            (EvaluatesList.cons (EvaluatesTo.var_local (hM := rfl) (by rfl))
+              EvaluatesList.nil)))
+    case preserved =>
+      intro k hk
+      constructor
+      · apply EvaluatesCallValues.of_evaluatesInstrs
+        · rfl
+        · rfl
+        dsimp [gaussBlocks, Block.entryEnv]
+        apply EvaluatesInstrs.nil
+        apply EvaluatesTo.of_eq
+          (evaluates_gt_nat
+            (EvaluatesTo.var_local (hM := rfl) (by rfl))
+            (evaluates_nat (hM := rfl) _ 0))
+        simp
+        omega
+      · intro hloop
+        apply EvaluatesCallValues.of_evaluatesInstrs
+        · rfl
+        · rfl
+        dsimp [gaussBlocks, Block.entryEnv]
+        refine EvaluatesInstrs.cons
+          (instrValue := Val.nat (acc + sumDown i k + (i - k))) ?_ ?_
+        · exact evaluates_add_nat
+            (EvaluatesTo.var_local (hM := rfl) (by rfl))
+            (EvaluatesTo.var_local (hM := rfl) (by rfl))
+        refine EvaluatesInstrs.cons (instrValue := Val.nat (i - (k + 1))) ?_ ?_
+        · apply EvaluatesTo.of_eq
+            (evaluates_sub_nat
+              (EvaluatesTo.var_local (hM := rfl) (by rfl))
+              (evaluates_nat (hM := rfl) _ 1))
+          simp [Nat.sub_sub]
+        apply EvaluatesInstrs.nil
+        exact EvaluatesTo.app
+          (EvaluatesTo.var_local (hM := rfl) (by rfl))
+          (EvaluatesList.cons (EvaluatesTo.var_local (hM := rfl) (by rfl))
+            (EvaluatesList.cons (EvaluatesTo.var_local (hM := rfl) (by rfl))
+              EvaluatesList.nil))
+          hloop
+    case exits =>
+      apply EvaluatesCallValues.of_evaluatesInstrs
+      · rfl
+      · rfl
+      dsimp [gaussBlocks, Block.entryEnv]
+      apply EvaluatesInstrs.nil
+      simpa using evaluates_gt_nat
+        (ctx := gaussCtx)
+        (env := [("acc", Val.nat (acc + sumTo i)), ("i", Val.nat 0)])
+        (EvaluatesTo.var_local (ctx := gaussCtx)
+          (env := [("acc", Val.nat (acc + sumTo i)), ("i", Val.nat 0)])
+          (name := "i") (value := Val.nat 0) (hM := rfl) (by rfl))
+        (evaluates_nat (ctx := gaussCtx)
+          (env := [("acc", Val.nat (acc + sumTo i)), ("i", Val.nat 0)]) (hM := rfl) 0)
+  · exact EvaluatesInstrs.nil (EvaluatesTo.var_local (by rfl))
 
 theorem gauss_eval (n : Nat) :
-    EvaluatesCall gaussCtx "gauss" ([Val.nat n] : List (Val natCtx)) (Val.nat (sumTo n)) := by
-  evaluates_call [gaussBlocks]
-  use_call [gaussBlocks] (loop_eval n 0)
+    Zag.EvaluatesCallValues gaussCtx "gauss" ([Val.nat n] : List (Val natCtx))
+      (Singleton.idPre True) (Singleton.idPost (· = Val.nat (sumTo n))) := by
+  change Exact.EvaluatesCallValues (hM := rfl) gaussCtx "gauss"
+    ([Val.nat n] : List (Val natCtx)) (Val.nat (sumTo n))
+  have hloop := loop_eval n 0
+  change Exact.EvaluatesCallValues (hM := rfl) gaussCtx "loop"
+    ([Val.nat n, Val.nat 0] : List (Val natCtx)) (Val.nat (0 + sumTo n)) at hloop
+  apply EvaluatesCallValues.of_evaluatesInstrs
+  · rfl
+  · rfl
+  dsimp [gaussBlocks, Block.entryEnv]
+  apply EvaluatesInstrs.nil
+  refine EvaluatesTo.call (EvaluatesCallValues.of_eq hloop (by simp)) rfl ?_
+  exact EvaluatesList.cons (EvaluatesTo.var_local (by rfl))
+    (EvaluatesList.cons (evaluates_nat _ 0) EvaluatesList.nil)
 
 theorem lhsProgram_eval_sumTo (n : Nat) (env : Env natCtx) :
     EvaluatesTo gaussCtx env (lhsProgram n) (Val.nat (sumTo n)) := by
   unfold lhsProgram
-  refine EvaluatesTo.call (block := gaussBlocks[0].2) (hcall := gauss_eval n) ?_ ?_
-  · rfl
-  · evaluates_to_all [gaussBlocks]
+  have hgauss := gauss_eval n
+  change Exact.EvaluatesCallValues (hM := rfl) gaussCtx "gauss"
+    ([Val.nat n] : List (Val natCtx)) (Val.nat (sumTo n)) at hgauss
+  refine EvaluatesTo.call hgauss rfl ?_
+  exact EvaluatesList.cons (evaluates_nat _ n) EvaluatesList.nil
 
 theorem two_mul_sumTo (n : Nat) : 2 * sumTo n = n * (n + 1) := by
   induction n with
@@ -113,7 +210,10 @@ theorem lhsProgram_eval_rhs (n : Nat) (env : Env natCtx) :
 theorem rhsTerm_eval_rhs (n : Nat) (env : Env natCtx) :
     EvaluatesTo gaussCtx env (rhsTerm n) (Val.nat (closedForm n)) := by
   unfold rhsTerm closedForm
-  evaluates 100 [natOpCtx, Op.fixed]
+  exact evaluates_div_nat
+    (evaluates_mul_nat (evaluates_nat _ n)
+      (evaluates_add_nat (evaluates_nat _ n) (evaluates_nat _ 1)))
+    (evaluates_nat _ 2)
 
 theorem gaussEq (n : Nat) :
     Term.eq gaussCtx [] NatTy (lhsProgram n) (rhsTerm n) :=

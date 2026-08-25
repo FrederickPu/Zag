@@ -67,18 +67,19 @@ example : Val.primLt? (Val.bool (primCtx := comparisonCtx) false) (Val.nat 1) = 
   simp [Val.primLt?, hboolNat, hnatBool]
 
 example :
-    (Op.compare (primCtx := comparisonCtx) Val.primEq?).out
+    (Op.compare (primCtx := comparisonCtx) (M := Id) Val.primEq?).out
       [Peano.NatTy, Peano.BoolTy] = none := by
   simp [Op.compare, Op.fixed]
 
 example :
-  Op.applyValsAt "compare" (Op.compare Val.primEq?)
+  Op.applyValsAt (M := Id) "compare" (Op.compare (M := Id) Val.primEq?)
       [opaqueFn "left", opaqueFn "right"] = none := by
   simp [Op.applyValsAt, Op.compare, Op.fixed, Op.Body.applyVals, opaqueFn, Val.primEq?,
     Val.asNat?, Val.asBool?, Val.as?]
 
 example :
-    Op.applyValsAt "compare" (Op.compare (primCtx := comparisonCtx) (fun _ _ => none))
+    Op.applyValsAt (M := Id) "compare"
+      (Op.compare (primCtx := comparisonCtx) (M := Id) (fun _ _ => none))
       [Val.nat 1, Val.nat 1] = none := by
   simp [Op.applyValsAt, Op.compare, Op.fixed, Op.Body.applyVals]
 
