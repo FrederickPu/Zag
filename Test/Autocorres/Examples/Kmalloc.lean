@@ -207,33 +207,23 @@ private theorem kmallocFresh_evaluates_state (heap : Heap) (size : Nat) :
     EvalTriple.State.EvaluatesCall heapCtx heapOpCtx
       (checkedBlocks kmallocBlocks kmallocBlocksValid) "kmallocFresh"
       [.nat size] heap (valPtr (Heap.allocPtr heap)) (Heap.allocHeap heap size) := by
-  set_option zvcgen.resumeReturn true in
-    zvcgen [kmallocBlocks, checkedBlocks, allocPtrOp, Op.effectful,
-      Op.Body.collect, Op.Arg.ofTerms, Op.Arg.ofVals, Block.entryEnv, Scope.get?,
-      Term.nat, valPtr, Val.ty_nat, Val.mk_ofNat, Val.asNat?_nat,
-      driveOp_apply_done, resume_dependent_apply_done, allocPtrOp_action_val,
-      alloc, Heap.allocPtr, Heap.allocHeap]
-  all_goals try solve_by_elim
-  all_goals subst_vars
-  all_goals try simp_all [Val.asNat?_nat]
+  zvcgen [kmallocBlocks, checkedBlocks, allocPtrOp, Op.effectful,
+    Op.Body.collect, Op.Arg.ofTerms, Op.Arg.ofVals, Block.entryEnv, Scope.get?,
+    Term.nat, valPtr, Val.ty_nat, Val.mk_ofNat, Val.asNat?_nat,
+    driveOp_apply_done, resume_dependent_apply_done, allocPtrOp_action_val,
+    alloc, Heap.allocPtr, Heap.allocHeap]
 
 private theorem kfreeErase_evaluates_state (heap : Heap) (ptr : Ptr) :
     EvalTriple.State.EvaluatesCall heapCtx heapOpCtx
       (checkedBlocks kmallocBlocks kmallocBlocksValid) "kfreeErase"
       [termPtr ptr.addr] heap valUnit (Heap.write heap ptr 0) := by
   rcases ptr with ⟨ptr⟩
-  set_option zvcgen.resumeReturn true in
-    zvcgen [kmallocBlocks, checkedBlocks, storeOp, Op.effectful, Op.Body.collect,
-      Op.Arg.ofTerms, Op.Arg.ofVals, Block.entryEnv, Scope.get?, Term.nat,
-      termPtr, valPtr, valUnit, asPtr?, Val.ty_mk, Val.ty_nat, Val.mk_ofNat,
-      Val.as?_mk, Val.asNat?_nat, toPtr_ofPtr, driveOp_apply_done,
-      resume_dependent_apply_done, resume_store_value_operand,
-      storeValAction_spec, storeOp_action_spec, storeOp_action_vals]
-  all_goals try simp_all [Val.as?_mk, Val.asNat?_nat, toPtr_ofPtr]
-  all_goals try solve_by_elim
-  all_goals try obtain ⟨hleft, hright⟩ := ‹_ ∧ _›
-  all_goals subst_vars
-  all_goals try simp_all [Val.as?_mk, Val.asNat?_nat, toPtr_ofPtr]
+  zvcgen [kmallocBlocks, checkedBlocks, storeOp, Op.effectful, Op.Body.collect,
+    Op.Arg.ofTerms, Op.Arg.ofVals, Block.entryEnv, Scope.get?, Term.nat,
+    termPtr, valPtr, valUnit, asPtr?, Val.ty_mk, Val.ty_nat, Val.mk_ofNat,
+    Val.as?_mk, Val.asNat?_nat, toPtr_ofPtr, driveOp_apply_done,
+    resume_dependent_apply_done, resume_store_value_operand,
+    storeValAction_spec, storeOp_action_spec, storeOp_action_vals]
 
 /-- Fresh allocation from an unconstrained heap; post packages the alloc model. -/
 @[zspec] theorem kmallocFresh_spec (size : Nat) :

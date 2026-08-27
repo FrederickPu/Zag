@@ -66,14 +66,10 @@ private theorem readCell_evaluates_state (heap : Heap) (ptr : Ptr) :
   rcases ptr with ⟨ptr⟩
   have hload := load_apply_evaluates
     (checkedBlocks typeStrengthenBlocks typeStrengthenBlocksValid) heap ⟨ptr⟩
-  set_option zvcgen.useLocalApply true in
-    set_option zvcgen.resumeReturn true in
-      zvcgen [typeStrengthenBlocks, checkedBlocks, loadOp, Op.effectful,
-        Op.Body.collect, Op.Arg.ofTerms, Op.Arg.ofVals, Block.entryEnv, Scope.get?,
-        termPtr, valPtr, asPtr?, Val.ty_mk, Val.as?_mk, toPtr_ofPtr,
-        driveOp_apply_done, resume_dependent_apply_done, resume_load_operand]
-  all_goals subst_vars
-  all_goals simp_all [asPtr?, valPtr, Val.as?_mk, toPtr_ofPtr]
+  zvcgen [typeStrengthenBlocks, checkedBlocks, loadOp, Op.effectful,
+    Op.Body.collect, Op.Arg.ofTerms, Op.Arg.ofVals, Block.entryEnv, Scope.get?,
+    termPtr, valPtr, asPtr?, Val.ty_mk, Val.as?_mk, toPtr_ofPtr,
+    driveOp_apply_done, resume_dependent_apply_done, resume_load_operand]
 
 private theorem write42_evaluates_state (heap : Heap) (ptr : Ptr) :
     EvalTriple.State.EvaluatesCall heapCtx heapOpCtx
@@ -85,17 +81,11 @@ private theorem write42_evaluates_state (heap : Heap) (ptr : Ptr) :
   have hload := load_apply_evaluates
     (checkedBlocks typeStrengthenBlocks typeStrengthenBlocksValid)
       (Heap.write heap ⟨ptr⟩ 42) ⟨ptr⟩
-  set_option zvcgen.useLocalApply true in
-    set_option zvcgen.resumeReturn true in
-      zvcgen [typeStrengthenBlocks, checkedBlocks, loadOp, storeOp, Op.effectful,
-        Op.Body.collect, Op.Arg.ofTerms, Op.Arg.ofVals, Block.entryEnv, Scope.get?,
-        Term.nat, termPtr, valPtr, valUnit, asPtr?, Val.ty_mk, Val.ty_nat,
-        Val.as?_mk, Val.asNat?_nat, toPtr_ofPtr, driveOp_apply_done,
-        resume_dependent_apply_done, resume_load_operand, resume_store_value_operand,
-        typeStrengthen_read_write_same]
-  all_goals subst_vars
-  all_goals try simp_all [EvalTriple.Singleton.statePre, EvalTriple.Singleton.statePost,
-    asPtr?, valPtr, valUnit, Val.as?_mk, Val.asNat?_nat, toPtr_ofPtr,
+  zvcgen [typeStrengthenBlocks, checkedBlocks, loadOp, storeOp, Op.effectful,
+    Op.Body.collect, Op.Arg.ofTerms, Op.Arg.ofVals, Block.entryEnv, Scope.get?,
+    Term.nat, termPtr, valPtr, valUnit, asPtr?, Val.ty_mk, Val.ty_nat,
+    Val.as?_mk, Val.asNat?_nat, toPtr_ofPtr, driveOp_apply_done,
+    resume_dependent_apply_done, resume_load_operand, resume_store_value_operand,
     typeStrengthen_read_write_same]
 
 /-- Pure call: unconstrained heap footprint, result `x`. -/

@@ -1,4 +1,4 @@
-import Zag.Loop
+import Zag.EvalSpecs
 import Zag.Refinement
 import Lib.Peano.Defs
 
@@ -20,6 +20,8 @@ attribute [eval_step]
   Op.compare Op.eq Op.ite Op.natBinary Op.natUnary
   Peano.opCtx Term.nat Term.bool Term.ite Lib.Peano.natOpCtx
   Val.asNat?_nat Val.asBool?_bool
+
+attribute [spec] Term.nat Term.bool
 
 /-- Restore `Term.nat n` in a goal the machine stopped short of. Not `@[eval_step]`: paired with
   the `Term.nat` tag above in one `simp` call these two loop. -/
@@ -584,10 +586,175 @@ def whileRef (opName condName bodyName : String) (stateTys : List Ty) (resultTy 
   .opRef opName [whileCondRef condName stateTys, whileBodyRef bodyName stateTys resultTy]
     stateTys resultTy
 
-/- A finite invariant rule for the ordinary `while` operator. One body call receives the loop
-  continuation as its final argument. Its premise is continuation-parametric: after proving the
-  simultaneous next state satisfies the invariant, the body may use the supplied application
-  specification and return the recursive answer through its own call frame. -/
+private theorem while_apply_continue {ctx : Ctx} {hM : ctx.M = Id} [Peano.Types ctx.primCtx]
+    {opName condName bodyName : String} {stateTys : List Ty} {resultTy : Ty}
+    {args : List (Val ctx.primCtx)} {loopResult : Val ctx.primCtx}
+    (hop : ctx.opCtx.get? opName = some (Op.whileOp (primCtx := ctx.primCtx)))
+    (hheadTy : stateTys.head? = some resultTy)
+    (htys : args.map Val.ty = stateTys)
+    (hcond : EvalTriple.Exact.EvaluatesCallValues ctx condName args (Val.bool true))
+    (hbody : EvalTriple.Exact.EvaluatesCallValues ctx bodyName
+      (args ++ [whileRef opName condName bodyName stateTys resultTy]) loopResult) :
+    EvalTriple.Exact.EvaluatesApply ctx
+      (whileRef opName condName bodyName stateTys resultTy) args loopResult := by
+  have hne : args ≠ [] := by
+    intro hnil
+    subst args
+    simp at htys
+    simp [htys] at hheadTy
+  obtain ⟨head, tail, hargs⟩ : ∃ head tail, args = head :: tail := by
+    cases args with
+    | nil => exact (hne rfl).elim
+    | cons head tail => exact ⟨head, tail, rfl⟩
+  have hhead : args.head? = some head := by simp [hargs]
+  have hcondApply : EvalTriple.Exact.EvaluatesApply ctx
+      (whileCondRef condName stateTys) args (Val.bool true) :=
+    EvalTriple.Exact.EvaluatesApply.blockRef hcond
+  have hbodyApply : EvalTriple.Exact.EvaluatesApply ctx
+      (whileBodyRef bodyName stateTys resultTy)
+      (args ++ [whileRef opName condName bodyName stateTys resultTy]) loopResult :=
+    EvalTriple.Exact.EvaluatesApply.blockRef hbody
+  apply EvalTriple.Exact.EvaluatesApply.opRef
+    (body := Op.Body.collect (Op.whileBodyFromValues (primCtx := ctx.primCtx) opName)
+      (2 + args.length) []) hop
+  · rfl
+  · have hthree : 3 ≤ 2 + args.length := by
+      cases args with
+      | nil => exact (hne rfl).elim
+      | cons => simp; omega
+    change (if 3 ≤ 2 + args.length then
+      some (Op.Body.collect (Op.whileBodyFromValues (primCtx := ctx.primCtx) opName)
+        (2 + args.length) []) else none) = _
+    rw [if_pos hthree]
+  · intro env base
+    have hout : Op.whileResultTy? (primCtx := ctx.primCtx)
+        (.func stateTys Peano.BoolTy ::
+          .func (stateTys ++ [.func stateTys resultTy]) resultTy :: stateTys) =
+          some resultTy := by
+      simp [Op.whileResultTy?, hheadTy]
+    obtain ⟨bodyStart, hbodyDrive, hbodyFrom⟩ :=
+      EvalTriple.Exact.EvaluatesFrom.driveOp_apply
+        (env := env) (stack := base) (operands := [])
+        (resume := fun value => .done value) hbodyApply
+        (hdrive := by simp [Machine.driveOp])
+        (EvalTriple.Exact.EvaluatesFrom.done
+          (ctx := ctx) (value := loopResult) (scope := env) (base := base))
+    obtain ⟨condStart, hcondDrive, hcondFrom⟩ :=
+      EvalTriple.Exact.EvaluatesFrom.driveOp_apply
+        (env := env) (stack := base) (operands := [])
+        (resume := fun condition =>
+          match condition.asBool? with
+          | some false => .done head
+          | some true =>
+              .apply (whileBodyRef bodyName stateTys resultTy)
+                (args ++ [whileRef opName condName bodyName stateTys resultTy]) .done
+          | none => .fail) hcondApply
+        (hdrive := by
+          simpa only [Val.asBool?_bool] using hbodyDrive) hbodyFrom
+    refine ⟨condStart, ?_, hcondFrom⟩
+    have hlen :
+        ([whileCondRef condName stateTys, whileBodyRef bodyName stateTys resultTy] ++ args).length =
+          2 + args.length := by simp; omega
+    rw [Machine.driveOp_collect _ _ _ hlen]
+    have hfinish :
+        Op.whileBodyFromValues (primCtx := ctx.primCtx) opName
+            ([whileCondRef condName stateTys, whileBodyRef bodyName stateTys resultTy] ++ args) =
+          .apply (whileCondRef condName stateTys) args (fun condition =>
+            match condition.asBool? with
+            | some false => .done head
+            | some true =>
+                .apply (whileBodyRef bodyName stateTys resultTy)
+                  (args ++ [whileRef opName condName bodyName stateTys resultTy]) .done
+            | none => .fail) := by
+      simp [Op.whileBodyFromValues, hout, hhead, htys,
+        whileCondRef, whileBodyRef, whileRef]
+      funext condition
+      unfold Op.whileAfterCondition
+      rw [htys]
+      rfl
+    simp only [List.nil_append]
+    rw [hfinish]
+    exact hcondDrive
+
+private theorem while_apply_exit {ctx : Ctx} {hM : ctx.M = Id} [Peano.Types ctx.primCtx]
+    {opName condName bodyName : String} {stateTys : List Ty} {resultTy : Ty}
+    {args : List (Val ctx.primCtx)} {loopResult : Val ctx.primCtx}
+    (hop : ctx.opCtx.get? opName = some (Op.whileOp (primCtx := ctx.primCtx)))
+    (hheadTy : stateTys.head? = some resultTy)
+    (htys : args.map Val.ty = stateTys)
+    (hcond : EvalTriple.Exact.EvaluatesCallValues ctx condName args (Val.bool false))
+    (hhead : args.head? = some loopResult) :
+    EvalTriple.Exact.EvaluatesApply ctx
+      (whileRef opName condName bodyName stateTys resultTy) args loopResult := by
+  have hne : args ≠ [] := by
+    intro hnil
+    subst args
+    simp at hhead
+  have hcondApply : EvalTriple.Exact.EvaluatesApply ctx
+      (whileCondRef condName stateTys) args (Val.bool false) :=
+    EvalTriple.Exact.EvaluatesApply.blockRef hcond
+  apply EvalTriple.Exact.EvaluatesApply.opRef
+    (body := Op.Body.collect (Op.whileBodyFromValues (primCtx := ctx.primCtx) opName)
+      (2 + args.length) []) hop
+  · rfl
+  · have hthree : 3 ≤ 2 + args.length := by
+      cases args with
+      | nil => exact (hne rfl).elim
+      | cons => simp; omega
+    change (if 3 ≤ 2 + args.length then
+      some (Op.Body.collect (Op.whileBodyFromValues (primCtx := ctx.primCtx) opName)
+        (2 + args.length) []) else none) = _
+    rw [if_pos hthree]
+  · intro env base
+    have hout : Op.whileResultTy? (primCtx := ctx.primCtx)
+        (.func stateTys Peano.BoolTy ::
+          .func (stateTys ++ [.func stateTys resultTy]) resultTy :: stateTys) =
+          some resultTy := by
+      simp [Op.whileResultTy?, hheadTy]
+    obtain ⟨condStart, hcondDrive, hcondFrom⟩ :=
+      EvalTriple.Exact.EvaluatesFrom.driveOp_apply
+        (env := env) (stack := base) (operands := [])
+        (resume := fun condition =>
+          match condition.asBool? with
+          | some false => .done loopResult
+          | some true =>
+              .apply (whileBodyRef bodyName stateTys resultTy)
+                (args ++ [whileRef opName condName bodyName stateTys resultTy]) .done
+          | none => .fail) hcondApply
+        (hdrive := by simp only [Val.asBool?_bool, Machine.driveOp])
+        (EvalTriple.Exact.EvaluatesFrom.done
+          (ctx := ctx) (value := loopResult) (scope := env) (base := base))
+    refine ⟨condStart, ?_, hcondFrom⟩
+    have hlen :
+        ([whileCondRef condName stateTys, whileBodyRef bodyName stateTys resultTy] ++ args).length =
+          2 + args.length := by simp; omega
+    rw [Machine.driveOp_collect _ _ _ hlen]
+    have hfinish :
+        Op.whileBodyFromValues (primCtx := ctx.primCtx) opName
+            ([whileCondRef condName stateTys, whileBodyRef bodyName stateTys resultTy] ++ args) =
+          .apply (whileCondRef condName stateTys) args (fun condition =>
+            match condition.asBool? with
+            | some false => .done loopResult
+            | some true =>
+                .apply (whileBodyRef bodyName stateTys resultTy)
+                  (args ++ [whileRef opName condName bodyName stateTys resultTy]) .done
+            | none => .fail) := by
+      simp [Op.whileBodyFromValues, hout, hhead, htys,
+        whileCondRef, whileBodyRef, whileRef]
+      funext condition
+      unfold Op.whileAfterCondition
+      rw [htys]
+      rfl
+    simp only [List.nil_append]
+    rw [hfinish]
+    exact hcondDrive
+
+/- A finite invariant rule for the ordinary `while` operator. `N` is the total-correctness
+  termination witness: the rule proves exactly `N` true-condition iterations followed by the
+  false-condition exit, rather than taking a separate decreasing variant function. One body call
+  receives the loop continuation as its final argument. Its premise is continuation-parametric:
+  after proving the simultaneous next state satisfies the invariant, the body may use the supplied
+  application specification and return the recursive answer through its own call frame. -/
 theorem while_invariant {ctx : Ctx} {hM : ctx.M = Id} [Peano.Types ctx.primCtx]
     {opName condName bodyName : String} {stateTys : List Ty} {resultTy : Ty}
     {I : Nat → List (Val ctx.primCtx) → Prop} {N : Nat}
@@ -612,154 +779,63 @@ theorem while_invariant {ctx : Ctx} {hM : ctx.M = Id} [Peano.Types ctx.primCtx]
   apply EvalTriple.Exact.EvaluatesApply.loop init
   · intro n args hn hI hnext
     obtain ⟨hcond, hbody⟩ := preserved n args hn hI
-    have htys := typed n args hI
-    have hne : args ≠ [] := by
-      intro hnil
-      subst args
-      simp at htys
-      simpa [htys] using hheadTy
-    obtain ⟨head, tail, hargs⟩ : ∃ head tail, args = head :: tail := by
-      cases args with
-      | nil => exact (hne rfl).elim
-      | cons head tail => exact ⟨head, tail, rfl⟩
-    have hhead : args.head? = some head := by simp [hargs]
-    have hcondApply : EvalTriple.Exact.EvaluatesApply ctx
-        (whileCondRef condName stateTys) args (Val.bool true) :=
-      EvalTriple.Exact.EvaluatesApply.blockRef hcond
-    have hbodyApply : EvalTriple.Exact.EvaluatesApply ctx
-        (whileBodyRef bodyName stateTys resultTy)
-        (args ++ [whileRef opName condName bodyName stateTys resultTy]) loopResult :=
-      EvalTriple.Exact.EvaluatesApply.blockRef (hbody hnext)
-    apply EvalTriple.Exact.EvaluatesApply.opRef
-      (body := Op.Body.collect (Op.whileBodyFromValues (primCtx := ctx.primCtx) opName)
-        (2 + args.length) []) hop
-    · rfl
-    · have hthree : 3 ≤ 2 + args.length := by
-        cases args with
-        | nil => exact (hne rfl).elim
-        | cons => simp; omega
-      change (if 3 ≤ 2 + args.length then
-        some (Op.Body.collect (Op.whileBodyFromValues (primCtx := ctx.primCtx) opName)
-          (2 + args.length) []) else none) = _
-      rw [if_pos hthree]
-    · intro env base
-      have hout : Op.whileResultTy? (primCtx := ctx.primCtx)
-          (.func stateTys Peano.BoolTy ::
-            .func (stateTys ++ [.func stateTys resultTy]) resultTy :: stateTys) =
-            some resultTy := by
-        simp [Op.whileResultTy?, hheadTy]
-      obtain ⟨bodyStart, hbodyDrive, hbodyFrom⟩ :=
-        EvalTriple.Exact.EvaluatesFrom.driveOp_apply
-          (env := env) (stack := base) (operands := [])
-          (resume := fun value => .done value) hbodyApply
-          (hdrive := by simp [Machine.driveOp])
-          (EvalTriple.Exact.EvaluatesFrom.done
-            (ctx := ctx) (value := loopResult) (scope := env) (base := base))
-      obtain ⟨condStart, hcondDrive, hcondFrom⟩ :=
-        EvalTriple.Exact.EvaluatesFrom.driveOp_apply
-          (env := env) (stack := base) (operands := [])
-          (resume := fun condition =>
-            match condition.asBool? with
-            | some false => .done head
-            | some true =>
-                .apply (whileBodyRef bodyName stateTys resultTy)
-                  (args ++ [whileRef opName condName bodyName stateTys resultTy]) .done
-            | none => .fail) hcondApply
-          (hdrive := by
-            simpa only [Val.asBool?_bool] using hbodyDrive) hbodyFrom
-      refine ⟨condStart, ?_, hcondFrom⟩
-      have hlen :
-          ([whileCondRef condName stateTys, whileBodyRef bodyName stateTys resultTy] ++ args).length =
-            2 + args.length := by simp; omega
-      rw [Machine.driveOp_collect _ _ _ hlen]
-      have hfinish :
-          Op.whileBodyFromValues (primCtx := ctx.primCtx) opName
-              ([whileCondRef condName stateTys, whileBodyRef bodyName stateTys resultTy] ++ args) =
-            .apply (whileCondRef condName stateTys) args (fun condition =>
-              match condition.asBool? with
-              | some false => .done head
-              | some true =>
-                  .apply (whileBodyRef bodyName stateTys resultTy)
-                    (args ++ [whileRef opName condName bodyName stateTys resultTy]) .done
-              | none => .fail) := by
-        simp [Op.whileBodyFromValues, hout, hhead, htys,
-          whileCondRef, whileBodyRef, whileRef]
-        funext condition
-        unfold Op.whileAfterCondition
-        rw [htys]
-        rfl
-      simp only [List.nil_append]
-      rw [hfinish]
-      exact hcondDrive
+    exact while_apply_continue hop hheadTy (typed n args hI) hcond (hbody hnext)
   · intro args hI
     obtain ⟨hcond, hhead⟩ := exits args hI
-    have htys := typed N args hI
-    have hne : args ≠ [] := by
-      intro hnil
-      subst args
-      simp at hhead
-    have hcondApply : EvalTriple.Exact.EvaluatesApply ctx
-        (whileCondRef condName stateTys) args (Val.bool false) :=
-      EvalTriple.Exact.EvaluatesApply.blockRef hcond
-    apply EvalTriple.Exact.EvaluatesApply.opRef
-      (body := Op.Body.collect (Op.whileBodyFromValues (primCtx := ctx.primCtx) opName)
-        (2 + args.length) []) hop
-    · rfl
-    · have hthree : 3 ≤ 2 + args.length := by
-        cases args with
-        | nil => exact (hne rfl).elim
-        | cons => simp; omega
-      change (if 3 ≤ 2 + args.length then
-        some (Op.Body.collect (Op.whileBodyFromValues (primCtx := ctx.primCtx) opName)
-          (2 + args.length) []) else none) = _
-      rw [if_pos hthree]
-    · intro env base
-      have hout : Op.whileResultTy? (primCtx := ctx.primCtx)
-          (.func stateTys Peano.BoolTy ::
-            .func (stateTys ++ [.func stateTys resultTy]) resultTy :: stateTys) =
-            some resultTy := by
-        simp [Op.whileResultTy?, hheadTy]
-      obtain ⟨condStart, hcondDrive, hcondFrom⟩ :=
-        EvalTriple.Exact.EvaluatesFrom.driveOp_apply
-          (env := env) (stack := base) (operands := [])
-          (resume := fun condition =>
-            match condition.asBool? with
-            | some false => .done loopResult
-            | some true =>
-                .apply (whileBodyRef bodyName stateTys resultTy)
-                  (args ++ [whileRef opName condName bodyName stateTys resultTy]) .done
-            | none => .fail) hcondApply
-          (hdrive := by simp only [Val.asBool?_bool, Machine.driveOp])
-          (EvalTriple.Exact.EvaluatesFrom.done
-            (ctx := ctx) (value := loopResult) (scope := env) (base := base))
-      refine ⟨condStart, ?_, hcondFrom⟩
-      have hlen :
-          ([whileCondRef condName stateTys, whileBodyRef bodyName stateTys resultTy] ++ args).length =
-            2 + args.length := by simp; omega
-      rw [Machine.driveOp_collect _ _ _ hlen]
-      have hfinish :
-          Op.whileBodyFromValues (primCtx := ctx.primCtx) opName
-              ([whileCondRef condName stateTys, whileBodyRef bodyName stateTys resultTy] ++ args) =
-            .apply (whileCondRef condName stateTys) args (fun condition =>
-              match condition.asBool? with
-              | some false => .done loopResult
-              | some true =>
-                  .apply (whileBodyRef bodyName stateTys resultTy)
-                    (args ++ [whileRef opName condName bodyName stateTys resultTy]) .done
-              | none => .fail) := by
-        simp [Op.whileBodyFromValues, hout, hhead, htys,
-          whileCondRef, whileBodyRef, whileRef]
-        funext condition
-        unfold Op.whileAfterCondition
-        rw [htys]
-        rfl
-      simp only [List.nil_append]
-      rw [hfinish]
-      exact hcondDrive
+    exact while_apply_exit hop hheadTy (typed N args hI) hcond hhead
 
-/- The term-level entry rule for `while`. The initial operands are evaluated by the enclosing
-operator; recursive iterations use the continuation specification from `while_invariant`. -/
-@[eval_semantic, zspec] theorem while_evaluatesTo {ctx : Ctx} {hM : ctx.M = Id} [Peano.Types ctx.primCtx]
+/- A variant-style rule matching `Std.Do.WhileInvariant`/`WhileVariant`. The condition/body pair is
+  still Zag's continuation-passing operator step: a true condition calls the body with the loop
+  continuation, and the body may use the recursive hypothesis only at strictly smaller variants. -/
+theorem while_variant {ctx : Ctx} {hM : ctx.M = Id} [Peano.Types ctx.primCtx]
+    {opName condName bodyName : String} {stateTys : List Ty} {resultTy : Ty}
+    (measure : Std.Do.WhileVariant (List (Val ctx.primCtx)) .pure)
+    (inv : Std.Do.WhileInvariant (List (Val ctx.primCtx)) (Val ctx.primCtx) .pure)
+    {initial : List (Val ctx.primCtx)} {loopResult : Val ctx.primCtx}
+    (hop : ctx.opCtx.get? opName = some (Op.whileOp (primCtx := ctx.primCtx)))
+    (hheadTy : stateTys.head? = some resultTy)
+    (init : (inv.1 (.inl initial)).down)
+    (typed : ∀ args, (inv.1 (.inl args)).down → args.map Val.ty = stateTys)
+    (step : ∀ args ma,
+      (Std.Do.WhileVariant.eval measure args ma).down →
+      (inv.1 (.inl args)).down →
+        (EvalTriple.Exact.EvaluatesCallValues ctx condName args (Val.bool true) ∧
+          ((∀ nextArgs ma',
+              (Std.Do.WhileVariant.eval measure nextArgs ma').down →
+              ma' < ma →
+              (inv.1 (.inl nextArgs)).down →
+              EvalTriple.Exact.EvaluatesApply ctx
+                (whileRef opName condName bodyName stateTys resultTy)
+                nextArgs loopResult) →
+            EvalTriple.Exact.EvaluatesCallValues ctx bodyName
+              (args ++ [whileRef opName condName bodyName stateTys resultTy]) loopResult)) ∨
+        (EvalTriple.Exact.EvaluatesCallValues ctx condName args (Val.bool false) ∧
+          args.head? = some loopResult ∧ (inv.1 (.inr loopResult)).down)) :
+    EvalTriple.Exact.EvaluatesApply ctx
+      (whileRef opName condName bodyName stateTys resultTy) initial loopResult := by
+  suffices hloop : ∀ ma args,
+      (Std.Do.WhileVariant.eval measure args ma).down →
+      (inv.1 (.inl args)).down →
+      EvalTriple.Exact.EvaluatesApply ctx
+        (whileRef opName condName bodyName stateTys resultTy) args loopResult by
+    exact hloop (measure initial).down initial (by simp [Std.Do.WhileVariant.eval]) init
+  intro ma
+  induction ma using Nat.strongRecOn with
+  | ind ma ih =>
+      intro args hmeasure hI
+      cases step args ma hmeasure hI with
+      | inl hcontinue =>
+          obtain ⟨hcond, hbody⟩ := hcontinue
+          exact while_apply_continue hop hheadTy (typed args hI) hcond (hbody (fun nextArgs ma' hma' hlt hnextI =>
+            ih ma' hlt nextArgs hma' hnextI))
+      | inr hexit =>
+          obtain ⟨hcond, hhead, _hdone⟩ := hexit
+          exact while_apply_exit hop hheadTy (typed args hI) hcond hhead
+
+/- The term-level entry rule for a registered while operator. The initial operands are evaluated by
+the enclosing operator; recursive iterations use the continuation specification from
+`while_invariant`. -/
+theorem while_evaluatesToWithOpName {ctx : Ctx} {hM : ctx.M = Id} [Peano.Types ctx.primCtx]
     {opName condName bodyName : String} {stateTys : List Ty} {resultTy : Ty}
     {I : Nat → List (Val ctx.primCtx) → Prop} {N : Nat}
     {initial : List (Val ctx.primCtx)} {loopResult : Val ctx.primCtx}
@@ -787,7 +863,7 @@ operator; recursive iterations use the continuation specification from `while_in
     intro hnil
     subst initial
     simp at htys
-    simpa [htys] using hheadTy
+    simp [htys] at hheadTy
   have hone : 1 ≤ initial.length := by
     cases initial with
     | nil => exact (hne rfl).elim
@@ -800,6 +876,580 @@ operator; recursive iterations use the continuation specification from `while_in
       hop rfl (by simp [Op.whileOp]; omega) hargs
   exact while_invariant (I := I) (N := N) (loopResult := loopResult)
     hop hheadTy init typed preserved exits
+
+/- Public rule for the surface `while [cond, body] (state...)` operator. The conclusion exposes the
+condition/body names and state terms, so ordinary theorem application can infer them from the goal.
+The finite count `N` is the termination witness. -/
+@[zspec] theorem while_evaluatesTo {ctx : Ctx} {hM : ctx.M = Id} [Peano.Types ctx.primCtx]
+    {condName bodyName : String} {condBlock bodyBlock : Block ctx.primCtx}
+    {I : Nat → List (Val ctx.primCtx) → Prop} {N : Nat}
+    {initial : List (Val ctx.primCtx)} {loopResult : Val ctx.primCtx}
+    {env : Env ctx.primCtx} {stateTerms : List (Term ctx.primCtx)}
+    (hop : ctx.opCtx.get? "while" = some (Op.whileOp (primCtx := ctx.primCtx)) := by
+      first | rfl | simp)
+    (hcondLocal : Scope.get? env condName = none := by
+      first | rfl | simp [Scope.get?])
+    (hbodyLocal : Scope.get? env bodyName = none := by
+      first | rfl | simp [Scope.get?])
+    (hcondBlock : ctx.blockCtx.get? condName = some condBlock := by
+      first | rfl | simp)
+    (hbodyBlock : ctx.blockCtx.get? bodyName = some bodyBlock := by
+      first | rfl | simp)
+    (hcondOut : condBlock.outTy = Peano.BoolTy := by
+      first | rfl | simp)
+    (hheadTy : (condBlock.params.map Prod.snd).head? = some bodyBlock.outTy := by
+      first | rfl | simp)
+    (hbodyParams : bodyBlock.params.map Prod.snd =
+      condBlock.params.map Prod.snd ++ [.func (condBlock.params.map Prod.snd) bodyBlock.outTy] := by
+      first | rfl | simp)
+    (hargs : EvalTriple.Exact.EvaluatesList ctx env stateTerms initial)
+    (init : I 0 initial)
+    (typed : ∀ n args, I n args → args.map Val.ty = condBlock.params.map Prod.snd)
+    (preserved : ∀ n args, n < N → I n args →
+      EvalTriple.Exact.EvaluatesCallValues ctx condName args (Val.bool true) ∧
+      ((∀ nextArgs, I (n + 1) nextArgs →
+          EvalTriple.Exact.EvaluatesApply ctx
+            (whileRef "while" condName bodyName (condBlock.params.map Prod.snd) bodyBlock.outTy)
+            nextArgs loopResult) →
+        EvalTriple.Exact.EvaluatesCallValues ctx bodyName
+          (args ++ [whileRef "while" condName bodyName (condBlock.params.map Prod.snd)
+            bodyBlock.outTy]) loopResult))
+    (exits : ∀ args, I N args →
+      EvalTriple.Exact.EvaluatesCallValues ctx condName args (Val.bool false) ∧
+        args.head? = some loopResult) :
+    EvalTriple.Exact.EvaluatesTo ctx env
+      (.op "while" (.var condName :: .var bodyName :: stateTerms)) loopResult hM := by
+  apply while_evaluatesToWithOpName (opName := "while") (condName := condName)
+    (bodyName := bodyName) (stateTys := condBlock.params.map Prod.snd)
+    (resultTy := bodyBlock.outTy) (I := I) (N := N) (initial := initial)
+    (loopResult := loopResult)
+  · exact hop
+  · exact EvalTriple.Exact.EvaluatesList.cons
+      (EvalTriple.Exact.EvaluatesTo.of_eq
+        (EvalTriple.Exact.EvaluatesTo.var_block hcondLocal hcondBlock)
+        (by simp [whileCondRef, hcondOut]))
+      (EvalTriple.Exact.EvaluatesList.cons
+        (EvalTriple.Exact.EvaluatesTo.of_eq
+          (EvalTriple.Exact.EvaluatesTo.var_block hbodyLocal hbodyBlock)
+          (by simp [whileBodyRef, hbodyParams]))
+        hargs)
+  · exact hheadTy
+  · exact init
+  · exact typed
+  · exact preserved
+  · exact exits
+
+theorem while_evaluatesTo_variant {ctx : Ctx} {hM : ctx.M = Id} [Peano.Types ctx.primCtx]
+    {condName bodyName : String} {condBlock bodyBlock : Block ctx.primCtx}
+    (measure : Std.Do.WhileVariant (List (Val ctx.primCtx)) .pure)
+    (inv : Std.Do.WhileInvariant (List (Val ctx.primCtx)) (Val ctx.primCtx) .pure)
+    {initial : List (Val ctx.primCtx)} {loopResult : Val ctx.primCtx}
+    {env : Env ctx.primCtx} {stateTerms : List (Term ctx.primCtx)}
+    (hop : ctx.opCtx.get? "while" = some (Op.whileOp (primCtx := ctx.primCtx)) := by
+      first | rfl | simp)
+    (hcondLocal : Scope.get? env condName = none := by
+      first | rfl | simp [Scope.get?])
+    (hbodyLocal : Scope.get? env bodyName = none := by
+      first | rfl | simp [Scope.get?])
+    (hcondBlock : ctx.blockCtx.get? condName = some condBlock := by
+      first | rfl | simp)
+    (hbodyBlock : ctx.blockCtx.get? bodyName = some bodyBlock := by
+      first | rfl | simp)
+    (hcondOut : condBlock.outTy = Peano.BoolTy := by
+      first | rfl | simp)
+    (hheadTy : (condBlock.params.map Prod.snd).head? = some bodyBlock.outTy := by
+      first | rfl | simp)
+    (hbodyParams : bodyBlock.params.map Prod.snd =
+      condBlock.params.map Prod.snd ++ [.func (condBlock.params.map Prod.snd) bodyBlock.outTy] := by
+      first | rfl | simp)
+    (hargs : EvalTriple.Exact.EvaluatesList ctx env stateTerms initial)
+    (init : (inv.1 (.inl initial)).down)
+    (typed : ∀ args,
+      (inv.1 (.inl args)).down → args.map Val.ty = condBlock.params.map Prod.snd)
+    (step : ∀ args ma,
+      (Std.Do.WhileVariant.eval measure args ma).down →
+      (inv.1 (.inl args)).down →
+        (EvalTriple.Exact.EvaluatesCallValues ctx condName args (Val.bool true) ∧
+          ((∀ nextArgs ma',
+              (Std.Do.WhileVariant.eval measure nextArgs ma').down →
+              ma' < ma →
+              (inv.1 (.inl nextArgs)).down →
+              EvalTriple.Exact.EvaluatesApply ctx
+                (whileRef "while" condName bodyName (condBlock.params.map Prod.snd)
+                  bodyBlock.outTy)
+                nextArgs loopResult hM) →
+            EvalTriple.Exact.EvaluatesCallValues ctx bodyName
+              (args ++ [whileRef "while" condName bodyName (condBlock.params.map Prod.snd)
+                bodyBlock.outTy]) loopResult hM)) ∨
+        (EvalTriple.Exact.EvaluatesCallValues ctx condName args (Val.bool false) ∧
+          args.head? = some loopResult ∧ (inv.1 (.inr loopResult)).down)) :
+    EvalTriple.Exact.EvaluatesTo ctx env
+      (.op "while" (.var condName :: .var bodyName :: stateTerms)) loopResult hM := by
+  have htys := typed initial init
+  have hne : initial ≠ [] := by
+    intro hnil
+    subst initial
+    simp at htys
+    simp [htys] at hheadTy
+  have hone : 1 ≤ initial.length := by
+    cases initial with
+    | nil => exact (hne rfl).elim
+    | cons => simp
+  apply EvalTriple.Exact.EvaluatesTo.op_collect_of_opRef
+      (captured := [whileCondRef condName (condBlock.params.map Prod.snd),
+        whileBodyRef bodyName (condBlock.params.map Prod.snd) bodyBlock.outTy])
+      (args := initial) (argTys := condBlock.params.map Prod.snd) (outTy := bodyBlock.outTy)
+      (finish := Op.whileBodyFromValues (primCtx := ctx.primCtx) "while")
+      hop rfl (by simp [Op.whileOp]; omega)
+  · exact EvalTriple.Exact.EvaluatesList.cons
+      (EvalTriple.Exact.EvaluatesTo.of_eq
+        (EvalTriple.Exact.EvaluatesTo.var_block hcondLocal hcondBlock)
+        (by simp [whileCondRef, hcondOut]))
+      (EvalTriple.Exact.EvaluatesList.cons
+        (EvalTriple.Exact.EvaluatesTo.of_eq
+          (EvalTriple.Exact.EvaluatesTo.var_block hbodyLocal hbodyBlock)
+          (by simp [whileBodyRef, hbodyParams]))
+        hargs)
+  · exact while_variant (ctx := ctx) (hM := hM) (opName := "while")
+      (condName := condName) (bodyName := bodyName)
+      (stateTys := condBlock.params.map Prod.snd) (resultTy := bodyBlock.outTy)
+      measure inv hop hheadTy init typed step
+
+@[spec] theorem eval?_nat_spec {ctx : Ctx} {hM : ctx.M = Id} [Peano.Types ctx.primCtx]
+    (env : Env ctx.primCtx) (n : Nat)
+    (Q : Std.Do.PostCond (Option (Val ctx.primCtx)) .pure) :
+    Std.Do.Triple (EvalTriple.Exact.eval? ctx env (Term.nat n) hM)
+      (Q.1 (some (Val.nat n))) Q := by
+  exact EvalTriple.Exact.eval?_triple_of_evaluatesTo (evaluates_nat env n) Q
+
+@[spec] theorem eval?_bool_spec {ctx : Ctx} {hM : ctx.M = Id} [Peano.Types ctx.primCtx]
+    (env : Env ctx.primCtx) (b : Bool)
+    (Q : Std.Do.PostCond (Option (Val ctx.primCtx)) .pure) :
+    Std.Do.Triple (EvalTriple.Exact.eval? ctx env (Term.bool b) hM)
+      (Q.1 (some (Val.bool b))) Q := by
+  exact EvalTriple.Exact.eval?_triple_of_evaluatesTo (evaluates_bool env b) Q
+
+@[spec] theorem eval?_add_nat_spec {ctx : Ctx} {hM : ctx.M = Id} [Peano.Model ctx]
+    {env : Env ctx.primCtx} {a b : Term ctx.primCtx}
+    (Q : Std.Do.PostCond (Option (Val ctx.primCtx)) .pure) :
+    Std.Do.Triple (EvalTriple.Exact.eval? ctx env (.op "add" [a, b]) hM)
+      ((Std.Do.wp (EvalTriple.Exact.eval? ctx env a hM)).apply
+        (EvalTriple.somePost fun aValue =>
+          (Std.Do.wp (EvalTriple.Exact.eval? ctx env b hM)).apply
+            (EvalTriple.somePost fun bValue => Std.Do.SPred.pure
+              (∃ m n : Nat, aValue = Val.nat m ∧ bValue = Val.nat n ∧
+                (Q.1 (some (Val.nat (m + n)))).down)))) Q := by
+  change _ → _
+  intro hpre
+  obtain ⟨aValue, ha, hbWp⟩ := EvalTriple.Exact.eval?_some_of_wp hpre
+  obtain ⟨bValue, hb, hpost⟩ := EvalTriple.Exact.eval?_some_of_wp hbWp
+  obtain ⟨m, n, haValue, hbValue, hQ⟩ := hpost
+  subst aValue
+  subst bValue
+  exact EvalTriple.Exact.eval?_triple_of_evaluatesTo
+    (evaluates_add_nat ha hb) Q hQ
+
+@[spec] theorem eval?_sub_nat_spec {ctx : Ctx} {hM : ctx.M = Id} [Peano.Model ctx]
+    {env : Env ctx.primCtx} {a b : Term ctx.primCtx}
+    (Q : Std.Do.PostCond (Option (Val ctx.primCtx)) .pure) :
+    Std.Do.Triple (EvalTriple.Exact.eval? ctx env (.op "sub" [a, b]) hM)
+      ((Std.Do.wp (EvalTriple.Exact.eval? ctx env a hM)).apply
+        (EvalTriple.somePost fun aValue =>
+          (Std.Do.wp (EvalTriple.Exact.eval? ctx env b hM)).apply
+            (EvalTriple.somePost fun bValue => Std.Do.SPred.pure
+              (∃ m n : Nat, aValue = Val.nat m ∧ bValue = Val.nat n ∧
+                (Q.1 (some (Val.nat (m - n)))).down)))) Q := by
+  change _ → _
+  intro hpre
+  obtain ⟨aValue, ha, hbWp⟩ := EvalTriple.Exact.eval?_some_of_wp hpre
+  obtain ⟨bValue, hb, hpost⟩ := EvalTriple.Exact.eval?_some_of_wp hbWp
+  obtain ⟨m, n, haValue, hbValue, hQ⟩ := hpost
+  subst aValue
+  subst bValue
+  exact EvalTriple.Exact.eval?_triple_of_evaluatesTo
+    (evaluates_sub_nat ha hb) Q hQ
+
+@[spec] theorem eval?_gt_nat_spec {ctx : Ctx} {hM : ctx.M = Id} [Peano.Model ctx]
+    {env : Env ctx.primCtx} {a b : Term ctx.primCtx}
+    (Q : Std.Do.PostCond (Option (Val ctx.primCtx)) .pure) :
+    Std.Do.Triple (EvalTriple.Exact.eval? ctx env (.op "gt" [a, b]) hM)
+      ((Std.Do.wp (EvalTriple.Exact.eval? ctx env a hM)).apply
+        (EvalTriple.somePost fun aValue =>
+          (Std.Do.wp (EvalTriple.Exact.eval? ctx env b hM)).apply
+            (EvalTriple.somePost fun bValue => Std.Do.SPred.pure
+              (∃ m n : Nat, aValue = Val.nat m ∧ bValue = Val.nat n ∧
+                (Q.1 (some (Val.bool (decide (n < m))))).down)))) Q := by
+  change _ → _
+  intro hpre
+  obtain ⟨aValue, ha, hbWp⟩ := EvalTriple.Exact.eval?_some_of_wp hpre
+  obtain ⟨bValue, hb, hpost⟩ := EvalTriple.Exact.eval?_some_of_wp hbWp
+  obtain ⟨m, n, haValue, hbValue, hQ⟩ := hpost
+  subst aValue
+  subst bValue
+  exact EvalTriple.Exact.eval?_triple_of_evaluatesTo
+    (evaluates_gt_nat ha hb) Q hQ
+
+theorem eval?_add_nat_eq_spec {ctx : Ctx} {hM : ctx.M = Id} [Peano.Model ctx]
+    {env : Env ctx.primCtx} {a b : Term ctx.primCtx} {m n : Nat}
+    (ha : Std.Do.Triple (EvalTriple.Exact.eval? ctx env a hM)
+      (Std.Do.SPred.pure True) (EvalTriple.someEqPost (Val.nat m)))
+    (hb : Std.Do.Triple (EvalTriple.Exact.eval? ctx env b hM)
+      (Std.Do.SPred.pure True) (EvalTriple.someEqPost (Val.nat n))) :
+    Std.Do.Triple (EvalTriple.Exact.eval? ctx env (.op "add" [a, b]) hM)
+      (Std.Do.SPred.pure True) (EvalTriple.someEqPost (Val.nat (m + n))) := by
+  exact EvalTriple.Exact.eval?_eq_triple_of_evaluatesTo
+    (evaluates_add_nat
+      (EvalTriple.Exact.evaluatesTo_of_eval?_triple ha)
+      (EvalTriple.Exact.evaluatesTo_of_eval?_triple hb))
+
+theorem eval?_sub_nat_eq_spec {ctx : Ctx} {hM : ctx.M = Id} [Peano.Model ctx]
+    {env : Env ctx.primCtx} {a b : Term ctx.primCtx} {m n : Nat}
+    (ha : Std.Do.Triple (EvalTriple.Exact.eval? ctx env a hM)
+      (Std.Do.SPred.pure True) (EvalTriple.someEqPost (Val.nat m)))
+    (hb : Std.Do.Triple (EvalTriple.Exact.eval? ctx env b hM)
+      (Std.Do.SPred.pure True) (EvalTriple.someEqPost (Val.nat n))) :
+    Std.Do.Triple (EvalTriple.Exact.eval? ctx env (.op "sub" [a, b]) hM)
+      (Std.Do.SPred.pure True) (EvalTriple.someEqPost (Val.nat (m - n))) := by
+  exact EvalTriple.Exact.eval?_eq_triple_of_evaluatesTo
+    (evaluates_sub_nat
+      (EvalTriple.Exact.evaluatesTo_of_eval?_triple ha)
+      (EvalTriple.Exact.evaluatesTo_of_eval?_triple hb))
+
+theorem eval?_gt_nat_eq_spec {ctx : Ctx} {hM : ctx.M = Id} [Peano.Model ctx]
+    {env : Env ctx.primCtx} {a b : Term ctx.primCtx} {m n : Nat}
+    (ha : Std.Do.Triple (EvalTriple.Exact.eval? ctx env a hM)
+      (Std.Do.SPred.pure True) (EvalTriple.someEqPost (Val.nat m)))
+    (hb : Std.Do.Triple (EvalTriple.Exact.eval? ctx env b hM)
+      (Std.Do.SPred.pure True) (EvalTriple.someEqPost (Val.nat n))) :
+    Std.Do.Triple (EvalTriple.Exact.eval? ctx env (.op "gt" [a, b]) hM)
+      (Std.Do.SPred.pure True) (EvalTriple.someEqPost (Val.bool (decide (n < m)))) := by
+  exact EvalTriple.Exact.eval?_eq_triple_of_evaluatesTo
+    (evaluates_gt_nat
+      (EvalTriple.Exact.evaluatesTo_of_eval?_triple ha)
+      (EvalTriple.Exact.evaluatesTo_of_eval?_triple hb))
+
+theorem eval?_while_spec {ctx : Ctx} {hM : ctx.M = Id} [Peano.Types ctx.primCtx]
+    {condName bodyName : String} {condBlock bodyBlock : Block ctx.primCtx}
+    {I : Nat → List (Val ctx.primCtx) → Prop} {N : Nat}
+    {initial : List (Val ctx.primCtx)} {loopResult : Val ctx.primCtx}
+    {env : Env ctx.primCtx} {stateTerms : List (Term ctx.primCtx)}
+    (hargs : Std.Do.Triple (EvalTriple.Exact.evalList? ctx env stateTerms hM)
+      (Std.Do.SPred.pure True) (EvalTriple.someEqPost initial))
+    (hop : ctx.opCtx.get? "while" = some (Op.whileOp (primCtx := ctx.primCtx)) := by
+      first | rfl | simp)
+    (hcondLocal : Scope.get? env condName = none := by
+      first | rfl | simp [Scope.get?])
+    (hbodyLocal : Scope.get? env bodyName = none := by
+      first | rfl | simp [Scope.get?])
+    (hcondBlock : ctx.blockCtx.get? condName = some condBlock := by
+      first | rfl | simp)
+    (hbodyBlock : ctx.blockCtx.get? bodyName = some bodyBlock := by
+      first | rfl | simp)
+    (hcondOut : condBlock.outTy = Peano.BoolTy := by
+      first | rfl | simp)
+    (hheadTy : (condBlock.params.map Prod.snd).head? = some bodyBlock.outTy := by
+      first | rfl | simp)
+    (hbodyParams : bodyBlock.params.map Prod.snd =
+      condBlock.params.map Prod.snd ++ [.func (condBlock.params.map Prod.snd) bodyBlock.outTy] := by
+      first | rfl | simp)
+    (init : I 0 initial)
+    (typed : ∀ n args, I n args → args.map Val.ty = condBlock.params.map Prod.snd)
+    (preserved : ∀ n args, n < N → I n args →
+      Std.Do.Triple (EvalTriple.Exact.callValues? ctx condName args hM)
+        (Std.Do.SPred.pure True) (EvalTriple.someEqPost (Val.bool true)) ∧
+      ((∀ nextArgs, I (n + 1) nextArgs →
+          EvalTriple.Exact.EvaluatesApply ctx
+            (whileRef "while" condName bodyName (condBlock.params.map Prod.snd)
+              bodyBlock.outTy)
+            nextArgs loopResult hM) →
+        Std.Do.Triple (EvalTriple.Exact.callValues? ctx bodyName
+          (args ++ [whileRef "while" condName bodyName (condBlock.params.map Prod.snd)
+            bodyBlock.outTy]) hM)
+          (Std.Do.SPred.pure True) (EvalTriple.someEqPost loopResult)))
+    (exits : ∀ args, I N args →
+      Std.Do.Triple (EvalTriple.Exact.callValues? ctx condName args hM)
+        (Std.Do.SPred.pure True) (EvalTriple.someEqPost (Val.bool false)) ∧
+        args.head? = some loopResult)
+    (Q : Std.Do.PostCond (Option (Val ctx.primCtx)) .pure) :
+    Std.Do.Triple (EvalTriple.Exact.eval? ctx env
+        (.op "while" (.var condName :: .var bodyName :: stateTerms)) hM)
+      (Q.1 (some loopResult)) Q := by
+  have hargsRel := EvalTriple.Exact.evaluatesList_of_evalList?_triple hargs
+  exact EvalTriple.Exact.eval?_triple_of_evaluatesTo
+    (while_evaluatesTo (ctx := ctx) (hM := hM) (condName := condName)
+      (bodyName := bodyName) (condBlock := condBlock) (bodyBlock := bodyBlock)
+      (I := I) (N := N) (initial := initial) (loopResult := loopResult)
+      (env := env) (stateTerms := stateTerms) (hop := hop)
+      (hcondLocal := hcondLocal) (hbodyLocal := hbodyLocal)
+      (hcondBlock := hcondBlock) (hbodyBlock := hbodyBlock)
+      (hcondOut := hcondOut) (hheadTy := hheadTy)
+      (hbodyParams := hbodyParams) (hargs := hargsRel) (init := init)
+      (typed := typed)
+      (preserved := by
+        intro n args hn hI
+        obtain ⟨hcond, hbody⟩ := preserved n args hn hI
+        exact ⟨EvalTriple.Exact.evaluatesCallValues_of_callValues?_triple hcond,
+          fun hnext =>
+            EvalTriple.Exact.evaluatesCallValues_of_callValues?_triple (hbody hnext)⟩)
+      (exits := by
+        intro args hI
+        obtain ⟨hcond, hhead⟩ := exits args hI
+        exact ⟨EvalTriple.Exact.evaluatesCallValues_of_callValues?_triple hcond, hhead⟩)) Q
+
+theorem eval?_while_variant_spec {ctx : Ctx} {hM : ctx.M = Id} [Peano.Types ctx.primCtx]
+    {condName bodyName : String} {condBlock bodyBlock : Block ctx.primCtx}
+    (measure : Std.Do.WhileVariant (List (Val ctx.primCtx)) .pure)
+    (inv : Std.Do.WhileInvariant (List (Val ctx.primCtx)) (Val ctx.primCtx) .pure)
+    {initial : List (Val ctx.primCtx)} {loopResult : Val ctx.primCtx}
+    {env : Env ctx.primCtx} {stateTerms : List (Term ctx.primCtx)}
+    (hargs : Std.Do.Triple (EvalTriple.Exact.evalList? ctx env stateTerms hM)
+      (Std.Do.SPred.pure True) (EvalTriple.someEqPost initial))
+    (hop : ctx.opCtx.get? "while" = some (Op.whileOp (primCtx := ctx.primCtx)) := by
+      first | rfl | simp)
+    (hcondLocal : Scope.get? env condName = none := by
+      first | rfl | simp [Scope.get?])
+    (hbodyLocal : Scope.get? env bodyName = none := by
+      first | rfl | simp [Scope.get?])
+    (hcondBlock : ctx.blockCtx.get? condName = some condBlock := by
+      first | rfl | simp)
+    (hbodyBlock : ctx.blockCtx.get? bodyName = some bodyBlock := by
+      first | rfl | simp)
+    (hcondOut : condBlock.outTy = Peano.BoolTy := by
+      first | rfl | simp)
+    (hheadTy : (condBlock.params.map Prod.snd).head? = some bodyBlock.outTy := by
+      first | rfl | simp)
+    (hbodyParams : bodyBlock.params.map Prod.snd =
+      condBlock.params.map Prod.snd ++ [.func (condBlock.params.map Prod.snd) bodyBlock.outTy] := by
+      first | rfl | simp)
+    (init : (inv.1 (.inl initial)).down)
+    (typed : ∀ args,
+      (inv.1 (.inl args)).down → args.map Val.ty = condBlock.params.map Prod.snd)
+    (step : ∀ args ma,
+      (Std.Do.WhileVariant.eval measure args ma).down →
+      (inv.1 (.inl args)).down →
+        (Std.Do.Triple (EvalTriple.Exact.callValues? ctx condName args hM)
+            (Std.Do.SPred.pure True) (EvalTriple.someEqPost (Val.bool true)) ∧
+          ((∀ nextArgs ma',
+              (Std.Do.WhileVariant.eval measure nextArgs ma').down →
+              ma' < ma →
+              (inv.1 (.inl nextArgs)).down →
+              EvalTriple.Exact.EvaluatesApply ctx
+                (whileRef "while" condName bodyName (condBlock.params.map Prod.snd)
+                  bodyBlock.outTy)
+                nextArgs loopResult hM) →
+            Std.Do.Triple (EvalTriple.Exact.callValues? ctx bodyName
+              (args ++ [whileRef "while" condName bodyName (condBlock.params.map Prod.snd)
+                bodyBlock.outTy]) hM)
+              (Std.Do.SPred.pure True) (EvalTriple.someEqPost loopResult))) ∨
+        (Std.Do.Triple (EvalTriple.Exact.callValues? ctx condName args hM)
+            (Std.Do.SPred.pure True) (EvalTriple.someEqPost (Val.bool false)) ∧
+          args.head? = some loopResult ∧ (inv.1 (.inr loopResult)).down))
+    (Q : Std.Do.PostCond (Option (Val ctx.primCtx)) .pure) :
+    Std.Do.Triple (EvalTriple.Exact.eval? ctx env
+        (.op "while" (.var condName :: .var bodyName :: stateTerms)) hM)
+      (Q.1 (some loopResult)) Q := by
+  have hargsRel := EvalTriple.Exact.evaluatesList_of_evalList?_triple hargs
+  exact EvalTriple.Exact.eval?_triple_of_evaluatesTo
+    (while_evaluatesTo_variant (ctx := ctx) (hM := hM) (condName := condName)
+      (bodyName := bodyName) (condBlock := condBlock) (bodyBlock := bodyBlock)
+      measure inv (initial := initial) (loopResult := loopResult)
+      (env := env) (stateTerms := stateTerms) (hop := hop)
+      (hcondLocal := hcondLocal) (hbodyLocal := hbodyLocal)
+      (hcondBlock := hcondBlock) (hbodyBlock := hbodyBlock)
+      (hcondOut := hcondOut) (hheadTy := hheadTy)
+      (hbodyParams := hbodyParams) (hargs := hargsRel) (init := init)
+      (typed := typed)
+      (step := by
+        intro args ma hmeasure hI
+        cases step args ma hmeasure hI with
+        | inl hcontinue =>
+            obtain ⟨hcond, hbody⟩ := hcontinue
+            exact Or.inl ⟨EvalTriple.Exact.evaluatesCallValues_of_callValues?_triple hcond,
+              fun hnext =>
+                EvalTriple.Exact.evaluatesCallValues_of_callValues?_triple (hbody hnext)⟩
+        | inr hexit =>
+            obtain ⟨hcond, hhead, hdone⟩ := hexit
+            exact Or.inr
+              ⟨EvalTriple.Exact.evaluatesCallValues_of_callValues?_triple hcond,
+                hhead, hdone⟩)) Q
+
+/-- Structural side conditions for the automation-friendly equality-post while wrapper. -/
+abbrev evalWhileEqWf {ctx : Ctx} [Peano.Types ctx.primCtx] (env : Env ctx.primCtx)
+    (operands : List (Term ctx.primCtx)) : Prop :=
+  match operands with
+  | .var condName :: .var bodyName :: _ =>
+      ctx.opCtx.get? "while" = some (Op.whileOp (primCtx := ctx.primCtx)) ∧
+      Scope.get? env condName = none ∧
+      Scope.get? env bodyName = none ∧
+      (match ctx.blockCtx.get? condName, ctx.blockCtx.get? bodyName with
+      | some condBlock, some bodyBlock =>
+          condBlock.outTy = Peano.BoolTy ∧
+          (condBlock.params.map Prod.snd).head? = some bodyBlock.outTy ∧
+          bodyBlock.params.map Prod.snd =
+            condBlock.params.map Prod.snd ++
+              [.func (condBlock.params.map Prod.snd) bodyBlock.outTy]
+      | _, _ => False)
+  | _ => False
+
+/-- Type-preservation side condition for the equality-post while wrapper. -/
+abbrev evalWhileEqTyped {ctx : Ctx}
+    (operands : List (Term ctx.primCtx))
+    (inv : Std.Do.WhileInvariant (List (Val ctx.primCtx)) (Val ctx.primCtx) .pure) : Prop :=
+  match operands with
+  | .var condName :: .var _ :: _ =>
+      match ctx.blockCtx.get? condName with
+      | some condBlock =>
+          ∀ args, (inv.1 (.inl args)).down → args.map Val.ty = condBlock.params.map Prod.snd
+      | none => False
+  | _ => False
+
+/-- Step side condition for the equality-post while wrapper. -/
+abbrev evalWhileEqStep {ctx : Ctx} [Peano.Types ctx.primCtx] (hM : ctx.M = Id)
+    (operands : List (Term ctx.primCtx))
+    (measure : Std.Do.WhileVariant (List (Val ctx.primCtx)) .pure)
+    (inv : Std.Do.WhileInvariant (List (Val ctx.primCtx)) (Val ctx.primCtx) .pure)
+    (loopResult : Val ctx.primCtx) : Prop :=
+  match operands with
+  | .var condName :: .var bodyName :: _ =>
+      match ctx.blockCtx.get? condName, ctx.blockCtx.get? bodyName with
+      | some condBlock, some bodyBlock =>
+          ∀ args ma,
+            (Std.Do.WhileVariant.eval measure args ma).down →
+            (inv.1 (.inl args)).down →
+              (Std.Do.Triple (EvalTriple.Exact.callValues? ctx condName args hM)
+                  (Std.Do.SPred.pure True) (EvalTriple.someEqPost (Val.bool true)) ∧
+                ((∀ nextArgs ma',
+                    (Std.Do.WhileVariant.eval measure nextArgs ma').down →
+                    ma' < ma →
+                    (inv.1 (.inl nextArgs)).down →
+                    EvalTriple.Exact.EvaluatesApply ctx
+                      (whileRef "while" condName bodyName (condBlock.params.map Prod.snd)
+                        bodyBlock.outTy)
+                      nextArgs loopResult hM) →
+                  Std.Do.Triple (EvalTriple.Exact.callValues? ctx bodyName
+                    (args ++ [whileRef "while" condName bodyName
+                      (condBlock.params.map Prod.snd) bodyBlock.outTy]) hM)
+                    (Std.Do.SPred.pure True) (EvalTriple.someEqPost loopResult))) ∨
+              Std.Do.Triple (EvalTriple.Exact.callValues? ctx condName args hM)
+                (Std.Do.SPred.pure True) (EvalTriple.someEqPost (Val.bool false)) ∧
+                args.head? = some loopResult ∧ (inv.1 (.inr loopResult)).down
+      | _, _ => False
+  | _ => False
+
+/-- Automation-friendly equality-post wrapper for the variant-style while rule. -/
+@[spec] theorem eval?_while_eq_spec {ctx : Ctx} {hM : ctx.M = Id} [Peano.Types ctx.primCtx]
+    (measure : Std.Do.WhileVariant (List (Val ctx.primCtx)) .pure)
+    (inv : Std.Do.WhileInvariant (List (Val ctx.primCtx)) (Val ctx.primCtx) .pure)
+    {loopResult : Val ctx.primCtx}
+    {env : Env ctx.primCtx} {operands : List (Term ctx.primCtx)}
+    {wf : evalWhileEqWf (ctx := ctx) env operands}
+    {typed : evalWhileEqTyped (ctx := ctx) operands inv}
+    {step : evalWhileEqStep (ctx := ctx) hM operands measure inv loopResult} :
+    Std.Do.Triple (EvalTriple.Exact.eval? ctx env
+        (.op "while" operands) hM)
+      ((Std.Do.wp (EvalTriple.Exact.evalList? ctx env (operands.drop 2) hM)).apply
+        (EvalTriple.somePost fun initial => inv.1 (.inl initial)))
+      (EvalTriple.someEqPost loopResult) := by
+  rw [Std.Do.Triple.iff]
+  intro hpre
+  cases operands with
+  | nil =>
+      simp [evalWhileEqWf] at wf
+  | cons first rest =>
+      cases first with
+      | var condName =>
+          cases rest with
+          | nil =>
+              simp [evalWhileEqWf] at wf
+          | cons second stateTerms =>
+              cases second with
+              | var bodyName =>
+                  cases hcondBlock : ctx.blockCtx.get? condName with
+                  | none =>
+                      simp [evalWhileEqWf, hcondBlock] at wf
+                  | some condBlock =>
+                      cases hbodyBlock : ctx.blockCtx.get? bodyName with
+                      | none =>
+                          simp [evalWhileEqWf, hcondBlock, hbodyBlock] at wf
+                      | some bodyBlock =>
+                          have hpre' : ((Std.Do.wp
+                              (EvalTriple.Exact.evalList? ctx env stateTerms hM)).apply
+                              (EvalTriple.somePost fun initial => inv.1 (.inl initial))).down := by
+                            simpa using hpre
+                          have hwf :
+                              ctx.opCtx.get? "while" = some (Op.whileOp (primCtx := ctx.primCtx)) ∧
+                              Scope.get? env condName = none ∧
+                              Scope.get? env bodyName = none ∧
+                              condBlock.outTy = Peano.BoolTy ∧
+                              (condBlock.params.map Prod.snd).head? = some bodyBlock.outTy ∧
+                              bodyBlock.params.map Prod.snd =
+                                condBlock.params.map Prod.snd ++
+                                  [.func (condBlock.params.map Prod.snd) bodyBlock.outTy] := by
+                            simpa [evalWhileEqWf, hcondBlock, hbodyBlock] using wf
+                          obtain ⟨hop, hcondLocal, hbodyLocal, hcondOut, hheadTy, hbodyParams⟩ := hwf
+                          have htyped : ∀ args,
+                              (inv.1 (.inl args)).down →
+                                args.map Val.ty = condBlock.params.map Prod.snd := by
+                            simpa [evalWhileEqTyped, hcondBlock] using typed
+                          have hstep : ∀ args ma,
+                              (Std.Do.WhileVariant.eval measure args ma).down →
+                              (inv.1 (.inl args)).down →
+                                (Std.Do.Triple (EvalTriple.Exact.callValues? ctx condName args hM)
+                                    (Std.Do.SPred.pure True)
+                                    (EvalTriple.someEqPost (Val.bool true)) ∧
+                                  ((∀ nextArgs ma',
+                                      (Std.Do.WhileVariant.eval measure nextArgs ma').down →
+                                      ma' < ma →
+                                      (inv.1 (.inl nextArgs)).down →
+                                      EvalTriple.Exact.EvaluatesApply ctx
+                                        (whileRef "while" condName bodyName
+                                          (condBlock.params.map Prod.snd) bodyBlock.outTy)
+                                        nextArgs loopResult hM) →
+                                    Std.Do.Triple (EvalTriple.Exact.callValues? ctx bodyName
+                                      (args ++ [whileRef "while" condName bodyName
+                                        (condBlock.params.map Prod.snd) bodyBlock.outTy]) hM)
+                                      (Std.Do.SPred.pure True)
+                                      (EvalTriple.someEqPost loopResult))) ∨
+                                Std.Do.Triple (EvalTriple.Exact.callValues? ctx condName args hM)
+                                  (Std.Do.SPred.pure True)
+                                  (EvalTriple.someEqPost (Val.bool false)) ∧
+                                  args.head? = some loopResult ∧
+                                  (inv.1 (.inr loopResult)).down := by
+                            simpa [evalWhileEqStep, hcondBlock, hbodyBlock] using step
+                          obtain ⟨initial, hargsRel, hinit⟩ :=
+                            EvalTriple.Exact.evalList?_some_of_wp hpre'
+                          exact (eval?_while_variant_spec (ctx := ctx) (hM := hM)
+                            (condName := condName) (bodyName := bodyName)
+                            (condBlock := condBlock) (bodyBlock := bodyBlock)
+                            measure inv (initial := initial) (loopResult := loopResult)
+                            (env := env) (stateTerms := stateTerms)
+                            (EvalTriple.Exact.evalList?_eq_triple_of_evaluatesList hargsRel)
+                            (hop := hop) (hcondLocal := hcondLocal)
+                            (hbodyLocal := hbodyLocal) (hcondBlock := hcondBlock)
+                            (hbodyBlock := hbodyBlock) (hcondOut := hcondOut)
+                            (hheadTy := hheadTy) (hbodyParams := hbodyParams)
+                            (init := hinit) (typed := htyped) (step := hstep)
+                            (Q := EvalTriple.someEqPost loopResult)) rfl
+              | prim ty value =>
+                  simp [evalWhileEqWf] at wf
+              | app fn args =>
+                  simp [evalWhileEqWf] at wf
+              | «op» name args =>
+                  simp [evalWhileEqWf] at wf
+              | «call» name args =>
+                  simp [evalWhileEqWf] at wf
+              | «exit» name term =>
+                  simp [evalWhileEqWf] at wf
+      | prim ty value =>
+          simp [evalWhileEqWf] at wf
+      | app fn args =>
+          simp [evalWhileEqWf] at wf
+      | «op» name args =>
+          simp [evalWhileEqWf] at wf
+      | «call» name args =>
+          simp [evalWhileEqWf] at wf
+      | «exit» name term =>
+          simp [evalWhileEqWf] at wf
 
 end Exact
 

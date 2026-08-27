@@ -1,5 +1,5 @@
 import Lib.Peano.Eval
-import Zag.EvalState
+import Zag.Machine
 import Meta.UnifyType
 
 /-!

@@ -1,4 +1,3 @@
-import Zag.EvalState
 import Zag.EvalTriple
 import Std.Do
 

@@ -16,7 +16,7 @@ roots = ["Lib.Peano.Defs", "Lib.Peano.Eval", "Lib.PeanoHeap"]
 
 [[lean_lib]]
 name = "Meta"
-roots = ["Meta.Induction", "Meta.UnifyType", "Meta.Eval", "Meta.Peano.Eval"]
+roots = ["Meta.Induction", "Meta.UnifyType", "Meta.Eval"]
 
 [[lean_lib]]
 name = "HeapAlgebra"

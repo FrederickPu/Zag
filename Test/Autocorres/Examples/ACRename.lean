@@ -67,36 +67,23 @@ private theorem renameGet_evaluates_state (heap : Heap) (ptr : Ptr) :
       (checkedBlocks renameBlocks renameBlocksValid) "ac___get_real_var__"
       [termPtr ptr.addr] heap (Val.nat (Heap.read heap ptr)) heap := by
   rcases ptr with ⟨ptr⟩
-  set_option zvcgen.resumeReturn true in
-    zvcgen [renameBlocks, checkedBlocks, loadOp, Op.effectful, Op.Body.collect,
-      Op.Arg.ofTerms, Op.Arg.ofVals, Block.entryEnv, Scope.get?, termPtr,
-      valPtr, asPtr?, Op.ofVals, Op.Body.eager, Op.fixed, Val.ty_mk,
-      Val.mk_ofNat, Val.as?_mk, Val.asNat?_nat, toPtr_ofPtr, driveOp_apply_done,
-      resume_dependent_apply_done, resume_load_operand]
-  all_goals zvcgen [loadValAction_spec, loadOp_action_spec, loadOp_action_valPtr]
-  all_goals subst_vars
-  all_goals simp_all [asPtr?, valPtr, Val.as?_mk, toPtr_ofPtr]
+  zvcgen [renameBlocks, checkedBlocks, loadOp, Op.effectful, Op.Body.collect,
+    Op.Arg.ofTerms, Op.Arg.ofVals, Block.entryEnv, Scope.get?, termPtr,
+    valPtr, asPtr?, Op.ofVals, Op.Body.eager, Op.fixed, Val.ty_mk,
+    Val.mk_ofNat, Val.as?_mk, Val.asNat?_nat, toPtr_ofPtr, driveOp_apply_done,
+    resume_dependent_apply_done, resume_load_operand]
 
 private theorem renameSet_evaluates_state (heap : Heap) (ptr : Ptr) (value : Nat) :
     EvalTriple.State.EvaluatesCall heapCtx heapOpCtx
       (checkedBlocks renameBlocks renameBlocksValid) "ac___set_real_var__"
       [termPtr ptr.addr, .nat value] heap valUnit (Heap.write heap ptr value) := by
   rcases ptr with ⟨ptr⟩
-  set_option zvcgen.resumeReturn true in
-    zvcgen [renameBlocks, checkedBlocks, storeOp, Op.effectful, Op.Body.collect,
-      Op.Arg.ofTerms, Op.Arg.ofVals, Block.entryEnv, Scope.get?, Term.nat,
-      termPtr, valPtr, valUnit, asPtr?, Op.ofVals, Op.Body.eager, Op.fixed,
-      Val.ty_mk, Val.ty_nat, Val.mk_ofNat, Val.as?_mk, Val.asNat?_nat,
-      toPtr_ofPtr, driveOp_apply_done, resume_dependent_apply_done,
-      resume_store_value_operand]
-  all_goals zvcgen [storeValAction_spec, storeOp_action_spec, storeOp_action_vals]
-  all_goals try simp_all [asPtr?, valPtr, valUnit, Val.as?_mk, Val.asNat?_nat,
-    toPtr_ofPtr]
-  all_goals try solve_by_elim
-  all_goals obtain ⟨hleft, hright⟩ := ‹_ ∧ _›
-  all_goals subst_vars
-  all_goals simp_all [asPtr?, valPtr, valUnit, Val.as?_mk, Val.asNat?_nat,
-    toPtr_ofPtr]
+  zvcgen [renameBlocks, checkedBlocks, storeOp, Op.effectful, Op.Body.collect,
+    Op.Arg.ofTerms, Op.Arg.ofVals, Block.entryEnv, Scope.get?, Term.nat,
+    termPtr, valPtr, valUnit, asPtr?, Op.ofVals, Op.Body.eager, Op.fixed,
+    Val.ty_mk, Val.ty_nat, Val.mk_ofNat, Val.as?_mk, Val.asNat?_nat,
+    toPtr_ofPtr, driveOp_apply_done, resume_dependent_apply_done,
+    resume_store_value_operand]
 
 /--
 ```

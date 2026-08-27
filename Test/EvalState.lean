@@ -1,5 +1,5 @@
 import Meta.Eval
-import Zag.EvalState
+import Zag.EvalTriple
 import Test.Gauss
 import Test.Gauss.Rec
 import Test.Exit

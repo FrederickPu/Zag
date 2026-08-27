@@ -261,18 +261,265 @@ private theorem asBool?_bool_true :
     (Val.bool (primCtx := heapCtx) true).asBool? = some true :=
   Val.asBool?_bool true
 
-/-- Resume `ret value` into a trivial `opBody (done ·)` frame. -/
-private theorem resume_opBody_done_step
-    (blockCtx : BlockCtx heapCtx) (env opEnv : Env heapCtx)
-    (stack : List (Frame heapCtx)) (heap : Heap) (value : Val heapCtx) :
-    Id.run ((Machine.step (Machine.stateCtx heapCtx heapOpCtx blockCtx)
-      { control := .ret value, env := env,
-        stack :=
-          .opBody (fun | some v => .done v | none => .fail) [] opEnv :: stack }).run
-      heap) =
-      (some { control := .ret value, env := opEnv, stack := stack }, heap) := by
-  simp [Machine.step, Machine.ofOption, Machine.resumeFrame, Machine.driveOp,
-    Pure.pure, StateT.pure, Id.run, OptionT.mk, OptionT.run]
+private theorem state_evaluates_nat (env : Env heapCtx) (n : Nat) (heap : Heap) :
+    EvalTriple.State.EvaluatesToK heapCtx heapOpCtx memcpyCtx.blockCtx env
+      (Term.nat n) heap (Val.nat n) heap := by
+  simpa [Term.nat] using
+    (EvalTriple.State.EvaluatesToK.prim (opCtx := heapOpCtx)
+      (blockCtx := memcpyCtx.blockCtx) (env := env) Peano.NatTy (Ty.ofNat heapCtx n) heap)
+
+private theorem state_evaluates_termPtr (env : Env heapCtx) (addr : Nat) (heap : Heap) :
+    EvalTriple.State.EvaluatesToK heapCtx heapOpCtx memcpyCtx.blockCtx env
+      (termPtr addr) heap (valPtr ⟨addr⟩) heap := by
+  simpa [termPtr, valPtr] using
+    (EvalTriple.State.EvaluatesToK.prim (opCtx := heapOpCtx)
+      (blockCtx := memcpyCtx.blockCtx) (env := env) PtrTy (ofPtr ⟨addr⟩) heap)
+
+private theorem state_evaluates_eq_nat {env : Env heapCtx} {a b : Term heapCtx}
+    {heap middle final : Heap} {m n : Nat}
+    (ha : EvalTriple.State.EvaluatesToK heapCtx heapOpCtx memcpyCtx.blockCtx env
+      a heap (Val.nat m) middle)
+    (hb : EvalTriple.State.EvaluatesToK heapCtx heapOpCtx memcpyCtx.blockCtx env
+      b middle (Val.nat n) final) :
+    EvalTriple.State.EvaluatesToK heapCtx heapOpCtx memcpyCtx.blockCtx env
+      (.op "eq" [a, b]) heap (Val.bool (decide (m = n))) final := by
+  refine EvalTriple.State.EvaluatesToK.op
+    (oper := (Op.eq : Op heapCtx (StateM Heap)))
+    (body := ((Op.eq : Op heapCtx (StateM Heap)).body "eq" 2).getD .fail) ?_ ?_ ?_
+  · exact heapOpCtx_get_eq
+  · simp [Op.eq, Op.compare, Op.fixed]
+  · simp [Op.eq, Op.compare, Op.fixed, Op.Arg.ofTerms]
+    apply EvalTriple.State.EvaluatesBody.nextTerm ha
+    apply EvalTriple.State.EvaluatesBody.nextTerm hb
+    simpa [Val.primEq?_nat] using
+      (EvalTriple.State.EvaluatesBody.done
+        (primCtx := heapCtx) (opCtx := heapOpCtx) (blockCtx := memcpyCtx.blockCtx)
+        (env := env) (result := Val.bool (decide (m = n))) (state := final)
+        (rest := ([] : List (Op.Arg heapCtx))))
+
+private theorem state_evaluates_sub_nat {env : Env heapCtx} {a b : Term heapCtx}
+    {heap middle final : Heap} {m n : Nat}
+    (ha : EvalTriple.State.EvaluatesToK heapCtx heapOpCtx memcpyCtx.blockCtx env
+      a heap (Val.nat m) middle)
+    (hb : EvalTriple.State.EvaluatesToK heapCtx heapOpCtx memcpyCtx.blockCtx env
+      b middle (Val.nat n) final) :
+    EvalTriple.State.EvaluatesToK heapCtx heapOpCtx memcpyCtx.blockCtx env
+      (.op "sub" [a, b]) heap (Val.nat (m - n)) final := by
+  refine EvalTriple.State.EvaluatesToK.op
+    (oper := subOpHeap) (body := (subOpHeap.body "sub" 2).getD .fail) ?_ ?_ ?_
+  · exact heapOpCtx_get_sub'
+  · simp [subOpHeap, Op.natBinary, Op.ofVals, Op.fixed, Op.Body.eager]
+  · set_option linter.unusedSimpArgs false in
+      simp [subOpHeap, Op.natBinary, Op.ofVals, Op.fixed, Op.Body.eager,
+        Op.Arg.ofTerms, Val.asNat?_nat]
+    apply EvalTriple.State.EvaluatesBody.nextTerm ha
+    apply EvalTriple.State.EvaluatesBody.nextTerm hb
+    simpa [Val.asNat?_nat] using
+      (EvalTriple.State.EvaluatesBody.done
+        (primCtx := heapCtx) (opCtx := heapOpCtx) (blockCtx := memcpyCtx.blockCtx)
+        (env := env) (result := Val.nat (m - n)) (state := final)
+        (rest := ([] : List (Op.Arg heapCtx))))
+
+private theorem state_evaluates_ptrAdd {env : Env heapCtx} {ptrTerm offsetTerm : Term heapCtx}
+    {heap middle final : Heap} {ptr : Ptr} {offset : Nat}
+    (hptr : EvalTriple.State.EvaluatesToK heapCtx heapOpCtx memcpyCtx.blockCtx env
+      ptrTerm heap (valPtr ptr) middle)
+    (hoffset : EvalTriple.State.EvaluatesToK heapCtx heapOpCtx memcpyCtx.blockCtx env
+      offsetTerm middle (Val.nat offset) final) :
+    EvalTriple.State.EvaluatesToK heapCtx heapOpCtx memcpyCtx.blockCtx env
+      (.op "ptrAdd" [ptrTerm, offsetTerm]) heap (valPtr ⟨ptr.addr + offset⟩) final := by
+  refine EvalTriple.State.EvaluatesToK.op
+    (oper := (ptrAddOp (M := StateM Heap)))
+    (body := ((ptrAddOp (M := StateM Heap)).body "ptrAdd" 2).getD .fail) ?_ ?_ ?_
+  · exact heapOpCtx_get_ptrAdd
+  · simp [ptrAddOp, Op.ofVals, Op.fixed, Op.Body.eager]
+  · set_option linter.unusedSimpArgs false in
+      simp [ptrAddOp, Op.ofVals, Op.fixed, Op.Body.eager, Op.Arg.ofTerms,
+        valPtr, asPtr?, Val.as?_mk, Val.asNat?_nat, toPtr_ofPtr]
+    apply EvalTriple.State.EvaluatesBody.nextTerm hptr
+    apply EvalTriple.State.EvaluatesBody.nextTerm hoffset
+    simpa [valPtr] using
+      (EvalTriple.State.EvaluatesBody.done
+        (primCtx := heapCtx) (opCtx := heapOpCtx) (blockCtx := memcpyCtx.blockCtx)
+        (env := env) (result := valPtr ⟨ptr.addr + offset⟩) (state := final)
+        (rest := ([] : List (Op.Arg heapCtx))))
+
+private theorem state_evaluates_load {env : Env heapCtx} {ptrTerm : Term heapCtx}
+    {heap middle : Heap} {ptr : Ptr}
+    (hptr : EvalTriple.State.EvaluatesToK heapCtx heapOpCtx memcpyCtx.blockCtx env
+      ptrTerm heap (valPtr ptr) middle) :
+    EvalTriple.State.EvaluatesToK heapCtx heapOpCtx memcpyCtx.blockCtx env
+      (.op "load" [ptrTerm]) heap (Val.nat (Heap.read middle ptr)) middle := by
+  refine EvalTriple.State.EvaluatesToK.op
+    (oper := loadOp) (body := (loadOp.body "load" 1).getD .fail) ?_ ?_ ?_
+  · exact heapOpCtx_get_load
+  · simp [loadOp, Op.effectful]
+  · set_option linter.unusedSimpArgs false in
+      simp [loadOp, Op.effectful, Op.Body.collect, Op.Arg.ofTerms,
+        valPtr, asPtr?, Val.as?_mk, toPtr_ofPtr]
+    apply EvalTriple.State.EvaluatesBody.nextTerm hptr
+    apply EvalTriple.State.EvaluatesBody.apply
+      (load_apply_evaluates memcpyCtx.blockCtx middle ptr)
+    exact EvalTriple.State.EvaluatesBody.done
+
+private theorem state_evaluates_store {env : Env heapCtx}
+    {ptrTerm valueTerm : Term heapCtx} {heap middle valueHeap : Heap}
+    {ptr : Ptr} {value : Nat}
+    (hptr : EvalTriple.State.EvaluatesToK heapCtx heapOpCtx memcpyCtx.blockCtx env
+      ptrTerm heap (valPtr ptr) middle)
+    (hvalue : EvalTriple.State.EvaluatesToK heapCtx heapOpCtx memcpyCtx.blockCtx env
+      valueTerm middle (Val.nat value) valueHeap) :
+    EvalTriple.State.EvaluatesToK heapCtx heapOpCtx memcpyCtx.blockCtx env
+      (.op "store" [ptrTerm, valueTerm]) heap valUnit (Heap.write valueHeap ptr value) := by
+  refine EvalTriple.State.EvaluatesToK.op
+    (oper := storeOp) (body := (storeOp.body "store" 2).getD .fail) ?_ ?_ ?_
+  · exact heapOpCtx_get_store
+  · simp [storeOp, Op.effectful]
+  · set_option linter.unusedSimpArgs false in
+      simp [storeOp, Op.effectful, Op.Body.collect, Op.Arg.ofTerms,
+        valPtr, valUnit, asPtr?, Val.as?_mk, Val.asNat?_nat, toPtr_ofPtr]
+    apply EvalTriple.State.EvaluatesBody.nextTerm hptr
+    apply EvalTriple.State.EvaluatesBody.nextTerm hvalue
+    apply EvalTriple.State.EvaluatesBody.apply
+      (store_apply_evaluates memcpyCtx.blockCtx valueHeap ptr value)
+    exact EvalTriple.State.EvaluatesBody.done
+
+private theorem state_evaluates_ite_true {env : Env heapCtx}
+    {condition thenTerm elseTerm : Term heapCtx} {heap middle final : Heap}
+    {value : Val heapCtx}
+    (hcondition : EvalTriple.State.EvaluatesToK heapCtx heapOpCtx memcpyCtx.blockCtx env
+      condition heap (Val.bool true) middle)
+    (hthen : EvalTriple.State.EvaluatesToK heapCtx heapOpCtx memcpyCtx.blockCtx env
+      thenTerm middle value final) :
+    EvalTriple.State.EvaluatesToK heapCtx heapOpCtx memcpyCtx.blockCtx env
+      (Term.ite condition thenTerm elseTerm) heap value final := by
+  refine EvalTriple.State.EvaluatesToK.op
+    (oper := (Op.ite : Op heapCtx (StateM Heap)))
+    (body := ((Op.ite : Op heapCtx (StateM Heap)).body "ite" 3).getD .fail) ?_ ?_ ?_
+  · exact heapOpCtx_get_ite
+  · simp [Op.ite, Op.fixed]
+  · simp [Op.ite, Op.fixed, Op.Arg.ofTerms]
+    apply EvalTriple.State.EvaluatesBody.nextTerm hcondition
+    simp [Val.as?_bool, Ty.toBool, Ty.ofBool]
+    apply EvalTriple.State.EvaluatesBody.nextTerm hthen
+    apply EvalTriple.State.EvaluatesBody.skip
+    simpa using
+      (EvalTriple.State.EvaluatesBody.done
+        (primCtx := heapCtx) (opCtx := heapOpCtx) (blockCtx := memcpyCtx.blockCtx)
+        (env := env) (result := value) (state := final)
+        (rest := ([] : List (Op.Arg heapCtx))))
+
+private theorem state_evaluates_ite_false {env : Env heapCtx}
+    {condition thenTerm elseTerm : Term heapCtx} {heap middle final : Heap}
+    {value : Val heapCtx}
+    (hcondition : EvalTriple.State.EvaluatesToK heapCtx heapOpCtx memcpyCtx.blockCtx env
+      condition heap (Val.bool false) middle)
+    (helse : EvalTriple.State.EvaluatesToK heapCtx heapOpCtx memcpyCtx.blockCtx env
+      elseTerm middle value final) :
+    EvalTriple.State.EvaluatesToK heapCtx heapOpCtx memcpyCtx.blockCtx env
+      (Term.ite condition thenTerm elseTerm) heap value final := by
+  refine EvalTriple.State.EvaluatesToK.op
+    (oper := (Op.ite : Op heapCtx (StateM Heap)))
+    (body := ((Op.ite : Op heapCtx (StateM Heap)).body "ite" 3).getD .fail) ?_ ?_ ?_
+  · exact heapOpCtx_get_ite
+  · simp [Op.ite, Op.fixed]
+  · simp [Op.ite, Op.fixed, Op.Arg.ofTerms]
+    apply EvalTriple.State.EvaluatesBody.nextTerm hcondition
+    simp [Val.as?_bool, Ty.toBool, Ty.ofBool]
+    apply EvalTriple.State.EvaluatesBody.skip
+    apply EvalTriple.State.EvaluatesBody.nextTerm helse
+    simpa using
+      (EvalTriple.State.EvaluatesBody.done
+        (primCtx := heapCtx) (opCtx := heapOpCtx) (blockCtx := memcpyCtx.blockCtx)
+        (env := env) (result := value) (state := final)
+        (rest := ([] : List (Op.Arg heapCtx))))
+
+private theorem memcpyStep_evaluates_values_state
+    (heap : Heap) (dst0 dst src : Ptr) (remaining : Nat) {final : Heap}
+    (hloop : EvalTriple.State.EvaluatesCallValues heapCtx heapOpCtx memcpyCtx.blockCtx
+      "memcpyLoop"
+      [valPtr dst0, valPtr ⟨dst.addr + 1⟩, valPtr ⟨src.addr + 1⟩,
+        Val.nat (remaining - 1)]
+      (Heap.write heap dst (Heap.read heap src)) (valPtr dst0) final) :
+    EvalTriple.State.EvaluatesCallValues heapCtx heapOpCtx memcpyCtx.blockCtx
+      "memcpyStep" [valPtr dst0, valPtr dst, valPtr src, Val.nat remaining]
+      heap (valPtr dst0) final := by
+  let nextHeap := Heap.write heap dst (Heap.read heap src)
+  let env0 := memcpyBlocks[2].2.entryEnv
+    ([valPtr dst0, valPtr dst, valPtr src, Val.nat remaining] : List (Val heapCtx))
+  let env1 := env0 ++ [("v", Val.nat (Heap.read heap src))]
+  let env2 := env1 ++ [("written", valUnit)]
+  let env3 := env2 ++ [("dstNext", valPtr ⟨dst.addr + 1⟩)]
+  let env4 := env3 ++ [("srcNext", valPtr ⟨src.addr + 1⟩)]
+  let env5 := env4 ++ [("remNext", Val.nat (remaining - 1))]
+  have hload : EvalTriple.State.EvaluatesToK heapCtx heapOpCtx memcpyCtx.blockCtx env0
+      (.op "load" [Term.var "src"]) heap (Val.nat (Heap.read heap src)) heap :=
+    state_evaluates_load (EvalTriple.State.EvaluatesToK.var_local (by rfl) heap)
+  have hstore : EvalTriple.State.EvaluatesToK heapCtx heapOpCtx memcpyCtx.blockCtx env1
+      (.op "store" [Term.var "dst", Term.var "v"]) heap valUnit nextHeap := by
+    simpa [nextHeap] using
+      state_evaluates_store
+        (EvalTriple.State.EvaluatesToK.var_local (by rfl) heap)
+        (EvalTriple.State.EvaluatesToK.var_local (by rfl) heap)
+  have hdstNext : EvalTriple.State.EvaluatesToK heapCtx heapOpCtx memcpyCtx.blockCtx env2
+      (.op "ptrAdd" [Term.var "dst", Term.nat 1]) nextHeap
+      (valPtr ⟨dst.addr + 1⟩) nextHeap := by
+    simpa using
+      state_evaluates_ptrAdd
+        (EvalTriple.State.EvaluatesToK.var_local (by rfl) nextHeap)
+        (state_evaluates_nat env2 1 nextHeap)
+  have hsrcNext : EvalTriple.State.EvaluatesToK heapCtx heapOpCtx memcpyCtx.blockCtx env3
+      (.op "ptrAdd" [Term.var "src", Term.nat 1]) nextHeap
+      (valPtr ⟨src.addr + 1⟩) nextHeap := by
+    simpa using
+      state_evaluates_ptrAdd
+        (EvalTriple.State.EvaluatesToK.var_local (by rfl) nextHeap)
+        (state_evaluates_nat env3 1 nextHeap)
+  have hremNext : EvalTriple.State.EvaluatesToK heapCtx heapOpCtx memcpyCtx.blockCtx env4
+      (.op "sub" [Term.var "remaining", Term.nat 1]) nextHeap
+      (Val.nat (remaining - 1)) nextHeap :=
+    state_evaluates_sub_nat
+      (EvalTriple.State.EvaluatesToK.var_local (by rfl) nextHeap)
+      (state_evaluates_nat env4 1 nextHeap)
+  have hcallArgs : EvalTriple.State.EvaluatesList heapCtx heapOpCtx memcpyCtx.blockCtx env5
+      ([Term.var "dst0", Term.var "dstNext", Term.var "srcNext", Term.var "remNext"] :
+        List (Term heapCtx))
+      nextHeap
+      ([valPtr dst0, valPtr ⟨dst.addr + 1⟩, valPtr ⟨src.addr + 1⟩,
+        Val.nat (remaining - 1)] : List (Val heapCtx))
+      nextHeap :=
+    EvalTriple.State.EvaluatesList.cons
+      (EvalTriple.State.EvaluatesToK.var_local (by rfl) nextHeap)
+      (EvalTriple.State.EvaluatesList.cons
+        (EvalTriple.State.EvaluatesToK.var_local (by rfl) nextHeap)
+        (EvalTriple.State.EvaluatesList.cons
+          (EvalTriple.State.EvaluatesToK.var_local (by rfl) nextHeap)
+          (EvalTriple.State.EvaluatesList.cons
+            (EvalTriple.State.EvaluatesToK.var_local (by rfl) nextHeap)
+            EvalTriple.State.EvaluatesList.nil)))
+  have hcallTerm : EvalTriple.State.EvaluatesToK heapCtx heapOpCtx memcpyCtx.blockCtx env5
+      (.call "memcpyLoop"
+        [Term.var "dst0", Term.var "dstNext", Term.var "srcNext", Term.var "remNext"])
+      nextHeap (valPtr dst0) final := by
+    simpa [nextHeap] using EvalTriple.State.EvaluatesToK.call hloop (by rfl) hcallArgs
+  have hbody : EvalTriple.State.EvaluatesInstrs heapCtx heapOpCtx memcpyCtx.blockCtx
+      [Instr.ofTerm "v" (.op "load" [Term.var "src"]),
+       Instr.ofTerm "written" (.op "store" [Term.var "dst", Term.var "v"]),
+       Instr.ofTerm "dstNext" (.op "ptrAdd" [Term.var "dst", Term.nat 1]),
+       Instr.ofTerm "srcNext" (.op "ptrAdd" [Term.var "src", Term.nat 1]),
+       Instr.ofTerm "remNext" (.op "sub" [Term.var "remaining", Term.nat 1])]
+      (.call "memcpyLoop"
+        [Term.var "dst0", Term.var "dstNext", Term.var "srcNext", Term.var "remNext"])
+      env0 heap (valPtr dst0) final :=
+    EvalTriple.State.EvaluatesInstrs.cons hload
+      (EvalTriple.State.EvaluatesInstrs.cons hstore
+        (EvalTriple.State.EvaluatesInstrs.cons hdstNext
+          (EvalTriple.State.EvaluatesInstrs.cons hsrcNext
+            (EvalTriple.State.EvaluatesInstrs.cons hremNext
+              (EvalTriple.State.EvaluatesInstrs.nil hcallTerm)))))
+  exact EvalTriple.State.EvaluatesCallValues.of_evaluatesInstrs
+    (name := "memcpyStep") (block := memcpyBlocks[2].2) (by rfl) (by rfl)
+    (by simpa [env0, memcpyBlocks] using hbody)
 
 /-! ### Operational correctness
 
@@ -287,34 +534,37 @@ private theorem memcpyLoop_evaluates_state (heap : Heap) (dst0 dst src : Ptr) (r
       heap (valPtr dst0) (Heap.copy heap dst src remaining) := by
   induction remaining generalizing heap dst src with
   | zero =>
-      have hdone : decide ((0 : Nat) = 0) = true := by simp
-      intro env base
-      refine ⟨_, _, by rfl, by rfl, ?_⟩
-      simp only [Heap.copy]
-      change EvalTriple.State.EvaluatesFrom heapCtx heapOpCtx memcpyCtx.blockCtx _
-        heap (valPtr dst0) heap base
-      repeat
-        first
-        | exact EvalTriple.State.EvaluatesFrom.done
-        | apply EvalTriple.State.EvaluatesFrom.step (middle := heap)
-          · set_option linter.unusedSimpArgs false in
-              simp [memcpyCtx, mkCtx, memcpyBlocks, checkedBlocks, Machine.step,
-                Machine.evalTerm, Machine.applyValue, Machine.driveSelectedOp,
-                Machine.ofOption, Machine.evalTermImmediate, Machine.applyValueImmediate,
-                Machine.resumeFrame, Machine.enterBlock, Machine.enterInstrs,
-                Machine.driveOp, Machine.start, heapOpCtx_get_eq, heapOpCtx_get_ite,
-                hdone, Op.eq, Op.compare, Op.ite, Op.effectful, Op.Body.collect,
-                Op.Arg.ofTerms, Op.Arg.ofVals, Op.ofVals, Op.Body.eager, Op.fixed,
-                Block.entryEnv, Scope.get?, Term.nat, Term.ite, Term.prim, Ty.ofNat,
-                Ty.toNat, termPtr, valPtr, valUnit, asPtr?, Val.asNat?_nat,
-                asNat?_mk_ofNat, asNat?_mk_cast, asNat?_mk_payload, primEq?_mk_cast_self,
-                Val.as?, Val.mk_ofNat, Val.nat, Val.primEq?_nat, Val.primEq?,
-                Val.asBool?_bool, Val.bool, Ty.toBool, Ty.ofBool, toBool_true,
-                Option.bind, Id.run]
-            rfl
+      let env0 := memcpyBlocks[1].2.entryEnv
+        ([valPtr dst0, valPtr dst, valPtr src, Val.nat 0] : List (Val heapCtx))
+      let env1 := env0 ++ [("done", Val.bool true)]
+      have hdone : EvalTriple.State.EvaluatesToK heapCtx heapOpCtx memcpyCtx.blockCtx env0
+          (.op "eq" [Term.var "remaining", Term.nat 0]) heap (Val.bool true) heap := by
+        simpa using
+          state_evaluates_eq_nat (m := 0) (n := 0)
+            (EvalTriple.State.EvaluatesToK.var_local
+              (env := env0) (name := "remaining") (value := Val.nat 0) (by rfl) heap)
+            (state_evaluates_nat env0 0 heap)
+      have hresult : EvalTriple.State.EvaluatesToK heapCtx heapOpCtx memcpyCtx.blockCtx env1
+          (Term.ite (Term.var "done") (Term.var "dst0")
+            (.call "memcpyStep"
+              [Term.var "dst0", Term.var "dst", Term.var "src", Term.var "remaining"]))
+          heap (valPtr dst0) heap :=
+        state_evaluates_ite_true
+          (EvalTriple.State.EvaluatesToK.var_local (by rfl) heap)
+          (EvalTriple.State.EvaluatesToK.var_local (by rfl) heap)
+      have hbody : EvalTriple.State.EvaluatesInstrs heapCtx heapOpCtx memcpyCtx.blockCtx
+          [Instr.ofTerm "done" (.op "eq" [Term.var "remaining", Term.nat 0])]
+          (Term.ite (Term.var "done") (Term.var "dst0")
+            (.call "memcpyStep"
+              [Term.var "dst0", Term.var "dst", Term.var "src", Term.var "remaining"]))
+          env0 heap (valPtr dst0) heap :=
+        EvalTriple.State.EvaluatesInstrs.cons hdone
+          (EvalTriple.State.EvaluatesInstrs.nil hresult)
+      simpa [Heap.copy, env0, memcpyBlocks] using
+        EvalTriple.State.EvaluatesCallValues.of_evaluatesInstrs
+          (name := "memcpyLoop") (block := memcpyBlocks[1].2) (by rfl) (by rfl) hbody
 
   | succ remaining ih =>
-      have hnot : decide ((remaining + 1 : Nat) = 0) = false := by simp
       let nextHeap := Heap.write heap dst (Heap.read heap src)
       have hrec :
           EvalTriple.State.EvaluatesCallValues heapCtx heapOpCtx memcpyCtx.blockCtx
@@ -330,77 +580,66 @@ private theorem memcpyLoop_evaluates_state (heap : Heap) (dst0 dst src : Ptr) (r
             "memcpyStep" [valPtr dst0, valPtr dst, valPtr src, Val.nat (remaining + 1)]
             heap (valPtr dst0)
             (Heap.copy nextHeap ⟨dst.addr + 1⟩ ⟨src.addr + 1⟩ remaining) := by
-        intro env base
-        refine ⟨_, _, by rfl, by rfl, ?_⟩
-        -- ListRev-style walker for step body
-        repeat
-          apply EvalTriple.State.EvaluatesFrom.step (middle := heap)
-          · set_option linter.unusedSimpArgs false in
-              simp [memcpyCtx, mkCtx, memcpyBlocks, checkedBlocks, Machine.step,
-                Machine.evalTerm, Machine.applyValue, Machine.driveSelectedOp,
-                Machine.ofOption, Machine.evalTermImmediate, Machine.applyValueImmediate,
-                Machine.resumeFrame, Machine.enterBlock, Machine.enterInstrs,
-                Machine.driveOp, Machine.start, heapOpCtx_get_ptrAdd, heapOpCtx_get_sub',
-                heapOpCtx_get_load, heapOpCtx_get_store, ptrAddOp, subOpHeap, loadOp,
-                storeOp, Op.effectful, Op.Body.collect, Op.Arg.ofTerms, Op.Arg.ofVals,
-                Op.ofVals, Op.Body.eager, Op.fixed, Block.entryEnv, Scope.get?,
-                Term.nat, Term.prim, Ty.ofNat, termPtr, valPtr, valUnit, asPtr?,
-                Val.asNat?_nat, asNat?_mk_cast, asNat?_mk_ofNat]
-            rfl
-        apply EvalTriple.State.EvaluatesFrom.step (middle := nextHeap)
-        · change Id.run ((Machine.step
-            (Machine.stateCtx heapCtx heapOpCtx memcpyCtx.blockCtx) _).run heap) = _
-          simpa [nextHeap] using storeOp_step memcpyCtx.blockCtx _ _ heap dst
-            (Heap.read heap src)
-        repeat
-          first
-          | apply EvalTriple.State.EvaluatesFrom.call_then hrec
-            intro scope
-            exact EvalTriple.State.EvaluatesFrom.return_to_call
-          | apply EvalTriple.State.EvaluatesFrom.step (middle := nextHeap)
-            · set_option linter.unusedSimpArgs false in
-                simp [memcpyCtx, mkCtx, memcpyBlocks, checkedBlocks, Machine.step,
-                  Machine.evalTerm, Machine.applyValue, Machine.driveSelectedOp,
-                  Machine.ofOption, Machine.evalTermImmediate, Machine.applyValueImmediate,
-                  Machine.resumeFrame, Machine.enterBlock, Machine.enterInstrs,
-                  Machine.driveOp, Machine.start, heapOpCtx_get_ptrAdd, heapOpCtx_get_sub',
-                  heapOpCtx_get_load, heapOpCtx_get_store, ptrAddOp, subOpHeap, loadOp,
-                  storeOp, Op.natBinary, Op.effectful, Op.Body.collect, Op.Arg.ofTerms,
-                  Op.Arg.ofVals, Op.ofVals, Op.Body.eager, Op.fixed, Block.entryEnv,
-                  Scope.get?, Term.nat, Term.prim, Ty.ofNat, termPtr, valPtr, valUnit,
-                  asPtr?, Val.asNat?_nat, asNat?_mk_cast, asNat?_mk_ofNat,
-                  Nat.add_sub_cancel, resume_opBody_done_step]
-              try exact resume_opBody_done_step memcpyCtx.blockCtx _ _ _ nextHeap _
-              try rfl
-      intro env base
-      refine ⟨_, _, by rfl, by rfl, ?_⟩
-      simp only [Heap.copy]
-      change EvalTriple.State.EvaluatesFrom heapCtx heapOpCtx memcpyCtx.blockCtx _
-        heap (valPtr dst0)
-        (Heap.copy nextHeap ⟨dst.addr + 1⟩ ⟨src.addr + 1⟩ remaining) base
-      repeat
-        first
-        | apply EvalTriple.State.EvaluatesFrom.call_then hstepCall
-          intro scope
-          exact EvalTriple.State.EvaluatesFrom.return_through_done_call
-        | apply EvalTriple.State.EvaluatesFrom.step (middle := heap)
-          · set_option linter.unusedSimpArgs false in
-              simp [memcpyCtx, mkCtx, memcpyBlocks, checkedBlocks, Machine.step,
-                Machine.evalTerm, Machine.applyValue, Machine.driveSelectedOp,
-                Machine.ofOption, Machine.evalTermImmediate, Machine.applyValueImmediate,
-                Machine.resumeFrame, Machine.enterBlock, Machine.enterInstrs,
-                Machine.driveOp, Machine.start, heapOpCtx_get_eq, heapOpCtx_get_ite,
-                hnot, Op.eq, Op.compare, Op.ite, Op.effectful, Op.Body.collect,
-                Op.Arg.ofTerms, Op.Arg.ofVals, Op.ofVals, Op.Body.eager, Op.fixed,
-                Block.entryEnv, Scope.get?, Term.nat, Term.ite, Term.prim, Ty.ofNat,
-                termPtr, valPtr, valUnit, asPtr?, Val.asNat?_nat, asNat?_mk_cast,
-                asNat?_mk_ofNat, primEq?_mk_cast_self, Val.primEq?_nat, Val.primEq?]
-            rfl
+        exact memcpyStep_evaluates_values_state heap dst0 dst src (remaining + 1) hrec
+      let env0 := memcpyBlocks[1].2.entryEnv
+        ([valPtr dst0, valPtr dst, valPtr src, Val.nat (remaining + 1)] : List (Val heapCtx))
+      let env1 := env0 ++ [("done", Val.bool false)]
+      have hdone : EvalTriple.State.EvaluatesToK heapCtx heapOpCtx memcpyCtx.blockCtx env0
+          (.op "eq" [Term.var "remaining", Term.nat 0]) heap (Val.bool false) heap := by
+        simpa using
+          state_evaluates_eq_nat (m := remaining + 1) (n := 0)
+            (EvalTriple.State.EvaluatesToK.var_local
+              (env := env0) (name := "remaining")
+              (value := Val.nat (remaining + 1)) (by rfl) heap)
+            (state_evaluates_nat env0 0 heap)
+      have hargs : EvalTriple.State.EvaluatesList heapCtx heapOpCtx memcpyCtx.blockCtx env1
+          ([Term.var "dst0", Term.var "dst", Term.var "src", Term.var "remaining"] :
+            List (Term heapCtx))
+          heap ([valPtr dst0, valPtr dst, valPtr src, Val.nat (remaining + 1)] :
+            List (Val heapCtx)) heap :=
+        EvalTriple.State.EvaluatesList.cons
+          (EvalTriple.State.EvaluatesToK.var_local (by rfl) heap)
+          (EvalTriple.State.EvaluatesList.cons
+            (EvalTriple.State.EvaluatesToK.var_local (by rfl) heap)
+            (EvalTriple.State.EvaluatesList.cons
+              (EvalTriple.State.EvaluatesToK.var_local (by rfl) heap)
+              (EvalTriple.State.EvaluatesList.cons
+                (EvalTriple.State.EvaluatesToK.var_local (by rfl) heap)
+                EvalTriple.State.EvaluatesList.nil)))
+      have hcallTerm : EvalTriple.State.EvaluatesToK heapCtx heapOpCtx memcpyCtx.blockCtx env1
+          (.call "memcpyStep" [Term.var "dst0", Term.var "dst", Term.var "src", Term.var "remaining"])
+          heap (valPtr dst0) (Heap.copy nextHeap ⟨dst.addr + 1⟩ ⟨src.addr + 1⟩ remaining) :=
+        EvalTriple.State.EvaluatesToK.call hstepCall (by rfl) hargs
+      have hresult : EvalTriple.State.EvaluatesToK heapCtx heapOpCtx memcpyCtx.blockCtx env1
+          (Term.ite (Term.var "done") (Term.var "dst0")
+            (.call "memcpyStep"
+              [Term.var "dst0", Term.var "dst", Term.var "src", Term.var "remaining"]))
+          heap (valPtr dst0) (Heap.copy nextHeap ⟨dst.addr + 1⟩ ⟨src.addr + 1⟩ remaining) :=
+        state_evaluates_ite_false
+          (EvalTriple.State.EvaluatesToK.var_local (by rfl) heap)
+          hcallTerm
+      have hbody : EvalTriple.State.EvaluatesInstrs heapCtx heapOpCtx memcpyCtx.blockCtx
+          [Instr.ofTerm "done" (.op "eq" [Term.var "remaining", Term.nat 0])]
+          (Term.ite (Term.var "done") (Term.var "dst0")
+            (.call "memcpyStep"
+              [Term.var "dst0", Term.var "dst", Term.var "src", Term.var "remaining"]))
+          env0 heap (valPtr dst0)
+          (Heap.copy nextHeap ⟨dst.addr + 1⟩ ⟨src.addr + 1⟩ remaining) :=
+        EvalTriple.State.EvaluatesInstrs.cons hdone
+          (EvalTriple.State.EvaluatesInstrs.nil hresult)
+      simpa [Heap.copy, nextHeap, env0, memcpyBlocks] using
+        EvalTriple.State.EvaluatesCallValues.of_evaluatesInstrs
+          (name := "memcpyLoop") (block := memcpyBlocks[1].2) (by rfl) (by rfl) hbody
 
 /-- Monadic post: `r = dst` and `dst ↦ contents ∗ src ↦ contents`. -/
 def memcpyAssertPost (dst src : Ptr) (len : Nat) (contents : Nat → Nat)
     (result : Val heapCtx) : Std.Do.Assertion (Std.Do.PostShape.arg Heap .pure) :=
   fun h => ⌜result = valPtr dst ∧ (memcpyPost dst src len contents).holds h⌝
+
+def memcpyEvalPost (dst src : Ptr) (len : Nat) (contents : Nat → Nat) :
+    Option (Val heapCtx) → Std.Do.Assertion (Std.Do.PostShape.arg Heap .pure)
+  | some result => memcpyAssertPost dst src len contents result
+  | none => fun _ => Std.Do.SPred.pure False
 
 /-- Heaps satisfying the sep-logic pre of `memcpy`. -/
 abbrev MemcpyPreHeap (dst src : Ptr) (len : Nat) (contents dstOld : Nat → Nat) : Type :=
@@ -435,52 +674,62 @@ private theorem evaluatesCall_of_sep
       hpost hh.1 hh.2]
 
 
+private theorem memcpyMemory_values_eval?
+    (heap : Heap) (dst src : Ptr) (len : Nat) :
+    Std.Do.Triple (EvalTriple.State.callValues? heapCtx heapOpCtx memcpyCtx.blockCtx
+        "memcpyMemory" [valPtr dst, valPtr src, Val.nat len])
+      (EvalTriple.Singleton.statePre heap)
+      (EvalTriple.State.someEqPost (valPtr dst) (Heap.copy heap dst src len)) := by
+  let env := memcpyBlocks[0].2.entryEnv
+    ([valPtr dst, valPtr src, Val.nat len] : List (Val heapCtx))
+  have hloop := memcpyLoop_evaluates_state heap dst dst src len
+  have hargs : EvalTriple.State.EvaluatesList heapCtx heapOpCtx memcpyCtx.blockCtx env
+      ([Term.var "dst", Term.var "dst", Term.var "src", Term.var "len"] : List (Term heapCtx))
+      heap ([valPtr dst, valPtr dst, valPtr src, Val.nat len] : List (Val heapCtx)) heap :=
+    EvalTriple.State.EvaluatesList.cons
+      (EvalTriple.State.EvaluatesToK.var_local (by rfl) heap)
+      (EvalTriple.State.EvaluatesList.cons
+        (EvalTriple.State.EvaluatesToK.var_local (by rfl) heap)
+        (EvalTriple.State.EvaluatesList.cons
+          (EvalTriple.State.EvaluatesToK.var_local (by rfl) heap)
+          (EvalTriple.State.EvaluatesList.cons
+            (EvalTriple.State.EvaluatesToK.var_local (by rfl) heap)
+            EvalTriple.State.EvaluatesList.nil)))
+  have hcallTerm : EvalTriple.State.EvaluatesToK heapCtx heapOpCtx memcpyCtx.blockCtx env
+      (.call "memcpyLoop" [Term.var "dst", Term.var "dst", Term.var "src", Term.var "len"])
+      heap (valPtr dst) (Heap.copy heap dst src len) :=
+    EvalTriple.State.EvaluatesToK.call hloop (by rfl) hargs
+  exact EvalTriple.State.callValues?_eq_triple_of_evaluatesCallValues
+    (EvalTriple.State.EvaluatesCallValues.of_evaluatesInstrs
+      (name := "memcpyMemory")
+      (block := memcpyBlocks[0].2) (by rfl) (by rfl)
+      (EvalTriple.State.EvaluatesInstrs.nil hcallTerm))
+
 private theorem memcpyMemory_evaluates_values_state
- (heap : Heap) (dst src : Ptr) (len : Nat) :
+    (heap : Heap) (dst src : Ptr) (len : Nat) :
     EvalTriple.State.EvaluatesCallValues heapCtx heapOpCtx memcpyCtx.blockCtx
       "memcpyMemory" [valPtr dst, valPtr src, Val.nat len]
-      heap (valPtr dst) (Heap.copy heap dst src len) := by
-  have hloop := memcpyLoop_evaluates_state heap dst dst src len
-  intro env base
-  refine ⟨_, _, by rfl, by rfl, ?_⟩
-  repeat
-    first
-    | apply EvalTriple.State.EvaluatesFrom.call_then hloop
-      intro scope
-      exact EvalTriple.State.EvaluatesFrom.return_to_call
-    | apply EvalTriple.State.EvaluatesFrom.step (middle := heap)
-      · set_option linter.unusedSimpArgs false in
-          simp [memcpyCtx, mkCtx, memcpyBlocks, checkedBlocks, Machine.step,
-            Machine.evalTerm, Machine.driveSelectedOp, Machine.ofOption,
-            Machine.evalTermImmediate, Machine.applyValueImmediate,
-            Machine.resumeFrame, Machine.enterBlock, Machine.enterInstrs,
-            Machine.driveOp, Machine.start, Op.effectful, Op.Body.collect,
-            Op.Arg.ofTerms, Op.Arg.ofVals, Op.ofVals, Op.Body.eager, Op.fixed,
-            Block.entryEnv, Scope.get?, Term.nat, termPtr, valPtr, valUnit, asPtr?]
-        rfl
+      heap (valPtr dst) (Heap.copy heap dst src len) :=
+  EvalTriple.State.evaluatesCallValues_of_callValues?_triple
+    (memcpyMemory_values_eval? heap dst src len)
 
 private theorem memcpyMemory_evaluates_state (heap : Heap) (dst src : Ptr) (len : Nat) :
     EvalTriple.State.EvaluatesCall heapCtx heapOpCtx memcpyCtx.blockCtx
       "memcpyMemory" [termPtr dst.addr, termPtr src.addr, .nat len]
       heap (valPtr dst) (Heap.copy heap dst src len) := by
-  unfold EvalTriple.State.EvaluatesCall
-  apply EvalTriple.State.EvaluatesTo.of_evaluatesFrom
-  have hloop := memcpyLoop_evaluates_state heap dst dst src len
-  repeat
-    first
-    | apply EvalTriple.State.EvaluatesFrom.call_then hloop
-      intro scope
-      exact EvalTriple.State.EvaluatesFrom.return_to_call
-    | apply EvalTriple.State.EvaluatesFrom.step (middle := heap)
-      · set_option linter.unusedSimpArgs false in
-          simp [memcpyCtx, mkCtx, memcpyBlocks, checkedBlocks, Machine.step,
-            Machine.evalTerm, Machine.driveSelectedOp, Machine.ofOption,
-            Machine.evalTermImmediate, Machine.applyValueImmediate,
-            Machine.resumeFrame, Machine.enterBlock, Machine.enterInstrs,
-            Machine.driveOp, Machine.start, Op.effectful, Op.Body.collect,
-            Op.Arg.ofTerms, Op.Arg.ofVals, Op.ofVals, Op.Body.eager, Op.fixed,
-            Block.entryEnv, Scope.get?, Term.nat, termPtr, valPtr, valUnit, asPtr?]
-        rfl
+  have hvalues := EvalTriple.State.evaluatesCallValues_of_callValues?_triple
+    (memcpyMemory_values_eval? heap dst src len)
+  have hargs : EvalTriple.State.EvaluatesList heapCtx heapOpCtx memcpyCtx.blockCtx []
+      ([termPtr dst.addr, termPtr src.addr, Term.nat len] : List (Term heapCtx))
+      heap ([valPtr dst, valPtr src, Val.nat len] : List (Val heapCtx)) heap :=
+    EvalTriple.State.EvaluatesList.cons
+      (state_evaluates_termPtr [] dst.addr heap)
+      (EvalTriple.State.EvaluatesList.cons
+        (state_evaluates_termPtr [] src.addr heap)
+        (EvalTriple.State.EvaluatesList.cons
+          (state_evaluates_nat [] len heap)
+          EvalTriple.State.EvaluatesList.nil))
+  exact (EvalTriple.State.EvaluatesToK.call hvalues (by rfl) hargs) []
 
 /--
 Sep-logic monadic spec of `memcpyMemory` (no `Heap.copy` in the interface):
@@ -506,25 +755,41 @@ private theorem memcpyInt_evaluates_state (heap : Heap) (dst src : Ptr) :
     EvalTriple.State.EvaluatesCall heapCtx heapOpCtx memcpyCtx.blockCtx
       "memcpyInt" [termPtr dst.addr, termPtr src.addr]
       heap (valPtr dst) (Heap.copy heap dst src sizeof_int) := by
-  unfold EvalTriple.State.EvaluatesCall
-  apply EvalTriple.State.EvaluatesTo.of_evaluatesFrom
-  have hmem := memcpyMemory_evaluates_values_state heap dst src sizeof_int
-  repeat
-    first
-    | apply EvalTriple.State.EvaluatesFrom.call_then hmem
-      intro scope
-      exact EvalTriple.State.EvaluatesFrom.return_to_call
-    | apply EvalTriple.State.EvaluatesFrom.step (middle := heap)
-      · set_option linter.unusedSimpArgs false in
-          simp [memcpyCtx, mkCtx, memcpyBlocks, checkedBlocks, Machine.step,
-            Machine.evalTerm, Machine.driveSelectedOp, Machine.ofOption,
-            Machine.evalTermImmediate, Machine.applyValueImmediate,
-            Machine.resumeFrame, Machine.enterBlock, Machine.enterInstrs,
-            Machine.driveOp, Machine.start, Op.effectful, Op.Body.collect,
-            Op.Arg.ofTerms, Op.Arg.ofVals, Op.ofVals, Op.Body.eager, Op.fixed,
-            Block.entryEnv, Scope.get?, Term.nat, termPtr, valPtr, valUnit, asPtr?,
-            sizeof_int]
-        rfl
+  let env := memcpyBlocks[3].2.entryEnv ([valPtr dst, valPtr src] : List (Val heapCtx))
+  have hmem := EvalTriple.State.evaluatesCallValues_of_callValues?_triple
+    (memcpyMemory_values_eval? heap dst src sizeof_int)
+  have hargs : EvalTriple.State.EvaluatesList heapCtx heapOpCtx memcpyCtx.blockCtx env
+      ([Term.var "dst", Term.var "src", Term.nat sizeof_int] : List (Term heapCtx))
+      heap ([valPtr dst, valPtr src, Val.nat sizeof_int] : List (Val heapCtx)) heap :=
+    EvalTriple.State.EvaluatesList.cons
+      (EvalTriple.State.EvaluatesToK.var_local (by rfl) heap)
+      (EvalTriple.State.EvaluatesList.cons
+        (EvalTriple.State.EvaluatesToK.var_local (by rfl) heap)
+        (EvalTriple.State.EvaluatesList.cons
+          (state_evaluates_nat env sizeof_int heap)
+          EvalTriple.State.EvaluatesList.nil))
+  have hcallTerm : EvalTriple.State.EvaluatesToK heapCtx heapOpCtx memcpyCtx.blockCtx env
+      (.call "memcpyMemory" [Term.var "dst", Term.var "src", Term.nat sizeof_int])
+      heap (valPtr dst) (Heap.copy heap dst src sizeof_int) :=
+    EvalTriple.State.EvaluatesToK.call hmem (by rfl) hargs
+  have hbody : EvalTriple.State.EvaluatesInstrs heapCtx heapOpCtx memcpyCtx.blockCtx []
+      memcpyBlocks[3].2.result env heap (valPtr dst) (Heap.copy heap dst src sizeof_int) := by
+    exact EvalTriple.State.EvaluatesInstrs.nil (by simpa [memcpyBlocks] using hcallTerm)
+  have hcallValues : EvalTriple.State.EvaluatesCallValues heapCtx heapOpCtx memcpyCtx.blockCtx
+      "memcpyInt" ([valPtr dst, valPtr src] : List (Val heapCtx))
+      heap (valPtr dst) (Heap.copy heap dst src sizeof_int) :=
+    EvalTriple.State.EvaluatesCallValues.of_evaluatesInstrs
+      (name := "memcpyInt")
+      (block := memcpyBlocks[3].2) (by rfl) (by rfl) hbody
+  have htopArgs : EvalTriple.State.EvaluatesList heapCtx heapOpCtx memcpyCtx.blockCtx []
+      ([termPtr dst.addr, termPtr src.addr] : List (Term heapCtx))
+      heap ([valPtr dst, valPtr src] : List (Val heapCtx)) heap :=
+    EvalTriple.State.EvaluatesList.cons
+      (state_evaluates_termPtr [] dst.addr heap)
+      (EvalTriple.State.EvaluatesList.cons
+        (state_evaluates_termPtr [] src.addr heap)
+        EvalTriple.State.EvaluatesList.nil)
+  exact (EvalTriple.State.EvaluatesToK.call hcallValues (by rfl) htopArgs) []
 
 private theorem cell_span (p : Ptr) :
     (cell p).span = range p.addr 1 := by

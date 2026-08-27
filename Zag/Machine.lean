@@ -6,11 +6,10 @@ import Zag.Theory
 
 A configuration is `⟨control, env, stack⟩`. `control` is what is happening *now*; the stack is the
 pending work, innermost first. `Machine.step` dispatches on the control and, when a value is handed
-back, on the **top frame only** -- never deeper. That single property is what `Zag/Weakening.lean`
-turns into `step_weaken`, and everything compositional rests on it.
+back, on the **top frame only** -- never deeper.
 
-This file is the execution behaviour and nothing else. Its metatheory is in `Zag/Weakening.lean`,
-the relations built on it are in `Zag/EvalTriple.lean`, and the loop rule is in `Zag/Loop.lean`.
+This file is the execution behaviour and nothing else. The logical relations built on it are in
+`Zag/EvalTriple.lean`, and the loop rule is in `Zag/Loop.lean`.
 -/
 
 namespace Zag

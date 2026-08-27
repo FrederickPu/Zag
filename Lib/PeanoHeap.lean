@@ -196,7 +196,7 @@ def arrayPrim : Primitive where
     | _ => Empty
   repr := fun _ => none
 
-abbrev heapCtx : PrimitiveCtx := .ofPrims [
+def heapCtx : PrimitiveCtx := .ofPrims [
   .of "Nat" Nat,
   .of "Bool" Bool,
   .of "Unit" PUnit,
@@ -648,6 +648,8 @@ instance (blocks : BlockCtx.Raw heapCtx) (h : BlockCtx.Valid blocks) :
   mulOp := by rfl
   divOp := by rfl
   succOp := by rfl
+
+attribute [irreducible] heapCtx
 
 end Lib.PeanoHeap
 

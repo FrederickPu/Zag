@@ -316,19 +316,12 @@ private theorem heapWrapF2_evaluates (heap : Heap) (thing : Ptr) :
       (checkedBlocks heapWrapBlocks heapWrapBlocksValid) "heapWrapF2" [termPtr thing.addr]
       heap valUnit (heapWrapF2Model heap thing) := by
   rcases thing with ⟨thing⟩
-  set_option zvcgen.resumeReturn true in
-    zvcgen [heapWrapBlocks, checkedBlocks, storeOp, Op.effectful, Op.Body.collect,
-      Op.Arg.ofTerms, Op.Arg.ofVals, Block.entryEnv, Scope.get?, Term.nat,
-      termPtr, valPtr, valUnit, asPtr?, Val.ty_mk, Val.ty_nat, Val.mk_ofNat,
-      Val.as?_mk, Val.asNat?_nat, toPtr_ofPtr, driveOp_apply_done,
-      resume_dependent_apply_done, resume_store_value_operand,
-      storeValAction_spec, storeOp_action_spec, storeOp_action_vals]
-  all_goals try simp_all [Val.as?_mk, Val.asNat?_nat, toPtr_ofPtr]
-  all_goals try solve_by_elim
-  all_goals try obtain ⟨hleft, hright⟩ := ‹_ ∧ _›
-  all_goals subst_vars
-  all_goals try simp_all [heapWrapF2Model, Val.as?_mk, Val.asNat?_nat,
-    toPtr_ofPtr]
+  zvcgen [heapWrapBlocks, checkedBlocks, storeOp, Op.effectful, Op.Body.collect,
+    Op.Arg.ofTerms, Op.Arg.ofVals, Block.entryEnv, Scope.get?, Term.nat,
+    termPtr, valPtr, valUnit, asPtr?, Val.ty_mk, Val.ty_nat, Val.mk_ofNat,
+    Val.as?_mk, Val.asNat?_nat, toPtr_ofPtr, driveOp_apply_done,
+    resume_dependent_apply_done, resume_store_value_operand,
+    storeValAction_spec, storeOp_action_spec, storeOp_action_vals]
 
 private theorem heapWrapF3_evaluates (heap : Heap) (thing : Ptr) :
     EvalTriple.State.EvaluatesCall heapCtx heapOpCtx
@@ -376,12 +369,7 @@ private theorem heapWrapF4_evaluates (heap : Heap) (thing : Ptr) :
   rcases thing with ⟨thing⟩
   let blocks := checkedBlocks heapWrapBlocks heapWrapBlocksValid
   have hstore := store_apply_evaluates blocks heap ⟨thing + 2⟩ thing
-  set_option zvcgen.useLocalApply true in
-    set_option zvcgen.resumeReturn true in
-      zvcgen [heapWrapBlocks, blocks, Term.nat, termPtr, valPtr]
-  all_goals subst_vars
-  all_goals simp_all [heapWrapF4Model, thingField, EvalTriple.Singleton.statePre,
-    EvalTriple.Singleton.statePost]
+  zvcgen [heapWrapBlocks, blocks, Term.nat, termPtr, valPtr]
 
 private theorem heapWrapF5_evaluates (heap : Heap) (dst src : Ptr) :
     EvalTriple.State.EvaluatesCall heapCtx heapOpCtx
@@ -427,38 +415,24 @@ private theorem heapWrapF6_evaluates (heap : Heap) (ptr : Ptr) :
       (checkedBlocks heapWrapBlocks heapWrapBlocksValid) "heapWrapF6" [termPtr ptr.addr]
       heap valUnit (heapWrapF6Model heap ptr) := by
   rcases ptr with ⟨ptr⟩
-  set_option zvcgen.resumeReturn true in
-    zvcgen [heapWrapBlocks, checkedBlocks, storeOp, Op.effectful, Op.Body.collect,
-      Op.Arg.ofTerms, Op.Arg.ofVals, Block.entryEnv, Scope.get?, Term.nat,
-      termPtr, valPtr, valUnit, asPtr?, Val.ty_mk, Val.ty_nat, Val.mk_ofNat,
-      Val.as?_mk, Val.asNat?_nat, toPtr_ofPtr, driveOp_apply_done,
-      resume_dependent_apply_done, resume_store_value_operand,
-      storeValAction_spec, storeOp_action_spec, storeOp_action_vals]
-  all_goals try simp_all [Val.as?_mk, Val.asNat?_nat, toPtr_ofPtr]
-  all_goals try solve_by_elim
-  all_goals try obtain ⟨hleft, hright⟩ := ‹_ ∧ _›
-  all_goals subst_vars
-  all_goals try simp_all [heapWrapF6Model, Val.as?_mk, Val.asNat?_nat,
-    toPtr_ofPtr]
+  zvcgen [heapWrapBlocks, checkedBlocks, storeOp, Op.effectful, Op.Body.collect,
+    Op.Arg.ofTerms, Op.Arg.ofVals, Block.entryEnv, Scope.get?, Term.nat,
+    termPtr, valPtr, valUnit, asPtr?, Val.ty_mk, Val.ty_nat, Val.mk_ofNat,
+    Val.as?_mk, Val.asNat?_nat, toPtr_ofPtr, driveOp_apply_done,
+    resume_dependent_apply_done, resume_store_value_operand,
+    storeValAction_spec, storeOp_action_spec, storeOp_action_vals]
 
 private theorem heapWrapF7_evaluates (heap : Heap) (ptr : Ptr) :
     EvalTriple.State.EvaluatesCall heapCtx heapOpCtx
       (checkedBlocks heapWrapBlocks heapWrapBlocksValid) "heapWrapF7" [termPtr ptr.addr]
       heap valUnit (heapWrapF7Model heap ptr) := by
   rcases ptr with ⟨ptr⟩
-  set_option zvcgen.resumeReturn true in
-    zvcgen [heapWrapBlocks, checkedBlocks, storeOp, Op.effectful, Op.Body.collect,
-      Op.Arg.ofTerms, Op.Arg.ofVals, Block.entryEnv, Scope.get?, Term.nat,
-      termPtr, valPtr, valUnit, asPtr?, Val.ty_mk, Val.ty_nat, Val.mk_ofNat,
-      Val.as?_mk, Val.asNat?_nat, toPtr_ofPtr, driveOp_apply_done,
-      resume_dependent_apply_done, resume_store_value_operand,
-      storeValAction_spec, storeOp_action_spec, storeOp_action_vals]
-  all_goals try simp_all [Val.as?_mk, Val.asNat?_nat, toPtr_ofPtr]
-  all_goals try solve_by_elim
-  all_goals try obtain ⟨hleft, hright⟩ := ‹_ ∧ _›
-  all_goals subst_vars
-  all_goals try simp_all [heapWrapF7Model, Val.as?_mk, Val.asNat?_nat,
-    toPtr_ofPtr]
+  zvcgen [heapWrapBlocks, checkedBlocks, storeOp, Op.effectful, Op.Body.collect,
+    Op.Arg.ofTerms, Op.Arg.ofVals, Block.entryEnv, Scope.get?, Term.nat,
+    termPtr, valPtr, valUnit, asPtr?, Val.ty_mk, Val.ty_nat, Val.mk_ofNat,
+    Val.as?_mk, Val.asNat?_nat, toPtr_ofPtr, driveOp_apply_done,
+    resume_dependent_apply_done, resume_store_value_operand,
+    storeValAction_spec, storeOp_action_spec, storeOp_action_vals]
 
 /-
 ```

@@ -1,6 +1,6 @@
 import Lib.PeanoHeap
 import HeapAlgebra.Peano
-import Meta.Eval.Induction
+import Meta.Eval.Composition
 import Meta.Eval.VC
 import Meta.Induction
 import Meta.UnifyType
@@ -11,9 +11,9 @@ Prelude for the AutoCorres example analogues.
 Each module below mirrors one upstream `tools/autocorres/tests/examples/*.thy` theory with a
 small block-IR program over `PeanoHeap` and a checked typing context. Everything they use is
 general purpose and lives outside `Test/`: `mkCtx` and `valid_blocks` in `Lib/PeanoHeap.lean`,
-    the relational evaluator tactics in `Meta/Eval/VC.lean`, `typecheck_ctx` in
-`Meta/UnifyType.lean`, and the reflected induction rule in `Meta/Induction.lean`. Examples that
-need specialized Peano loop automation import `Meta/Peano/Eval.lean` directly.
+the exact evaluator tactics in `Meta/Eval/Composition.lean`, the relational VC tactics in
+`Meta/Eval/VC.lean`, `typecheck_ctx` in `Meta/UnifyType.lean`, and the reflected induction rule in
+`Meta/Induction.lean`.
 -/
 
 namespace Zag.Test.Autocorres.Examples
@@ -465,8 +465,8 @@ abbrev mkPureCtx (blocks : BlockCtx.Raw heapCtx) (h : BlockCtx.Valid blocks) : C
 
 instance (blocks : BlockCtx.Raw heapCtx) (h : BlockCtx.Valid blocks) :
     Peano.Model (mkPureCtx blocks h) where
-  natType := by rfl
-  boolType := by rfl
+  natType := Peano.Types.natType (primCtx := heapCtx)
+  boolType := Peano.Types.boolType (primCtx := heapCtx)
   eqOp := by rfl
   ltOp := by rfl
   gtOp := by rfl

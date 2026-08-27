@@ -145,7 +145,7 @@ structure PrimitiveCtx where
 class PrimitiveCtx.ReprName (primCtx : PrimitiveCtx) where
   expr : String
 
-abbrev PrimitiveCtx.ofPrims (prims : List Primitive) : PrimitiveCtx where
+def PrimitiveCtx.ofPrims (prims : List Primitive) : PrimitiveCtx where
   prims := prims
 
 def PrimitiveCtx.find? (primCtx : PrimitiveCtx) (name : String) : Option Primitive :=

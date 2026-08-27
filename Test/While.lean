@@ -1,5 +1,4 @@
 import Test.Autocorres.Examples.Common
-import Meta.Peano.Eval
 
 /-!
  Loops written as ordinary resumable operators rather than as self-recursive blocks.
@@ -7,10 +6,10 @@ import Meta.Peano.Eval
 As in `plusLoop` from `Plus.lean`, re-entry comes from an `opRef` passed to the CPS body: the
 `while` operator applies the condition, then the body applies that continuation to its next state.
 
-`tail_induction` has nothing to say about such a loop -- there is no recursive call to induct on.
-`zspec whileInduction` handles it with an invariant indexed by the iteration, plus the iteration
-count at which the condition goes false, supplied separately rather than extracted from a
-decreasing measure.
+Recursive-block induction has nothing to say about such a loop -- there is no recursive call to
+induct on. `Peano.Exact.while_evaluatesTo` handles it with an invariant indexed by the iteration,
+plus the iteration count at which the condition goes false, supplied separately rather than
+extracted from a decreasing measure.
 -/
 
 namespace Zag.Test.While
@@ -57,23 +56,11 @@ theorem countDown_eval_gen (s : Nat) :
   dsimp [whileBlocks, Block.entryEnv]
   apply EvaluatesInstrs.cons
   · apply Peano.Exact.while_evaluatesTo (hM := rfl)
-      (condName := "countDownCond") (bodyName := "countDownBody")
-      (stateTys := [Peano.NatTy]) (resultTy := Peano.NatTy)
       (I := fun k args => args = [Val.nat (s - k)]) (N := s)
       (initial := [Val.nat s]) (loopResult := Val.nat 0)
     auto_eval_refinement_goals [heapOpCtx, Op.fixed, whileBlocks]
-    all_goals try rfl
     · exact EvaluatesList.cons (by
-        apply EvaluatesTo.of_eq
-          (EvaluatesTo.var_block (ctx := whileCtx) (env := [("start", Val.nat s)])
-            (name := "countDownCond") (hM := rfl) (by rfl) (by rfl))
-        rfl)
-        (EvaluatesList.cons (by
-          apply EvaluatesTo.of_eq
-            (EvaluatesTo.var_block (ctx := whileCtx) (env := [("start", Val.nat s)])
-              (name := "countDownBody") (hM := rfl) (by rfl) (by rfl))
-          rfl)
-          (EvaluatesList.cons (EvaluatesTo.var_local (hM := rfl) (by rfl)) EvaluatesList.nil))
+        exact EvaluatesTo.var_local (hM := rfl) (by rfl)) EvaluatesList.nil
     · intro k hk
       constructor
       · apply EvaluatesCallValues.of_evaluatesInstrs
@@ -169,23 +156,11 @@ theorem halve_eval (s n : Nat)
   dsimp [halveBlocks, Block.entryEnv]
   apply EvaluatesInstrs.cons
   · apply Peano.Exact.while_evaluatesTo (hM := rfl)
-      (condName := "halveCond") (bodyName := "halveBody")
-      (stateTys := [Peano.NatTy]) (resultTy := Peano.NatTy)
       (I := fun k args => args = [Val.nat (halveIter s k)]) (N := n)
       (initial := [Val.nat s]) (loopResult := Val.nat 1)
     auto_eval_refinement_goals [heapOpCtx, Op.fixed, halveBlocks, halveIter]
-    all_goals try rfl
     · exact EvaluatesList.cons (by
-        apply EvaluatesTo.of_eq
-          (EvaluatesTo.var_block (ctx := halveCtx) (env := [("start", Val.nat s)])
-            (name := "halveCond") (hM := rfl) (by rfl) (by rfl))
-        rfl)
-        (EvaluatesList.cons (by
-          apply EvaluatesTo.of_eq
-            (EvaluatesTo.var_block (ctx := halveCtx) (env := [("start", Val.nat s)])
-              (name := "halveBody") (hM := rfl) (by rfl) (by rfl))
-          rfl)
-          (EvaluatesList.cons (EvaluatesTo.var_local (hM := rfl) (by rfl)) EvaluatesList.nil))
+        exact EvaluatesTo.var_local (hM := rfl) (by rfl)) EvaluatesList.nil
     · intro k hk
       constructor
       · apply EvaluatesCallValues.of_evaluatesInstrs

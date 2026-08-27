@@ -1,5 +1,4 @@
 import Test.Autocorres.Examples.Common
-import Meta.Peano.Eval
 
 /-!
 Upstream Isabelle theory:
@@ -85,27 +84,12 @@ theorem plusLoop_eval (x y : Nat) :
   dsimp [plusBlocks, Block.entryEnv]
   apply EvaluatesInstrs.cons
   · apply Peano.Exact.while_evaluatesTo (hM := rfl)
-      (condName := "plusLoopCond") (bodyName := "plusLoopBody")
-      (stateTys := [Ty.prim "Nat" [], Ty.prim "Nat" []]) (resultTy := Ty.prim "Nat" [])
       (I := fun k args => args = [Val.nat (x + k), Val.nat (y - k)]) (N := y)
       (initial := [Val.nat x, Val.nat y]) (loopResult := Val.nat (x + y))
     auto_eval_refinement_goals [heapOpCtx, Op.fixed, plusBlocks]
     case hargs =>
-      exact EvaluatesList.cons (by
-        apply EvaluatesTo.of_eq
-          (EvaluatesTo.var_block (ctx := plusCtx)
-            (env := [("x", Val.nat x), ("y", Val.nat y)])
-            (name := "plusLoopCond") (hM := rfl) (by rfl) (by rfl))
-        rfl)
-        (EvaluatesList.cons (by
-          apply EvaluatesTo.of_eq
-            (EvaluatesTo.var_block (ctx := plusCtx)
-              (env := [("x", Val.nat x), ("y", Val.nat y)])
-              (name := "plusLoopBody") (hM := rfl) (by rfl) (by rfl))
-          rfl)
-          (EvaluatesList.cons (EvaluatesTo.var_local (hM := rfl) (by rfl))
-            (EvaluatesList.cons (EvaluatesTo.var_local (hM := rfl) (by rfl))
-              EvaluatesList.nil)))
+      exact EvaluatesList.cons (EvaluatesTo.var_local (hM := rfl) (by rfl))
+        (EvaluatesList.cons (EvaluatesTo.var_local (hM := rfl) (by rfl)) EvaluatesList.nil)
     case preserved =>
       intro n hn
       constructor

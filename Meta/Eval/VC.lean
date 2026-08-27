@@ -20,8 +20,6 @@ register_option zvcgen.fuel : Nat := {
   defValue := 256
   descr := "maximum refinement steps for zvcgen"
 }
-register_option zvcgen.resumeReturn : Bool := { defValue := false, descr := "compat" }
-register_option zvcgen.useLocalApply : Bool := { defValue := false, descr := "compat" }
 initialize registerTraceClass `Zag.zvcgen
 
 syntax (name := normalizeEvalRefinementGoals) "normalize_eval_refinement_goals"
@@ -103,6 +101,9 @@ private def tryApply (goal : MVarId) (c : Expr) (rejectOpenEq : Bool := false) :
   let saved ← saveState
   try
     let gs ← keepProps (← goal.apply c { newGoals := .all })
+    for g in gs do
+      let ty ← g.withContext do whnf (← instantiateMVars (← g.getType)).consumeMData
+      if ty.isConstOf ``False then restoreState saved; return none
     if rejectOpenEq then
       for g in gs do
         let ty ← g.withContext do instantiateMVars (← g.getType)
@@ -116,6 +117,10 @@ private def tryApply (goal : MVarId) (c : Expr) (rejectOpenEq : Bool := false) :
 private def refineOnce (goal : MVarId) (specs : Array Name) :
     MetaM (Option (List MVarId)) := goal.withContext do
   if ← goal.isAssigned then return some []
+  let goal' ← substVars goal
+  if goal' != goal then
+    goal'.setTag (← goal.getTag)
+    return some [goal']
   let gHead ← judgmentHeadOf (← goal.getType)
   for ldecl in ← getLCtx do
     if ldecl.isImplementationDetail then continue
@@ -208,11 +213,13 @@ elab_rules : tactic
       try evalTactic (← `(tactic|
         simp -implicitDefEqProofs only
           [List.nil_append, List.append_nil, List.cons.injEq, and_true, true_and,
-           Option.some.injEq, Std.Do.Triple.iff, Std.Do.wp, Std.Do.PredTrans.apply,
-           Std.Do.PredTrans.pure, Std.Do.PredTrans.pushArg, EvalTriple.ActionPost,
-           EvalTriple.Stuck, EvalTriple.StepPost, EvalTriple.At,
-           EvalTriple.Singleton.statePost, EvalTriple.Singleton.statePre,
-           EvalTriple.Singleton.idPost, EvalTriple.Singleton.idPre,
+            Option.some.injEq, Std.Do.Triple.iff, Std.Do.wp, Std.Do.PredTrans.apply,
+            Std.Do.PredTrans.pure, Std.Do.PredTrans.pushArg, EvalTriple.ActionPost,
+            EvalTriple.Stuck, EvalTriple.StepPost, EvalTriple.At,
+            EvalTriple.Exact.pre, EvalTriple.Exact.post, Std.Do.PostCond.noThrow,
+            Std.Do.SPred.pure, decide_eq_true_eq, decide_eq_false_iff_not,
+            EvalTriple.Singleton.statePost, EvalTriple.Singleton.statePre,
+            EvalTriple.Singleton.idPost, EvalTriple.Singleton.idPre,
            Std.Do.SPred.entails, ULift.down, ULift.up, StateT.mk, StateT.run,
            StateT.bind, StateT.pure, StateT.modifyGet, StateT.run_pure,
            MonadState.modifyGet, MonadStateOf.modifyGet, Id.run, Id.run_pure,

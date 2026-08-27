@@ -101,16 +101,11 @@ private theorem memsetMemory_evaluates_state (heap : Heap) (start : Ptr) (value 
       [termPtr start.addr, .nat value, .nat len] heap (valPtr start)
       (Heap.fill heap start (value % 256) len) := by
   rcases start with ⟨start⟩
-  set_option zvcgen.resumeReturn true in
-    zvcgen [memsetBlocks, checkedBlocks, memsetOp, Op.effectful, Op.Body.collect,
-      Op.Arg.ofTerms, Op.Arg.ofVals, Block.entryEnv, Scope.get?, Term.nat,
-      termPtr, valPtr, asPtr?, Val.ty_mk, Val.ty_nat, Val.mk_ofNat,
-      Val.as?_mk, Val.asNat?_nat, toPtr_ofPtr, driveOp_apply_done,
-      resume_dependent_apply_done, memsetOp_action_vals]
-  all_goals try solve_by_elim
-  all_goals try obtain ⟨hstart, hvalue, hlen⟩ := ‹_ ∧ _ ∧ _›
-  all_goals subst_vars
-  all_goals try simp_all [Val.as?_mk, Val.asNat?_nat, toPtr_ofPtr]
+  zvcgen [memsetBlocks, checkedBlocks, memsetOp, Op.effectful, Op.Body.collect,
+    Op.Arg.ofTerms, Op.Arg.ofVals, Block.entryEnv, Scope.get?, Term.nat,
+    termPtr, valPtr, asPtr?, Val.ty_mk, Val.ty_nat, Val.mk_ofNat,
+    Val.as?_mk, Val.asNat?_nat, toPtr_ofPtr, driveOp_apply_done,
+    resume_dependent_apply_done, memsetOp_action_vals]
 
 /--
 ```

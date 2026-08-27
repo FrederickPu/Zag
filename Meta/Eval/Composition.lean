@@ -67,37 +67,21 @@ syntax (name := evaluatesCallTactic) "evaluates_call" (ppSpace num)?
 syntax (name := zspecCallTactic) "zspec_call" (ppSpace num)?
   " [" Lean.Parser.Tactic.simpLemma,* "]" ppSpace term : tactic
 
-syntax (name := evaluatesCallMachineTactic) "evaluates_call_machine" (ppSpace num)?
-  " [" Lean.Parser.Tactic.simpLemma,* "]" : tactic
-
-syntax (name := evaluatesCallMachineQTactic) "evaluates_call_machine?" (ppSpace num)?
-  " [" Lean.Parser.Tactic.simpLemma,* "]" : tactic
-
-syntax (name := zvcgenCallTactic) "zvcgen_call" (ppSpace num)?
-  " [" Lean.Parser.Tactic.simpLemma,* "]" : tactic
-
 syntax (name := zspecCallQTactic) "zspec_call?" (ppSpace num)?
   " [" Lean.Parser.Tactic.simpLemma,* "]" ppSpace term : tactic
 
 syntax (name := evaluatesInstrsTactic) "evaluates_instrs" (ppSpace num)?
   " [" Lean.Parser.Tactic.simpLemma,* "]" : tactic
 
-syntax (name := evaluatesInstrsOnlyTactic) "evaluates_instrs_only" : tactic
-
-syntax (name := zspecCallCoreTactic) "zspec_call_core" (ppSpace num)?
-  " [" Lean.Parser.Tactic.simpLemma,* "]" ppSpace term (" discharging " tactic)? : tactic
-
 syntax (name := zspecCallApplyTactic) "zspec_call_apply" (ppSpace num)?
   " [" Lean.Parser.Tactic.simpLemma,* "]" ppSpace term (" discharging " tactic)? : tactic
 
 macro_rules
 | `(tactic| zspec_call $[$bound?]? [$lemmas,*] $spec) =>
-    `(tactic| zspec_call_core $[$bound?]? [$lemmas,*] $spec)
+    `(tactic| zspec_call_apply $[$bound?]? [$lemmas,*] $spec)
 | `(tactic| zspec_call? $[$bound?]? [$lemmas,*] $spec) =>
-    `(tactic| zspec_call_core $[$bound?]? [$lemmas,*] $spec discharging
+    `(tactic| zspec_call_apply $[$bound?]? [$lemmas,*] $spec discharging
       (try simp only [eval_finish]))
-| `(tactic| zspec_call_core $[$bound?]? [$lemmas,*] $spec $[discharging $close?]?) =>
-    `(tactic| zspec_call_apply $[$bound?]? [$lemmas,*] $spec $[discharging $close?]?)
 | `(tactic| zspec_call_apply $[$bound?]? [$lemmas,*] $spec $[discharging $close?]?) =>
     `(tactic|
       first
@@ -158,13 +142,6 @@ macro_rules
             exact Zag.EvalTriple.Exact.EvaluatesFrom.callReturn)
        | (apply Zag.exactCallAutoProofIrrel $spec
           evaluates_to_all $[$bound?]? [$lemmas,*]))
-| `(tactic| evaluates_call_machine $[$bound?]? [$lemmas,*]) =>
-    `(tactic| evaluates $[$bound?]? [$lemmas,*])
-| `(tactic| evaluates_call_machine? $[$bound?]? [$lemmas,*]) =>
-    `(tactic| evaluates $[$bound?]? [$lemmas,*])
-| `(tactic| zvcgen_call $[$bound?]? [$lemmas,*]) =>
-    `(tactic| evaluates_call $[$bound?]? [$lemmas,*])
-
 private def exactEvalTerm? (goal : MVarId) : MetaM (Option Expr) := goal.withContext do
   let target ← instantiateMVars (← goal.getType)
   unless target.getAppFn.isConstOf ``EvalTriple.Exact.EvaluatesTo do return none
@@ -364,7 +341,5 @@ elab_rules : tactic
 elab_rules : tactic
 | `(tactic| evaluates_instrs $[$bound?]? [$lemmas,*]) =>
     do evaluatesInstrsCore (← mkEvalCoreContext lemmas.getElems) bound? lemmas.getElems
-| `(tactic| evaluates_instrs_only) =>
-    do evaluatesInstrsCore (← mkEvalCoreContext #[]) none #[] false
 
 end Zag

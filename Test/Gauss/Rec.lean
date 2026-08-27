@@ -1,5 +1,5 @@
 import Test.Gauss
-import Meta.Peano.Eval
+import Meta.Eval.VC
 
 namespace Zag.Test.Gauss.Rec
 
@@ -85,29 +85,14 @@ theorem loop_eval (i acc : Nat) :
   dsimp [gaussBlocks, Block.entryEnv]
   apply EvaluatesInstrs.cons
   · apply Peano.Exact.while_evaluatesTo (hM := rfl)
-      (condName := "gaussCond") (bodyName := "gaussBody")
-      (stateTys := [Peano.NatTy, Peano.NatTy]) (resultTy := Peano.NatTy)
       (I := fun k args => args = [Val.nat (acc + sumDown i k), Val.nat (i - k)])
       (N := i) (initial := [Val.nat acc, Val.nat i])
       (loopResult := Val.nat (acc + sumTo i))
     auto_eval_refinement_goals [natOpCtx, Op.fixed, gaussBlocks, sumDown,
       sumDown_succ, sumDown_self]
     case hargs =>
-      exact EvaluatesList.cons (by
-        apply EvaluatesTo.of_eq
-          (EvaluatesTo.var_block (ctx := gaussCtx)
-            (env := [("i", Val.nat i), ("acc", Val.nat acc)])
-            (name := "gaussCond") (hM := rfl) (by rfl) (by rfl))
-        rfl)
-        (EvaluatesList.cons (by
-          apply EvaluatesTo.of_eq
-            (EvaluatesTo.var_block (ctx := gaussCtx)
-              (env := [("i", Val.nat i), ("acc", Val.nat acc)])
-              (name := "gaussBody") (hM := rfl) (by rfl) (by rfl))
-          rfl)
-          (EvaluatesList.cons (EvaluatesTo.var_local (hM := rfl) (by rfl))
-            (EvaluatesList.cons (EvaluatesTo.var_local (hM := rfl) (by rfl))
-              EvaluatesList.nil)))
+      exact EvaluatesList.cons (EvaluatesTo.var_local (hM := rfl) (by rfl))
+        (EvaluatesList.cons (EvaluatesTo.var_local (hM := rfl) (by rfl)) EvaluatesList.nil)
     case preserved =>
       intro k hk
       constructor

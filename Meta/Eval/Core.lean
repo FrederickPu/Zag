@@ -11,7 +11,7 @@ import Zag.Loop
 # Small-step evaluator core
 
 This module owns only machine walking, fuel, operator finalizers, and evaluation of argument
-lists. Composition with call and application specifications lives in `Meta.Eval.Refinement`.
+lists. Composition with call and application specifications lives in `Meta.Eval.Composition`.
 -/
 
 namespace Zag

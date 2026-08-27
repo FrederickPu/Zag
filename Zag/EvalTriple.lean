@@ -10,11 +10,73 @@ A derivation is a finite proof tree.  A step rules out the `OptionT` failure use
 stuckness, while retaining the ambient monad's exception conditions unchanged.
 -/
 
+namespace Std.Do
+
+instance instWPPredTrans {ps : PostShape} : WP (PredTrans ps) ps where
+  wp x := x
+
+instance instWPMonadPredTrans {ps : PostShape} : WPMonad (PredTrans ps) ps where
+  wp_pure _ := rfl
+  wp_bind _ _ := rfl
+
+end Std.Do
+
 namespace Zag
 
 namespace EvalTriple
 
 open scoped Std.Do
+
+/-- User-facing total view of a partial relation. `none` is an ordinary return used when the
+relation has no result. -/
+def total? {α : Type} (R : α → Prop) : Std.Do.PredTrans .pure (Option α) where
+  trans Q := Std.Do.SPred.pure
+    ((∀ value, R value → (Q.1 (some value)).down) ∧
+      ((∀ value, ¬ R value) → (Q.1 none).down))
+  conjunctiveRaw := by
+    intro Q₁ Q₂
+    dsimp [Std.Do.PredTrans.apply, Std.Do.SPred.bientails, Std.Do.SPred.and]
+    constructor
+    · intro h
+      exact ⟨⟨fun value hvalue => (h.1 value hvalue).1,
+          fun hnone => (h.2 hnone).1⟩,
+        ⟨fun value hvalue => (h.1 value hvalue).2,
+          fun hnone => (h.2 hnone).2⟩⟩
+    · intro h
+      exact ⟨fun value hvalue => ⟨h.1.1 value hvalue, h.2.1 value hvalue⟩,
+        fun hnone => ⟨h.1.2 hnone, h.2.2 hnone⟩⟩
+
+def somePost {α : Type} (success : α → Std.Do.Assertion .pure) :
+    Std.Do.PostCond (Option α) .pure :=
+  Std.Do.PostCond.noThrow fun
+    | some value => success value
+    | none => Std.Do.SPred.pure False
+
+def someEqPost {α : Type} (expected : α) : Std.Do.PostCond (Option α) .pure :=
+  somePost fun actual => Std.Do.SPred.pure (actual = expected)
+
+@[simp] theorem somePost_some {α : Type} (success : α → Std.Do.Assertion .pure)
+    (value : α) : (somePost success).1 (some value) = success value := rfl
+
+@[simp] theorem somePost_none {α : Type} (success : α → Std.Do.Assertion .pure) :
+    (somePost success).1 none = Std.Do.SPred.pure False := rfl
+
+@[simp] theorem someEqPost_some {α : Type} (expected actual : α) :
+    (someEqPost expected).1 (some actual) = Std.Do.SPred.pure (actual = expected) := rfl
+
+@[simp] theorem someEqPost_none {α : Type} (expected : α) :
+    (someEqPost expected).1 none = Std.Do.SPred.pure False := rfl
+
+theorem total?_some_of_wp {α : Type} {R : α → Prop}
+    {success : α → Std.Do.Assertion .pure}
+    (h : ((Std.Do.wp (total? R)).apply (somePost success)).down) :
+    ∃ value, R value ∧ (success value).down := by
+  change ((∀ value, R value → ((somePost success).1 (some value)).down) ∧
+    ((∀ value, ¬ R value) → ((somePost success).1 none).down)) at h
+  by_cases hexists : ∃ value, R value
+  · obtain ⟨value, hvalue⟩ := hexists
+    exact ⟨value, hvalue, h.1 value hvalue⟩
+  · exact (h.2 (fun value hvalue => hexists ⟨value, hvalue⟩)).elim
 
 abbrev Assertion (ctx : Ctx) := Std.Do.Assertion ctx.postShape
 
@@ -1597,7 +1659,7 @@ private def runId {ctx : Ctx} (hM : ctx.M = Id) {α : Type}
     (x : Machine.Effect (idView ctx hM) α) : Option α :=
   Id.run x.run
 
-private theorem steps_to_fuel {ctx : Ctx} {hM : ctx.M = Id}
+theorem steps_to_fuel {ctx : Ctx} {hM : ctx.M = Id}
     {state : Machine.Config ctx.primCtx} {P : Assertion (idView ctx hM)}
     {expected : Val ctx.primCtx}
     (h : Steps (idView ctx hM) (post ctx hM expected).2
@@ -1682,7 +1744,7 @@ private theorem evalConfigFuel_succ_of_none {ctx : Ctx} {hM : ctx.M = Id}
   rw [OptionT.run_bind]
   cases (Machine.step (idView ctx hM) state).run <;> rfl
 
-private theorem evalConfigFuel_unique {ctx : Ctx} {hM : ctx.M = Id}
+theorem evalConfigFuel_unique {ctx : Ctx} {hM : ctx.M = Id}
     {state : Machine.Config ctx.primCtx} {fuel₁ fuel₂ : Nat}
     {value₁ value₂ : Val ctx.primCtx}
     (h₁ : runId hM (Machine.evalConfigFuel (idView ctx hM) fuel₁ state) = some value₁)
@@ -1790,6 +1852,179 @@ theorem of_eq {ctx : Ctx} {env : Env ctx.primCtx} {term : Term ctx.primCtx}
 
 end EvaluatesTo
 
+/-- User-facing total evaluator for exact `Id` semantics. Machine stuckness is not an exception in
+this interface: successful exact evaluation returns `some value`, and absence of an exact result
+returns `none`. -/
+def eval? (ctx : Ctx) (env : Env ctx.primCtx) (term : Term ctx.primCtx)
+    (hM : ctx.M = Id := by first | assumption | rfl) :
+    Std.Do.PredTrans .pure (Option (Val ctx.primCtx)) :=
+  EvalTriple.total? fun value => Exact.EvaluatesTo ctx env term value hM
+
+def evalList? (ctx : Ctx) (env : Env ctx.primCtx) (terms : List (Term ctx.primCtx))
+    (hM : ctx.M = Id := by first | assumption | rfl) :
+    Std.Do.PredTrans .pure (Option (List (Val ctx.primCtx))) :=
+  EvalTriple.total? fun values => Exact.EvaluatesList ctx env terms values hM
+
+def apply? (ctx : Ctx) (fn : Val ctx.primCtx) (args : List (Val ctx.primCtx))
+    (hM : ctx.M = Id := by first | assumption | rfl) :
+    Std.Do.PredTrans .pure (Option (Val ctx.primCtx)) :=
+  EvalTriple.total? fun value => Exact.EvaluatesApply ctx fn args value hM
+
+def callValues? (ctx : Ctx) (name : String) (args : List (Val ctx.primCtx))
+    (hM : ctx.M = Id := by first | assumption | rfl) :
+    Std.Do.PredTrans .pure (Option (Val ctx.primCtx)) :=
+  EvalTriple.total? fun value => Exact.EvaluatesCallValues ctx name args value hM
+
+theorem eval?_triple_of_evaluatesTo {ctx : Ctx} {env : Env ctx.primCtx}
+    {term : Term ctx.primCtx} {hM : ctx.M = Id} {value : Val ctx.primCtx}
+    (h : Exact.EvaluatesTo ctx env term value hM)
+    (Q : Std.Do.PostCond (Option (Val ctx.primCtx)) .pure) :
+    Std.Do.Triple (eval? ctx env term hM) (Q.1 (some value)) Q := by
+  change (Q.1 (some value)).down → _
+  intro hQ
+  dsimp [eval?, total?]
+  constructor
+  · intro actual hactual
+    have hsame : actual = value := EvaluatesTo.unique hactual h
+    subst actual
+    exact hQ
+  · intro hnone
+    exact (hnone value h).elim
+
+theorem eval?_some_of_wp {ctx : Ctx} {env : Env ctx.primCtx}
+    {term : Term ctx.primCtx} {hM : ctx.M = Id}
+    {success : Val ctx.primCtx → Std.Do.Assertion .pure}
+    (h : ((Std.Do.wp (eval? ctx env term hM)).apply (somePost success)).down) :
+    ∃ value, Exact.EvaluatesTo ctx env term value hM ∧ (success value).down := by
+  exact EvalTriple.total?_some_of_wp (R := fun value =>
+    Exact.EvaluatesTo ctx env term value hM) (success := success) h
+
+theorem evalList?_some_of_wp {ctx : Ctx} {env : Env ctx.primCtx}
+    {terms : List (Term ctx.primCtx)} {hM : ctx.M = Id}
+    {success : List (Val ctx.primCtx) → Std.Do.Assertion .pure}
+    (h : ((Std.Do.wp (evalList? ctx env terms hM)).apply (somePost success)).down) :
+    ∃ values, Exact.EvaluatesList ctx env terms values hM ∧ (success values).down := by
+  exact EvalTriple.total?_some_of_wp (R := fun values =>
+    Exact.EvaluatesList ctx env terms values hM) (success := success) h
+
+theorem apply?_some_of_wp {ctx : Ctx} {fn : Val ctx.primCtx}
+    {args : List (Val ctx.primCtx)} {hM : ctx.M = Id}
+    {success : Val ctx.primCtx → Std.Do.Assertion .pure}
+    (h : ((Std.Do.wp (apply? ctx fn args hM)).apply (somePost success)).down) :
+    ∃ value, Exact.EvaluatesApply ctx fn args value hM ∧ (success value).down := by
+  exact EvalTriple.total?_some_of_wp (R := fun value =>
+    Exact.EvaluatesApply ctx fn args value hM) (success := success) h
+
+theorem callValues?_some_of_wp {ctx : Ctx} {name : String}
+    {args : List (Val ctx.primCtx)} {hM : ctx.M = Id}
+    {success : Val ctx.primCtx → Std.Do.Assertion .pure}
+    (h : ((Std.Do.wp (callValues? ctx name args hM)).apply (somePost success)).down) :
+    ∃ value, Exact.EvaluatesCallValues ctx name args value hM ∧ (success value).down := by
+  exact EvalTriple.total?_some_of_wp (R := fun value =>
+    Exact.EvaluatesCallValues ctx name args value hM) (success := success) h
+
+theorem evaluatesTo_of_eval?_triple {ctx : Ctx} {env : Env ctx.primCtx}
+    {term : Term ctx.primCtx} {hM : ctx.M = Id} {value : Val ctx.primCtx}
+    (h : Std.Do.Triple (eval? ctx env term hM) (Std.Do.SPred.pure True)
+      (someEqPost value)) :
+    Exact.EvaluatesTo ctx env term value hM := by
+  have hwp := (Std.Do.Triple.iff.mp h) trivial
+  obtain ⟨actual, hactual, heq⟩ := eval?_some_of_wp hwp
+  subst actual
+  exact hactual
+
+theorem evaluatesList_of_evalList?_triple {ctx : Ctx} {env : Env ctx.primCtx}
+    {terms : List (Term ctx.primCtx)} {hM : ctx.M = Id}
+    {values : List (Val ctx.primCtx)}
+    (h : Std.Do.Triple (evalList? ctx env terms hM) (Std.Do.SPred.pure True)
+      (someEqPost values)) :
+    Exact.EvaluatesList ctx env terms values hM := by
+  have hwp := (Std.Do.Triple.iff.mp h) trivial
+  obtain ⟨actual, hactual, heq⟩ := evalList?_some_of_wp hwp
+  subst actual
+  exact hactual
+
+theorem EvaluatesList.unique {ctx : Ctx} {env : Env ctx.primCtx}
+    {terms : List (Term ctx.primCtx)} {values₁ values₂ : List (Val ctx.primCtx)}
+    {hM : ctx.M = Id}
+    (h₁ : Exact.EvaluatesList ctx env terms values₁ hM)
+    (h₂ : Exact.EvaluatesList ctx env terms values₂ hM) : values₁ = values₂ := by
+  induction h₁ generalizing values₂ with
+  | nil =>
+      cases h₂
+      rfl
+  | cons hterm₁ hrest₁ ih =>
+      cases h₂ with
+      | cons hterm₂ hrest₂ =>
+          have hvalue := EvaluatesTo.unique hterm₁ hterm₂
+          have hvalues := ih hrest₂
+          subst hvalue
+          subst hvalues
+          rfl
+
+theorem EvaluatesApply.unique {ctx : Ctx} {fn : Val ctx.primCtx}
+    {args : List (Val ctx.primCtx)} {value₁ value₂ : Val ctx.primCtx}
+    {hM : ctx.M = Id}
+    (h₁ : Exact.EvaluatesApply ctx fn args value₁ hM)
+    (h₂ : Exact.EvaluatesApply ctx fn args value₂ hM) : value₁ = value₂ := by
+  obtain ⟨fuel₁, hrun₁⟩ := EvaluatesTo.steps_to_fuel (h₁ [] []) trivial
+  obtain ⟨fuel₂, hrun₂⟩ := EvaluatesTo.steps_to_fuel (h₂ [] []) trivial
+  exact EvaluatesTo.evalConfigFuel_unique hrun₁ hrun₂
+
+theorem evalList?_triple_of_evaluatesList {ctx : Ctx} {env : Env ctx.primCtx}
+    {terms : List (Term ctx.primCtx)} {hM : ctx.M = Id}
+    {values : List (Val ctx.primCtx)}
+    (h : Exact.EvaluatesList ctx env terms values hM)
+    (Q : Std.Do.PostCond (Option (List (Val ctx.primCtx))) .pure) :
+    Std.Do.Triple (evalList? ctx env terms hM) (Q.1 (some values)) Q := by
+  change (Q.1 (some values)).down → _
+  intro hQ
+  dsimp [evalList?, total?]
+  constructor
+  · intro actual hactual
+    have hsame : actual = values := EvaluatesList.unique hactual h
+    subst actual
+    exact hQ
+  · intro hnone
+    exact (hnone values h).elim
+
+theorem apply?_triple_of_evaluatesApply {ctx : Ctx} {fn : Val ctx.primCtx}
+    {args : List (Val ctx.primCtx)} {hM : ctx.M = Id}
+    {value : Val ctx.primCtx}
+    (h : Exact.EvaluatesApply ctx fn args value hM)
+    (Q : Std.Do.PostCond (Option (Val ctx.primCtx)) .pure) :
+    Std.Do.Triple (apply? ctx fn args hM) (Q.1 (some value)) Q := by
+  change (Q.1 (some value)).down → _
+  intro hQ
+  dsimp [apply?, total?]
+  constructor
+  · intro actual hactual
+    have hsame : actual = value := EvaluatesApply.unique hactual h
+    subst actual
+    exact hQ
+  · intro hnone
+    exact (hnone value h).elim
+
+theorem evaluatesApply_of_apply?_triple {ctx : Ctx} {fn : Val ctx.primCtx}
+    {args : List (Val ctx.primCtx)} {hM : ctx.M = Id} {value : Val ctx.primCtx}
+    (h : Std.Do.Triple (apply? ctx fn args hM) (Std.Do.SPred.pure True)
+      (someEqPost value)) :
+    Exact.EvaluatesApply ctx fn args value hM := by
+  have hwp := (Std.Do.Triple.iff.mp h) trivial
+  obtain ⟨actual, hactual, heq⟩ := apply?_some_of_wp hwp
+  subst actual
+  exact hactual
+
+theorem evaluatesCallValues_of_callValues?_triple {ctx : Ctx} {name : String}
+    {args : List (Val ctx.primCtx)} {hM : ctx.M = Id} {value : Val ctx.primCtx}
+    (h : Std.Do.Triple (callValues? ctx name args hM) (Std.Do.SPred.pure True)
+      (someEqPost value)) :
+    Exact.EvaluatesCallValues ctx name args value hM := by
+  have hwp := (Std.Do.Triple.iff.mp h) trivial
+  obtain ⟨actual, hactual, heq⟩ := callValues?_some_of_wp hwp
+  subst actual
+  exact hactual
+
 end Exact
 
 end EvalTriple
@@ -1868,6 +2103,15 @@ abbrev EvaluatesTo (primCtx : PrimitiveCtx) (opCtx : OpCtx primCtx (StateM σ))
     (Singleton.statePre initial) (Singleton.statePost fun result state =>
       result = value ∧ state = final)
 
+/-- Continuation-parametric exact state evaluation for surface terms. This is the state analogue of
+`Exact.EvaluatesTo`: the same term result can be resumed through any pending stack suffix. -/
+abbrev EvaluatesToK (primCtx : PrimitiveCtx) (opCtx : OpCtx primCtx (StateM σ))
+    (blockCtx : BlockCtx primCtx) (env : Env primCtx) (term : Term primCtx)
+    (initial : σ) (value : Val primCtx) (final : σ) : Prop :=
+  ∀ base : List (Frame primCtx),
+    State.EvaluatesFrom primCtx opCtx blockCtx ⟨.eval term, env, base⟩
+      initial value final base
+
 abbrev EvaluatesCall (primCtx : PrimitiveCtx) (opCtx : OpCtx primCtx (StateM σ))
     (blockCtx : BlockCtx primCtx) (name : String) (args : List (Term primCtx))
     (initial : σ) (value : Val primCtx) (final : σ) : Prop :=
@@ -1888,6 +2132,31 @@ abbrev EvaluatesCallValues (primCtx : PrimitiveCtx) (opCtx : OpCtx primCtx (Stat
   EvalTriple.EvaluatesCallValues (Machine.stateCtx primCtx opCtx blockCtx) name vargs
     (Singleton.statePre initial) (Singleton.statePost fun result state =>
       result = value ∧ state = final)
+
+/-- User-facing total evaluator for `StateM` semantics. The state shape is the public ambient state;
+machine stuckness is represented by the normal return value `none`. -/
+def eval? (primCtx : PrimitiveCtx) (opCtx : OpCtx primCtx (StateM σ))
+    (blockCtx : BlockCtx primCtx) (env : Env primCtx) (term : Term primCtx) :
+    Std.Do.PredTrans (.arg σ .pure) (Option (Val primCtx)) where
+  trans Q := fun initial => ULift.up
+    ((∀ value final, State.EvaluatesToK primCtx opCtx blockCtx env term initial value final →
+        (Q.1 (some value) final).down) ∧
+      ((∀ value final,
+          ¬ State.EvaluatesToK primCtx opCtx blockCtx env term initial value final) →
+        (Q.1 none initial).down))
+  conjunctiveRaw := by
+    intro Q₁ Q₂ initial
+    dsimp [Std.Do.PredTrans.apply, Std.Do.SPred.bientails, Std.Do.SPred.and]
+    constructor
+    · intro h
+      exact ⟨⟨fun value final hvalue => (h.1 value final hvalue).1,
+          fun hnone => (h.2 hnone).1⟩,
+        ⟨fun value final hvalue => (h.1 value final hvalue).2,
+          fun hnone => (h.2 hnone).2⟩⟩
+    · intro h
+      exact ⟨fun value final hvalue =>
+          ⟨h.1.1 value final hvalue, h.2.1 value final hvalue⟩,
+        fun hnone => ⟨h.1.2 hnone, h.2.2 hnone⟩⟩
 
 namespace EvaluatesFrom
 
@@ -1977,6 +2246,82 @@ theorem return_through_done_call {primCtx : PrimitiveCtx}
     rfl
   exact return_to_call
 
+private theorem steps_toNsteps {primCtx : PrimitiveCtx}
+    {opCtx : OpCtx primCtx (StateM σ)} {blockCtx : BlockCtx primCtx}
+    {machine : Machine.Config primCtx} {initial final : σ}
+    {value : Val primCtx} {base : List (Frame primCtx)}
+    {P : Assertion (Machine.stateCtx primCtx opCtx blockCtx)}
+    (h : Steps (Machine.stateCtx primCtx opCtx blockCtx)
+      (Singleton.statePost fun result state => result = value ∧ state = final).2
+      (ReturnsTo (Machine.stateCtx primCtx opCtx blockCtx) base
+        (Singleton.statePost fun result state => result = value ∧ state = final))
+      machine P)
+    (hP : (P initial).down) :
+    ∃ fuel scope,
+      (Machine.nsteps (Machine.stateCtx primCtx opCtx blockCtx) fuel machine).run initial =
+        (some ⟨.ret value, scope, base⟩, final) := by
+  revert hP
+  induction h using @Steps.rec (Machine.stateCtx primCtx opCtx blockCtx)
+      (Singleton.statePost fun result state => result = value ∧ state = final).2
+      (ReturnsTo (Machine.stateCtx primCtx opCtx blockCtx) base
+        (Singleton.statePost fun result state => result = value ∧ state = final)) generalizing initial with
+  | done hdone =>
+      intro hpre
+      cases hdone with
+      | @intro returned scope terminalP hpost =>
+          have hq : returned = value ∧ initial = final :=
+            hpost initial hpre
+          rcases hq with ⟨rfl, rfl⟩
+          exact ⟨0, scope, rfl⟩
+  | @step state stepP next head tail ih =>
+      intro hpre
+      have hhead := (Std.Do.Triple.iff.mp head) initial hpre
+      simp only [Std.Do.wp, Std.Do.PredTrans.apply_pushArg,
+        Std.Do.PredTrans.apply_Pure_pure] at hhead
+      cases hstep : (Machine.step (Machine.stateCtx primCtx opCtx blockCtx) state).run initial with
+      | mk next? middle =>
+          simp only [StateT.run] at hhead
+          rw [hstep] at hhead
+          cases next? with
+          | none => simp [Id.run, StepPost, Stuck] at hhead
+          | some nextState =>
+              have hnext : (next nextState middle).down := by
+                simpa [Id.run, StepPost] using hhead
+              obtain ⟨fuel, scope, hrun⟩ := ih nextState hnext
+              refine ⟨fuel + 1, scope, ?_⟩
+              change Id.run (((Machine.step (Machine.stateCtx primCtx opCtx blockCtx) state >>=
+                Machine.nsteps (Machine.stateCtx primCtx opCtx blockCtx) fuel).run initial)) = _
+              rw [Machine.optionT_state_bind_run]
+              rw [hstep]
+              exact hrun
+  | @split ι state splitP cases cover branches ih =>
+      intro hpre
+      have hcover := cover initial hpre
+      simp at hcover
+      obtain ⟨i, hi⟩ := hcover
+      exact ih i hi
+  | @subst state state' substP invariant eq_state hpre' next ih =>
+      intro hpre
+      have heq := eq_state initial hpre
+      simp at heq
+      subst state'
+      exact ih (hpre' initial hpre)
+
+theorem toNsteps {primCtx : PrimitiveCtx}
+    {opCtx : OpCtx primCtx (StateM σ)} {blockCtx : BlockCtx primCtx}
+    {machine : Machine.Config primCtx} {initial final : σ}
+    {value : Val primCtx} {base : List (Frame primCtx)}
+    (h : State.EvaluatesFrom primCtx opCtx blockCtx machine initial value final base) :
+    ∃ fuel scope,
+      (Machine.nsteps (Machine.stateCtx primCtx opCtx blockCtx) fuel machine).run initial =
+        (some ⟨.ret value, scope, base⟩, final) := by
+  change Steps (Machine.stateCtx primCtx opCtx blockCtx)
+      (Singleton.statePost fun result state => result = value ∧ state = final).2
+      (ReturnsTo (Machine.stateCtx primCtx opCtx blockCtx) base
+        (Singleton.statePost fun result state => result = value ∧ state = final))
+      machine (Singleton.statePre initial) at h
+  exact steps_toNsteps h rfl
+
 /-- Construct a logical derivation from one successful bounded execution. The bound is executable
 evidence only and does not occur in the resulting judgment. -/
 theorem of_evalConfigFuel {primCtx : PrimitiveCtx}
@@ -2041,6 +2386,86 @@ theorem of_evalConfigFuel {primCtx : PrimitiveCtx}
 
 end EvaluatesFrom
 
+private theorem evalConfigFuel_run_of_result {primCtx : PrimitiveCtx}
+    {opCtx : OpCtx primCtx (StateM σ)} {blockCtx : BlockCtx primCtx}
+    (fuel : Nat) (machine : Machine.Config primCtx) (initial : σ) (value : Val primCtx)
+    (hresult : Machine.result? machine = some value) :
+    (Machine.evalConfigFuel (Machine.stateCtx primCtx opCtx blockCtx) fuel machine).run initial =
+      (some value, initial) := by
+  cases fuel <;> simp only [Machine.evalConfigFuel, hresult] <;> rfl
+
+private theorem evalConfigFuel_run_zero_of_none {primCtx : PrimitiveCtx}
+    {opCtx : OpCtx primCtx (StateM σ)} {blockCtx : BlockCtx primCtx}
+    (machine : Machine.Config primCtx) (initial : σ)
+    (hresult : Machine.result? machine = none) :
+    (Machine.evalConfigFuel (Machine.stateCtx primCtx opCtx blockCtx) 0 machine).run initial =
+      (none, initial) := by
+  simp only [Machine.evalConfigFuel, hresult]
+  rfl
+
+private theorem evalConfigFuel_run_unique {primCtx : PrimitiveCtx}
+    {opCtx : OpCtx primCtx (StateM σ)} {blockCtx : BlockCtx primCtx}
+    {machine : Machine.Config primCtx} {initial final₁ final₂ : σ}
+    {fuel₁ fuel₂ : Nat} {value₁ value₂ : Val primCtx}
+    (h₁ : (Machine.evalConfigFuel (Machine.stateCtx primCtx opCtx blockCtx)
+      fuel₁ machine).run initial = (some value₁, final₁))
+    (h₂ : (Machine.evalConfigFuel (Machine.stateCtx primCtx opCtx blockCtx)
+      fuel₂ machine).run initial = (some value₂, final₂)) :
+    value₁ = value₂ ∧ final₁ = final₂ := by
+  induction fuel₁ generalizing fuel₂ machine initial with
+  | zero =>
+      cases hresult : Machine.result? machine with
+      | none =>
+          rw [evalConfigFuel_run_zero_of_none machine initial hresult] at h₁
+          have hfalse := congrArg Prod.fst h₁
+          simp at hfalse
+      | some result =>
+          rw [evalConfigFuel_run_of_result 0 machine initial result hresult] at h₁
+          rw [evalConfigFuel_run_of_result fuel₂ machine initial result hresult] at h₂
+          obtain ⟨rfl, rfl⟩ := h₁
+          obtain ⟨rfl, rfl⟩ := h₂
+          exact ⟨rfl, rfl⟩
+  | succ fuel₁ ih =>
+      cases hresult : Machine.result? machine with
+      | some result =>
+          rw [evalConfigFuel_run_of_result (fuel₁ + 1) machine initial result hresult] at h₁
+          rw [evalConfigFuel_run_of_result fuel₂ machine initial result hresult] at h₂
+          obtain ⟨rfl, rfl⟩ := h₁
+          obtain ⟨rfl, rfl⟩ := h₂
+          exact ⟨rfl, rfl⟩
+      | none =>
+          simp only [Machine.evalConfigFuel, hresult] at h₁
+          change Id.run (((Machine.step (Machine.stateCtx primCtx opCtx blockCtx) machine >>=
+            Machine.evalConfigFuel (Machine.stateCtx primCtx opCtx blockCtx) fuel₁).run
+              initial)) = (some value₁, final₁) at h₁
+          rw [Machine.optionT_state_bind_run] at h₁
+          cases hstep : (Machine.step (Machine.stateCtx primCtx opCtx blockCtx) machine).run
+              initial with
+          | mk next? middle =>
+              change Id.run ((Machine.step (Machine.stateCtx primCtx opCtx blockCtx) machine).run
+                initial) = (next?, middle) at hstep
+              rw [hstep] at h₁
+              cases next? with
+              | none =>
+                  change (none, middle) = (some value₁, final₁) at h₁
+                  have hfalse := congrArg Prod.fst h₁
+                  simp at hfalse
+              | some nextState =>
+                  cases fuel₂ with
+                  | zero =>
+                      rw [evalConfigFuel_run_zero_of_none machine initial hresult] at h₂
+                      have hfalse := congrArg Prod.fst h₂
+                      simp at hfalse
+                  | succ fuel₂ =>
+                      simp only [Machine.evalConfigFuel, hresult] at h₂
+                      change Id.run (((Machine.step
+                        (Machine.stateCtx primCtx opCtx blockCtx) machine >>=
+                          Machine.evalConfigFuel (Machine.stateCtx primCtx opCtx blockCtx)
+                            fuel₂).run initial)) = (some value₂, final₂) at h₂
+                      rw [Machine.optionT_state_bind_run] at h₂
+                      rw [hstep] at h₂
+                      exact ih h₁ h₂
+
 namespace EvaluatesTo
 
 theorem of_evaluatesFrom {primCtx : PrimitiveCtx}
@@ -2052,7 +2477,108 @@ theorem of_evaluatesFrom {primCtx : PrimitiveCtx}
     State.EvaluatesTo primCtx opCtx blockCtx env term initial value final :=
   h
 
+theorem unique {primCtx : PrimitiveCtx}
+    {opCtx : OpCtx primCtx (StateM σ)} {blockCtx : BlockCtx primCtx}
+    {env : Env primCtx} {term : Term primCtx} {initial final₁ final₂ : σ}
+    {value₁ value₂ : Val primCtx}
+    (h₁ : State.EvaluatesTo primCtx opCtx blockCtx env term initial value₁ final₁)
+    (h₂ : State.EvaluatesTo primCtx opCtx blockCtx env term initial value₂ final₂) :
+    value₁ = value₂ ∧ final₁ = final₂ := by
+  obtain ⟨fuel₁, scope₁, hsteps₁⟩ := State.EvaluatesFrom.toNsteps h₁
+  obtain ⟨fuel₂, scope₂, hsteps₂⟩ := State.EvaluatesFrom.toNsteps h₂
+  have hrun₁ := Machine.evalConfigFuel_run_of_nsteps_result primCtx opCtx blockCtx
+    fuel₁ (Machine.start env term) initial final₁ value₁ scope₁ hsteps₁
+  have hrun₂ := Machine.evalConfigFuel_run_of_nsteps_result primCtx opCtx blockCtx
+    fuel₂ (Machine.start env term) initial final₂ value₂ scope₂ hsteps₂
+  exact evalConfigFuel_run_unique hrun₁ hrun₂
+
 end EvaluatesTo
+
+namespace EvaluatesToK
+
+theorem to_evaluatesTo {primCtx : PrimitiveCtx}
+    {opCtx : OpCtx primCtx (StateM σ)} {blockCtx : BlockCtx primCtx}
+    {env : Env primCtx} {term : Term primCtx} {initial final : σ}
+    {value : Val primCtx}
+    (h : State.EvaluatesToK primCtx opCtx blockCtx env term initial value final) :
+    State.EvaluatesTo primCtx opCtx blockCtx env term initial value final := by
+  exact h []
+
+theorem unique {primCtx : PrimitiveCtx}
+    {opCtx : OpCtx primCtx (StateM σ)} {blockCtx : BlockCtx primCtx}
+    {env : Env primCtx} {term : Term primCtx} {initial final₁ final₂ : σ}
+    {value₁ value₂ : Val primCtx}
+    (h₁ : State.EvaluatesToK primCtx opCtx blockCtx env term initial value₁ final₁)
+    (h₂ : State.EvaluatesToK primCtx opCtx blockCtx env term initial value₂ final₂) :
+    value₁ = value₂ ∧ final₁ = final₂ :=
+  State.EvaluatesTo.unique h₁.to_evaluatesTo h₂.to_evaluatesTo
+
+end EvaluatesToK
+
+namespace EvaluatesApply
+
+theorem unique {primCtx : PrimitiveCtx}
+    {opCtx : OpCtx primCtx (StateM σ)} {blockCtx : BlockCtx primCtx}
+    {fn : Val primCtx} {args : List (Val primCtx)} {initial final₁ final₂ : σ}
+    {value₁ value₂ : Val primCtx}
+    (h₁ : State.EvaluatesApply primCtx opCtx blockCtx fn args initial value₁ final₁)
+    (h₂ : State.EvaluatesApply primCtx opCtx blockCtx fn args initial value₂ final₂) :
+    value₁ = value₂ ∧ final₁ = final₂ := by
+  obtain ⟨fuel₁, scope₁, hsteps₁⟩ := State.EvaluatesFrom.toNsteps (h₁ [] [])
+  obtain ⟨fuel₂, scope₂, hsteps₂⟩ := State.EvaluatesFrom.toNsteps (h₂ [] [])
+  have hrun₁ := Machine.evalConfigFuel_run_of_nsteps_result primCtx opCtx blockCtx
+    fuel₁ ⟨.apply fn args, [], []⟩ initial final₁ value₁ scope₁ hsteps₁
+  have hrun₂ := Machine.evalConfigFuel_run_of_nsteps_result primCtx opCtx blockCtx
+    fuel₂ ⟨.apply fn args, [], []⟩ initial final₂ value₂ scope₂ hsteps₂
+  exact evalConfigFuel_run_unique hrun₁ hrun₂
+
+end EvaluatesApply
+
+namespace EvaluatesCallValues
+
+theorem unique {primCtx : PrimitiveCtx}
+    {opCtx : OpCtx primCtx (StateM σ)} {blockCtx : BlockCtx primCtx}
+    {name : String} {args : List (Val primCtx)} {initial final₁ final₂ : σ}
+    {value₁ value₂ : Val primCtx}
+    (h₁ : State.EvaluatesCallValues primCtx opCtx blockCtx name args initial value₁ final₁)
+    (h₂ : State.EvaluatesCallValues primCtx opCtx blockCtx name args initial value₂ final₂) :
+    value₁ = value₂ ∧ final₁ = final₂ :=
+  State.EvaluatesApply.unique
+    (EvalTriple.EvaluatesApply.blockRef
+      (argTys := args.map Val.ty) (outTy := value₁.ty) h₁)
+    (EvalTriple.EvaluatesApply.blockRef
+      (argTys := args.map Val.ty) (outTy := value₁.ty) h₂)
+
+end EvaluatesCallValues
+
+theorem eval?_triple_of_evaluatesTo {primCtx : PrimitiveCtx}
+    {opCtx : OpCtx primCtx (StateM σ)} {blockCtx : BlockCtx primCtx}
+    {env : Env primCtx} {term : Term primCtx} {initial final : σ}
+    {value : Val primCtx}
+    (h : State.EvaluatesToK primCtx opCtx blockCtx env term initial value final)
+    (Q : Std.Do.PostCond (Option (Val primCtx)) (.arg σ .pure)) :
+    Std.Do.Triple (eval? primCtx opCtx blockCtx env term)
+      (fun state => Std.Do.SPred.pure
+        (state = initial ∧ (Q.1 (some value) final).down)) Q := by
+  rw [Std.Do.Triple.iff, Std.Do.SPred.entails_1]
+  intro state hpre
+  change state = initial ∧ (Q.1 (some value) final).down at hpre
+  rcases hpre with ⟨hstate, hQ⟩
+  subst state
+  change ((∀ actual actualFinal,
+      State.EvaluatesToK primCtx opCtx blockCtx env term initial actual actualFinal →
+        (Q.1 (some actual) actualFinal).down) ∧
+    ((∀ actual actualFinal,
+      ¬ State.EvaluatesToK primCtx opCtx blockCtx env term initial actual actualFinal) →
+        (Q.1 none initial).down))
+  constructor
+  · intro actual actualFinal hactual
+    obtain ⟨hvalue, hfinal⟩ := EvaluatesToK.unique hactual h
+    subst actual
+    subst actualFinal
+    exact hQ
+  · intro hnone
+    exact (hnone value final h).elim
 
 end State
 
